@@ -1,0 +1,11 @@
+.env
+*.env
+!config/.env.example
+venv/
+node_modules/
+__pycache__/
+*.pyc
+*.session
+*.sqlite
+*.db
+.DS_Store

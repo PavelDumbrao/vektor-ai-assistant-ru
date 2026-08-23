@@ -1,0 +1,195 @@
+model:
+  # >>> ВЫБЕРИТЕ «МОЗГ» — три варианта, подробно в docs/02-llm-provider.md <<<
+  # Вариант по умолчанию: API-ключ (в т.ч. клубный ключ от Павла).
+  # base_url и название модели приходят вместе с ключом; сам ключ — в ~/.hermes/.env
+  provider: custom
+  base_url: ВСТАВЬТЕ_АДРЕС_СЕРВЕРА
+  default: ВСТАВЬТЕ_НАЗВАНИЕ_МОДЕЛИ
+  api_key: ${LLM_API_KEY}
+  context_length: 180000
+  # Подписка Claude (только план Max) — запустите `hermes model` → Anthropic → OAuth,
+  # блок выше замените на:  provider: "anthropic"  /  default: "claude-sonnet-4-6"
+  # Подписка ChatGPT — `hermes model` → OpenAI → openai-codex,
+  # блок выше замените на:  provider: "openai-codex"  /  default: "gpt-5.4"
+fallback_providers: []
+max_concurrent_sessions: 2
+max_live_sessions: 4
+agent:
+  max_turns: 60
+  api_max_retries: 1
+  gateway_timeout: 1800
+  verbose: false
+  reasoning_effort: medium
+  disabled_toolsets:
+    - browser-cdp
+    - computer_use
+    - delegation
+    - discord
+    - discord_admin
+    - feishu_doc
+    - feishu_drive
+    - homeassistant
+    - image_gen
+    - project
+    - terminal
+    - video
+    - video_gen
+    - passive_secretary_outbound
+terminal:
+  backend: local
+  cwd: /home/assistant/workspace
+  timeout: 180
+  home_mode: auto
+approvals:
+  mode: smart
+  timeout: 300
+  cron_mode: deny
+  deny:
+    - rm -rf /*
+    - git push --force*
+command_allowlist: []
+skills:
+  guard_agent_created: true
+  write_approval: true
+curator:
+  enabled: false
+memory:
+  memory_enabled: true
+  user_profile_enabled: true
+  write_approval: true
+  memory_char_limit: 2200
+  user_char_limit: 5000
+  provider: ''
+tts:
+  provider: edge          # бесплатный голос; премиум-варианты — docs/02-llm-provider.md
+  edge:
+    voice: ru-RU-DmitryNeural
+  minimax:
+    model: speech-2.8-turbo
+    voice_id: Russian_ReliableMan
+    speed: 1.15
+    vol: 1.0
+    pitch: 0
+    emotion: neutral
+    sample_rate: 44100
+    bitrate: 128000
+  providers:
+    prosody:
+      type: command
+      output_format: mp3
+      voice_compatible: true
+      timeout: 120
+stt:
+  enabled: true
+  provider: openrouter_whisper
+  language: ru
+  local:
+    model: base
+    language: ru
+    vad: true
+  openrouter:
+    model: openai/whisper-large-v3-turbo
+voice:
+  auto_tts: false
+search:
+  provider: tavily
+timezone: Europe/Moscow
+display:
+  language: ru
+gateway:
+  delivery_ledger: true
+  platform_connect_timeout: 60
+platforms:
+  telegram:
+    enabled: true
+    unauthorized_dm_behavior: pair
+    home_channel:
+      platform: telegram
+      chat_id: 'YOUR_TELEGRAM_ID'
+      name: Владелец
+    extra:
+      allow_admin_from:
+        - 'YOUR_TELEGRAM_ID'
+      user_allowed_commands:
+        - status
+        - new
+        - reset
+        - retry
+        - undo
+        - title
+        - resume
+        - sessions
+        - usage
+        - voice
+        - memory
+        - context
+        - compress
+      command_menu:
+        max_commands: 16
+        priority_mode: replace
+        priority:
+          - help
+              - new
+          - status
+          - resume
+          - sessions
+          - retry
+          - undo
+          - title
+          - context
+          - compress
+          - usage
+          - voice
+          - memory
+          - whoami
+      business_updates_mode: passive
+      business_owner_ids:
+        - YOUR_TELEGRAM_ID
+      business_reply_enabled: false
+      passive_media_enabled: true
+      passive_media_asr_provider: openrouter
+      group_passive_enabled: true
+      group_passive_chat_ids: []
+network:
+  force_ipv4: true
+logging:
+  level: INFO
+  max_size_mb: 5
+  backup_count: 3
+updates:
+  pre_update_backup: quick
+  backup_keep: 5
+  non_interactive_local_changes: stash
+plugins:
+  enabled:
+    - passive-secretary
+  disabled: []
+goals:
+  max_turns: 5
+_config_version: 33
+mcp_servers:
+  maton:
+    enabled: false   # включите, когда получите свой ключ Maton (MCP_MATON_API_KEY)
+    url: https://mcp.maton.ai
+    headers:
+      Authorization: Bearer ${MCP_MATON_API_KEY}
+    connect_timeout: 60
+    tools:
+      include:
+        - whoami
+        - search_apps
+        - search_actions
+        - get_action
+        - create_connection
+        - get_connection
+        - list_connections
+        - run_action
+onboarding:
+  seen:
+    busy_input_prompt: true
+    profile_build_offered: true
+hooks:
+  post_tool_call:
+  - command: /usr/local/bin/hermes-clean-docmeta
+    timeout: 30
+hooks_auto_accept: true

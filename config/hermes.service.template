@@ -1,0 +1,33 @@
+[Unit]
+Description=Hermes Agent for @USER@ (Vektor) - Telegram Assistant
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=@USER@
+Group=@USER@
+ExecStart=/home/@USER@/.hermes/hermes-agent/venv/bin/python -m hermes_cli.main gateway run
+WorkingDirectory=/home/@USER@/.hermes
+Environment="HOME=/home/@USER@"
+Environment="USER=@USER@"
+Environment="LOGNAME=@USER@"
+Environment="PATH=/usr/bin:/home/@USER@/.hermes/hermes-agent/venv/bin:/home/@USER@/.hermes/hermes-agent/node_modules/.bin:/home/@USER@/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+Environment="VIRTUAL_ENV=/home/@USER@/.hermes/hermes-agent/venv"
+Environment="HERMES_HOME=/home/@USER@/.hermes"
+Environment="HERMES_TELEGRAM_DISABLE_FALLBACK_IPS=1"
+Restart=always
+RestartSec=5
+RestartForceExitStatus=75
+RestartPreventExitStatus=78
+KillMode=mixed
+KillSignal=SIGTERM
+ExecReload=/bin/kill -USR1 $MAINPID
+ExecStopPost=-/home/@USER@/.hermes/hermes-agent/venv/bin/python -m gateway.cgroup_cleanup
+TimeoutStopSec=60
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

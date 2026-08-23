@@ -1,0 +1,15 @@
+name: passive-secretary
+version: 0.1.0
+kind: standalone
+description: Passive Telegram archive with owner-confirmed one-time Business replies.
+author: ProAI
+pip_dependencies:
+  - "psycopg[binary]==3.3.4"
+provides_hooks:
+  - telegram_passive_update
+  - pre_llm_call
+  - pre_tool_call
+provides_tools:
+  - passive_secretary_search
+  - passive_secretary_sources
+  - passive_secretary_reply

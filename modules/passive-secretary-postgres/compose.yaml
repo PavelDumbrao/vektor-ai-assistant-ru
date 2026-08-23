@@ -1,0 +1,48 @@
+name: passive-secretary-postgres
+
+services:
+  postgres:
+    image: postgres@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777
+    container_name: passive-secretary-postgres
+    restart: unless-stopped
+    env_file:
+      - ${POSTGRES_CLUSTER_ENV:?POSTGRES_CLUSTER_ENV must point to the root-only cluster env file}
+    environment:
+      POSTGRES_INITDB_ARGS: "--auth-host=scram-sha-256 --auth-local=scram-sha-256"
+    command:
+      - postgres
+      - -c
+      - shared_buffers=64MB
+      - -c
+      - work_mem=2MB
+      - -c
+      - maintenance_work_mem=32MB
+      - -c
+      - effective_cache_size=128MB
+      - -c
+      - max_connections=30
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-15432}:5432"
+    volumes:
+      - passive_secretary_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\" -h 127.0.0.1 -p 5432"]
+      interval: 5s
+      timeout: 3s
+      retries: 24
+      start_period: 10s
+    mem_limit: 256m
+    cpus: 0.50
+    pids_limit: 128
+    shm_size: 64m
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  passive_secretary_postgres_data:
+    name: passive-secretary-postgres-data

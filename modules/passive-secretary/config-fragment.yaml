@@ -1,0 +1,22 @@
+# Safe prepared state. Installation MUST leave capture disabled.
+platforms:
+  telegram:
+    extra:
+      # blocked consumes Business updates before normal Hermes dispatch but
+      # intentionally does not persist them. off is legacy fall-through.
+      business_updates_mode: blocked
+      # Required fail-closed core scope. Installer fills concrete numeric IDs;
+      # an empty list cannot be activated.
+      business_owner_ids: []
+      # Target ASR is OpenRouter Whisper Large V3 Turbo. Media remains disabled
+      # until OPENROUTER_API_KEY is present in the private Hermes env file.
+      passive_media_enabled: false
+      passive_media_asr_provider: openrouter
+
+plugins:
+  enabled:
+    - passive-secretary
+
+# Runtime settings are written to:
+#   <HERMES_HOME>/plugins/passive-secretary/settings.json
+# PostgreSQL DSN and source-reference key stay in environment secrets only.

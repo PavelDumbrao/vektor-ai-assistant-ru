@@ -56,6 +56,10 @@ uv pip install --python venv/bin/python -r <репо>/config/frozen-requirements
 uv pip install --python venv/bin/python -e . --no-deps
 uv pip install --python venv/bin/python python-docx openpyxl python-pptx pypdf reportlab
 chmod -R go-w venv
+
+# Безопасный Telegram-onboarding Maton (ключ при установке не нужен)
+venv/bin/python <репо>/modules/maton-onboarding/install.py \
+  --hermes-home ~/.hermes
 ```
 
 Проверка: `venv/bin/python -c "import hermes_cli; print('ok')"` → `ok`.
@@ -69,6 +73,11 @@ chmod -R go-w venv
 - `LLM_API_KEY` — по `docs/02-llm-provider.md`. Блок `model:` в `config.yaml` приведи в соответствие выбранному варианту (провайдер/модель/base_url) по той же инструкции. Для OAuth-входов запускай визард полным путём: `~/.hermes/hermes-agent/venv/bin/hermes model` (голый `hermes` не в PATH).
 
 Никогда не выводи значения ключей в чат и не коммить их.
+
+Maton при установке оставляй сетево выключенным. После запуска владелец пишет
+боту `/maton`; plugin перехватывает следующее сообщение до LLM/логов, удаляет
+его, проверяет личный ключ и только затем включает `mcp_servers.maton`.
+**Не проси присылать ключ Maton обычным сообщением.**
 
 ### A5. Хук чистых документов
 
@@ -92,6 +101,9 @@ HERMES_HOME=~/.hermes venv/bin/python -m hermes_cli.main gateway run
 1. «Сделай служебную записку о покупке принтера, пришли файлом Word» → должен прийти **файл вложением** (не текст «файл готов»!). Если файла нет — в ответе бота не было `MEDIA:<путь>`; проверь SOUL.md на месте и начни новую сессию командой `/new`.
 2. «Напомни через 3 минуты: проверка» → через 3 минуты придёт напоминание.
 3. Голосовое сообщение → бот поймёт текст.
+4. `/maton` → бот просит ключ отдельным защищённым сообщением. Без ключа
+   проверяем только prompt; с ключом — удаление сообщения, `whoami`, затем
+   `create_connection` и `get_connection=ACTIVE` для одного выбранного сервиса.
 
 Для постоянной работы оформи автозапуск: macOS — launchd-агент, Linux — systemd из `config/hermes.service.template` (замени `@USER@`). Скажи человеку честно: пока компьютер выключен/спит — бот молчит; для 24/7 см. `docs/03-server.md`.
 

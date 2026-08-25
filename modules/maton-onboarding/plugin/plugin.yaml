@@ -1,0 +1,8 @@
+name: maton-onboarding
+version: 1.0.0
+kind: standalone
+description: Secure Telegram onboarding for a personal Maton MCP key.
+author: ProAI
+hooks:
+  - pre_gateway_dispatch
+

@@ -170,6 +170,11 @@ retention/purge. Если сеть оборвалась после начала 
 неизвестен, intent получает статус `ambiguous`: автоматического повтора нет,
 чтобы не отправить дубликат.
 
+Периодические, отложенные и самостоятельные Telegram Business-отправки не
+поддерживаются. Внутренний cron/event не является текущим внешним owner turn и
+не может получить одноразовый outbound permit. Retention timer ниже обслуживает
+только удаление архивных данных и никогда не отправляет сообщения клиентам.
+
 ## Установка в безопасном выключенном состоянии
 
 Установщик требует явную политику хранения. Silent default отсутствует. Release
@@ -405,84 +410,26 @@ OpenRouter key, доступность модели, максимальный р
 отдельный lifecycle имеют WAL/backups, внешние логи и уже созданные Hermes/LLM
 transcripts.
 
-Для media, уже попавших в БД до включения worker, устанавливается отдельная
-root-owned operator-only утилита `/opt/hermes-passive-secretary/legacy_media_seed.py`.
-Она по умолчанию делает dry-run, не обращается к Telegram/ASR и создаёт private
-jobs только с явным `--apply`. Утилита не устанавливается в importable Hermes
-plugin package и не является model tool.
+### Необязательные operator-утилиты
 
-### Ограниченный импорт истории
+Базовая установка, новый Business-архив, поиск и подтверждённые ответы не
+требуют импорта старой истории или повторной постановки старых media-задач.
+Поэтому `history_backfill.py` и `legacy_media_seed.py` считаются отдельными
+необязательными operator-add-ons: установщик включает их в immutable staging
+bundle только когда соответствующий проверенный файл действительно присутствует
+в release tree.
 
-`/opt/hermes-passive-secretary/history_backfill.py` — отдельная root-owned
-operator-only команда, а не часть Hermes plugin. Она использует единственный уже
-запущенный Telegram API Engine, импортирует только личные текстовые сообщения в
-точный test scope и по умолчанию выполняет dry-run. Saved Messages и точный
-управляющий bot исключаются по идентичности, а импортированные строки получают
-`ingest_origin=history_backfill` и никогда не могут служить 24-часовым anchor для
-Business reply.
+Текущий ученический release эти две утилиты не поставляет. Это означает:
 
-Для уже работающего Business-архива безопасный режим —
-`--known-archive-chats`. Он получает список источников внутренним read-only
-запросом к `passive_secretary.messages`, строго связанным с tenant, owner,
-source и test-run из валидированных settings/CLI scope. Для каждого `chat_id`
-берётся последняя сохранённая метка. Raw идентификаторы клиентских чатов не
-передаются в argv и не попадают в агрегатный stdout. Режим вообще не вызывает
-`/api/chats`, поэтому число посторонних Telegram-диалогов и ограничение этого
-endpoint не делают выборку частичной.
+- архив начинает собирать новые сообщения после подключения Telegram Business;
+- старые Telegram-диалоги автоматически не импортируются;
+- media, записанные до включения worker, автоматически не переочередятся;
+- отсутствие этих add-ons не блокирует установку и активацию основного модуля.
 
-Оператор сначала через root-owned secret loader передаёт только четыре точных
-значения: tenant DSN, source-ref key, API Engine key и текущий bot token. Их нельзя
-`source`-ить, печатать или помещать в argv. После такой инъекции dry-run и commit
-выглядят одинаково, кроме последнего флага:
-
-```bash
-OPERATOR_PY=/opt/hermes-passive-secretary/operator-venv/bin/python3
-BACKFILL=/opt/hermes-passive-secretary/history_backfill.py
-
-"$OPERATOR_PY" -I -B -c \
-  'import runpy,sys; sys.path.insert(0,"/opt/hermes-passive-secretary"); runpy.run_path(sys.argv.pop(1),run_name="__main__")' \
-  "$BACKFILL" \
-  --settings /home/<client>/.hermes/plugins/passive-secretary/settings.json \
-  --owner-id <owner_telegram_id> \
-  --test-run-id <exact_test_run_id> \
-  --start <UTC_ISO_START> \
-  --end-exclusive <UTC_ISO_END> \
-  --known-archive-chats \
-  --max-dialogs 1000 \
-  --page-size 100 \
-  --max-wall-seconds 180 \
-  --dry-run
-
-# Только после проверки агрегатного dry-run:
-# заменить --dry-run на --commit и обернуть процесс внешним timeout.
-```
-
-Ограничения known-archive режима:
-
-- он дополняет историю только тех чатов, где в точном архивном scope уже есть
-  хотя бы одна строка `ingest_origin=business_update`; ранее импортированные
-  строки не расширяют следующий known-chat scope, а новые/ещё не замеченные
-  Business-чаты режим не обнаруживает;
-- пустая выборка, несовпадение owner/test scope, ошибка/timeout PostgreSQL,
-  некорректный или превышающий `--max-dialogs` набор источников завершают запуск
-  до export и insert;
-- owner Saved Messages и точный управляющий bot исключаются повторно после DB
-  selection; если после исключения источников нет, запуск завершается ошибкой;
-- общий лимит `--max-messages`, лимит страниц на чат, body budget, wall clock и
-  максимум 24 часа остаются обязательными; сначала строится полный ограниченный
-  план, затем commit выполняет прежний insert-only `ON CONFLICT DO NOTHING`;
-- импорт восстанавливает только текущее текстовое представление, но не
-  исторические edit/delete/media-события и не создаёт outbound connection/anchor.
-
-Legacy/default режим сканирования всех личных диалогов сохранён для обратной
-совместимости и может быть указан явно как `--all-private-chats`. Эти два флага
-взаимоисключающие. All-private режим зависит от непагинируемого `/api/chats` и
-fail-closed отказывается продолжать, если ответ достигает `--max-dialogs`.
-
-Текущий API Engine использует GET route с raw `chat_id`; Uvicorn access log
-поэтому сохраняет эти идентификаторы в root-only `/tmp/telegram-api.log` mode
-0600. Это ограниченное операционное исключение, а не обещание zero-ID logging.
-Тела сообщений, токены и DSN команда в stdout/stderr не выводит.
+Не создавайте пустые файлы-заглушки и не используйте сторонние backfill-скрипты:
+они обрабатывают приватные сообщения, raw chat identifiers и tenant-scoped БД.
+Возврат этих функций требует отдельного security review, dry-run-first CLI,
+ограничений по времени/объёму и самостоятельных regression tests.
 
 Production-активация допускается только при пустом `test_run_id`, двумя
 явными подтверждениями — `--production` и

@@ -36,7 +36,7 @@ PLUGIN_FILES = (
     "schema.sql",
     "settings.py",
 )
-OPERATOR_FILES = (
+OPTIONAL_OPERATOR_FILES = (
     "history_backfill.py",
     "legacy_media_seed.py",
 )
@@ -122,8 +122,12 @@ def _require_root_owned_module_sources(module_dir: Path) -> None:
     _require_root_owned_path(source_plugin)
     for filename in PLUGIN_FILES:
         _require_root_owned_path(source_plugin / filename)
-    for filename in OPERATOR_FILES:
-        _require_root_owned_path(module_dir / filename)
+    for filename in OPTIONAL_OPERATOR_FILES:
+        source = module_dir / filename
+        if source.exists():
+            if not source.is_file():
+                raise InstallError("Optional operator source is unsafe")
+            _require_root_owned_path(source)
 
 
 def _owner_entry(owner: str):
@@ -670,9 +674,14 @@ def _stage_module(module_dir: Path, stage: Path) -> Path:
         shutil.copyfile(module_dir / "passive_secretary_plugin" / filename, destination)
         os.chmod(destination, 0o444)
     os.chmod(source, 0o555)
-    for filename in OPERATOR_FILES:
+    for filename in OPTIONAL_OPERATOR_FILES:
+        source_file = module_dir / filename
+        if not source_file.exists():
+            continue
+        if not source_file.is_file():
+            raise InstallError("Optional operator source is unsafe")
         destination = stage / filename
-        shutil.copyfile(module_dir / filename, destination)
+        shutil.copyfile(source_file, destination)
         os.chmod(destination, 0o444)
     return runner
 
@@ -781,13 +790,20 @@ def install(args: argparse.Namespace) -> None:
         runner = _stage_module(module_dir, Path(raw))
         result = _run_owner_install(args, runner=runner, entry=entry)
 
+    optional_files = {
+        filename for filename in OPTIONAL_OPERATOR_FILES
+        if (module_dir / filename).is_file()
+    }
     print(
         f"installed=true\nplugin={PLUGIN_NAME}\nstate={result['state']}\n"
         f"backup={result['backup']}\ncapture_enabled=false\n"
         "business_updates_mode=blocked\nbusiness_reply_enabled=false\n"
         "passive_media_enabled=false\n"
         "passive_media_asr_provider=openrouter\n"
-        "outbound_replies_enabled=false\nrestart_required=true"
+        "outbound_replies_enabled=false\n"
+        f"optional_history_backfill={'true' if 'history_backfill.py' in optional_files else 'false'}\n"
+        f"optional_legacy_media_seed={'true' if 'legacy_media_seed.py' in optional_files else 'false'}\n"
+        "restart_required=true"
     )
 
 

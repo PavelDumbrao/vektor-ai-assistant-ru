@@ -8,6 +8,8 @@ import json
 from datetime import datetime, timezone
 from typing import Any
 
+from telegram_business_rights import classify_business_connection_rights_mapping
+
 from .settings import Settings
 
 
@@ -239,28 +241,12 @@ class PassiveEventNormalizer:
         if not connection_id or str(user.get("id") or "") != owner_id:
             return None
         raw_rights = payload.get("rights")
-        rights = _dict(raw_rights)
         # An empty mapping is a valid receive-only BusinessBotRights payload:
         # PTB may omit every false field from ``to_dict()``.  The core DTO
         # carries ``rights_valid`` separately so missing/unreadable rights
         # remain distinguishable from this valid empty mapping.
-        rights_shape_valid = isinstance(raw_rights, dict) and all(
-            isinstance(name, str)
-            and name.startswith("can_")
-            and isinstance(value, bool)
-            for name, value in raw_rights.items()
-        )
-        receive_only = rights_shape_valid and all(
-            value is False for value in raw_rights.values()
-        )
-        reply_only = (
-            rights_shape_valid
-            and raw_rights.get("can_reply") is True
-            and all(
-                value is False
-                for name, value in raw_rights.items()
-                if name != "can_reply"
-            )
+        _rights, rights_shape_valid, receive_only, reply_only = (
+            classify_business_connection_rights_mapping(raw_rights)
         )
         capture_authorized = (
             payload.get("rights_valid") is True

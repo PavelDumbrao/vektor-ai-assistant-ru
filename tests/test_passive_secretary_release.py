@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import shutil
 import sys
@@ -30,9 +31,23 @@ owner_intent = load_module(
     "passive_secretary_owner_intent_release_test",
     MODULE_DIR / "passive_secretary_plugin" / "owner_intent.py",
 )
+core_patch = load_module(
+    "passive_secretary_core_patch_release_test",
+    MODULE_DIR / "install_core_patch.py",
+)
 
 
 class InstallerBundleTests(unittest.TestCase):
+    def test_frozen_core_patch_hash_manifest_matches_release_tree(self) -> None:
+        patch_root = MODULE_DIR / "hermes-core-patch"
+        mismatches = []
+        for relative in core_patch.PATCHED_FILES:
+            actual = hashlib.sha256((patch_root / relative).read_bytes()).hexdigest()
+            expected = core_patch.PATCHED_SHA256[relative]
+            if actual != expected:
+                mismatches.append((relative, actual, expected))
+        self.assertEqual(mismatches, [])
+
     def test_required_release_manifest_is_complete(self) -> None:
         expected = [MODULE_DIR / "requirements.txt"]
         expected.extend(

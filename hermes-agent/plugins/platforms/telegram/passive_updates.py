@@ -21,6 +21,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator, Mapping
 
+from telegram_business_rights import classify_business_connection_rights_mapping
+
 try:  # POSIX-only durability boundary; passive Business capture fails closed elsewhere.
     import fcntl
 except ImportError:  # pragma: no cover - exercised only on non-POSIX hosts
@@ -197,8 +199,9 @@ def business_connection_rights_state(
     An empty mapping is receive-only only when it came from a real rights object
     whose ``to_dict`` call succeeded. Missing or unreadable rights must remain
     distinguishable from that valid empty mapping for downstream retention.
-    ``reply_only`` is true only for the narrow profile where ``can_reply`` is
-    explicitly true and every other reported Telegram action right is false.
+    ``reply_only`` accepts Telegram Desktop's minimal 2/5 profile where
+    ``can_reply`` and the coupled non-action ``can_read_messages`` are true.
+    Every other reported or future Telegram action right must remain false.
     """
     if value is None:
         return {}, False, False, False
@@ -210,24 +213,7 @@ def business_connection_rights_state(
         raw = to_dict()
     except Exception:
         return {}, False, False, False
-    if not isinstance(raw, dict):
-        return {}, False, False, False
-    rights: dict[str, bool] = {}
-    for key, item in raw.items():
-        if (
-            not isinstance(key, str)
-            or not key.startswith("can_")
-            or not isinstance(item, bool)
-        ):
-            return {}, False, False, False
-        rights[key] = item
-    receive_only = all(enabled is False for enabled in rights.values())
-    reply_only = rights.get("can_reply") is True and all(
-        enabled is False
-        for name, enabled in rights.items()
-        if name != "can_reply"
-    )
-    return rights, True, receive_only, reply_only
+    return classify_business_connection_rights_mapping(raw)
 
 
 def _business_connection_payload(
@@ -344,22 +330,11 @@ def _normalize_connection_snapshot_mapping(
     if _utc_iso(parsed_date) != date_utc:
         raise ValueError("Non-canonical recovered Telegram Business connection date")
 
-    raw_rights = value.get("rights")
-    if not isinstance(raw_rights, Mapping):
-        raise ValueError("Invalid recovered Telegram Business rights")
-    rights: dict[str, bool] = {}
-    for name, enabled in raw_rights.items():
-        if (
-            not isinstance(name, str)
-            or not name.startswith("can_")
-            or type(enabled) is not bool
-        ):
-            raise ValueError("Invalid recovered Telegram Business rights")
-        rights[name] = enabled
-    receive_only = all(enabled is False for enabled in rights.values())
-    reply_only = rights.get("can_reply") is True and all(
-        enabled is False for name, enabled in rights.items() if name != "can_reply"
+    rights, rights_valid, receive_only, reply_only = (
+        classify_business_connection_rights_mapping(value.get("rights"))
     )
+    if not rights_valid:
+        raise ValueError("Invalid recovered Telegram Business rights")
     capture_authorized = receive_only or (business_reply_enabled and reply_only)
     expected_flags = {
         "rights_valid": True,

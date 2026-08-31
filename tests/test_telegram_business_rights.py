@@ -13,15 +13,6 @@ PASSIVE_MODULE_ROOT = REPO_ROOT / "modules" / "passive-secretary"
 sys.path.insert(0, str(HERMES_ROOT))
 sys.path.insert(0, str(PASSIVE_MODULE_ROOT))
 
-from plugins.platforms.telegram.passive_updates import (  # noqa: E402
-    _normalize_connection_snapshot_mapping,
-    business_connection_rights_state,
-    classify_business_connection_rights_mapping,
-)
-from passive_secretary_plugin.normalizer import PassiveEventNormalizer  # noqa: E402
-from passive_secretary_plugin.owner_intent import OwnerReplyIntentGate  # noqa: E402
-from passive_secretary_plugin.settings import Settings  # noqa: E402
-
 
 def load_module(name: str, path: Path):
     spec = importlib.util.spec_from_file_location(name, path)
@@ -33,6 +24,18 @@ def load_module(name: str, path: Path):
     return module
 
 
+from telegram_business_rights import (  # noqa: E402
+    classify_business_connection_rights_mapping,
+)
+from passive_secretary_plugin.normalizer import PassiveEventNormalizer  # noqa: E402
+from passive_secretary_plugin.owner_intent import OwnerReplyIntentGate  # noqa: E402
+from passive_secretary_plugin.settings import Settings  # noqa: E402
+
+
+main_passive_updates = load_module(
+    "main_telegram_passive_updates_release_test",
+    HERMES_ROOT / "plugins" / "platforms" / "telegram" / "passive_updates.py",
+)
 frozen_passive_updates = load_module(
     "frozen_telegram_passive_updates_release_test",
     PASSIVE_MODULE_ROOT
@@ -41,6 +44,12 @@ frozen_passive_updates = load_module(
     / "platforms"
     / "telegram"
     / "passive_updates.py",
+)
+business_connection_rights_state = (
+    main_passive_updates.business_connection_rights_state
+)
+_normalize_connection_snapshot_mapping = (
+    main_passive_updates._normalize_connection_snapshot_mapping
 )
 
 

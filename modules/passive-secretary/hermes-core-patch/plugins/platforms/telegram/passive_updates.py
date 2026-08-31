@@ -19,6 +19,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator, Mapping
 
+from telegram_business_rights import classify_business_connection_rights_mapping
+
 try:  # POSIX-only durability boundary; passive Business capture fails closed elsewhere.
     import fcntl
 except ImportError:  # pragma: no cover - exercised only on non-POSIX hosts
@@ -30,8 +32,6 @@ DEFAULT_RELATIVE_SPOOL = Path("passive-secretary") / "inbox"
 MAX_SPOOL_EVENT_BYTES = 512_000
 
 logger = logging.getLogger(__name__)
-
-_BUSINESS_REPLY_NON_ACTION_RIGHTS = frozenset({"can_read_messages"})
 
 
 def _fsync_directory(path: Path) -> None:
@@ -186,36 +186,6 @@ def _message(value: Any) -> dict[str, Any]:
         ),
     }
     return {key: item for key, item in result.items() if item is not None}
-
-
-def classify_business_connection_rights_mapping(
-    value: Any,
-) -> tuple[dict[str, bool], bool, bool, bool]:
-    """Classify one JSON-like Business rights mapping fail-closed.
-
-    Telegram Desktop currently couples ``can_reply`` with
-    ``can_read_messages``.  Reading is not an action performed by this module,
-    so either boolean value is accepted only while ``can_reply`` is true and
-    every other reported or future ``can_*`` action right remains false.
-    """
-    if not isinstance(value, Mapping):
-        return {}, False, False, False
-    rights: dict[str, bool] = {}
-    for key, item in value.items():
-        if (
-            not isinstance(key, str)
-            or not key.startswith("can_")
-            or type(item) is not bool
-        ):
-            return {}, False, False, False
-        rights[key] = item
-    receive_only = all(enabled is False for enabled in rights.values())
-    reply_only = rights.get("can_reply") is True and all(
-        enabled is False
-        for name, enabled in rights.items()
-        if name != "can_reply" and name not in _BUSINESS_REPLY_NON_ACTION_RIGHTS
-    )
-    return rights, True, receive_only, reply_only
 
 
 def business_connection_rights_state(

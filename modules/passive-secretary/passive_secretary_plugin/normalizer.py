@@ -8,9 +8,7 @@ import json
 from datetime import datetime, timezone
 from typing import Any
 
-from plugins.platforms.telegram.passive_updates import (
-    classify_business_connection_rights_mapping,
-)
+from telegram_business_rights import classify_business_connection_rights_mapping
 
 from .settings import Settings
 

@@ -25,6 +25,7 @@ PATCHED_FILES = (
     "gateway/turn_context.py",
     "hermes_cli/plugins.py",
     "run_agent.py",
+    "telegram_business_rights.py",
     "tools/approval.py",
     "tools/transcription_tools.py",
     "plugins/platforms/telegram/adapter.py",
@@ -53,6 +54,7 @@ BASE_SHA256 = {
     "run_agent.py": (
         "7d22f38b5eac3b2951fa28aec5b2b06ec007bc96d88e5d35278481bf2ab52122"
     ),
+    "telegram_business_rights.py": None,
     "tools/approval.py": (
         "651b2ad8041aad4c862ff793937646c3541de9786b8fbabc8301665ef7c3cfbc"
     ),
@@ -87,6 +89,9 @@ PATCHED_SHA256 = {
     "run_agent.py": (
         "9a769d16a843826b3ebd663a881ed8531d3d3d68bdd7f8bf11086ac8096ad48c"
     ),
+    "telegram_business_rights.py": (
+        "0aa7cf44f7213d9b4cafada2a051ad4672b407a8e765dcfc5c8c81ee19df841f"
+    ),
     "tools/approval.py": (
         "6fed585306d0aac9e77b22fa6866d577c3baa99bdbb6999243ed697308d13ce5"
     ),
@@ -100,7 +105,7 @@ PATCHED_SHA256 = {
         "2896b8fe56bba55e50bf9367b846a7e4f9a10a03a6967b3c61f6c686eaaadaae"
     ),
     "plugins/platforms/telegram/passive_updates.py": (
-        "c75d246eca8a56927e5898d250b7cc5fbafa705787dfdf155ba23d49775c5343"
+        "47a4e0747a19a470e1b8c0ed8cebdf9b27aa81f9e0c7947ada750067b8e9a1c5"
     ),
 }
 
@@ -149,6 +154,7 @@ MIGRATION_SHA256 = {
         "84ac8ae5e1c043704817938c178552948b3e8eab022366b2353fa8c0727f9980",
         "d55e89a25228c756d86fdde73274ed43605105273fc37c1063e45c17a155684b",
         "9df0bb6ca323b273e9a7c1197872b696533bf8636bd9b8d5deb739d94d47deee",
+        "c75d246eca8a56927e5898d250b7cc5fbafa705787dfdf155ba23d49775c5343",
     ),
 }
 

@@ -149,17 +149,20 @@ Hermes не может даже открыть окно отправки.
 - три локальных выключателя одновременно включены: `outbound_replies_enabled`,
   `business_reply_enabled` и toolset `passive_secretary_outbound`;
 - Business connection принадлежит настроенному владельцу и активен;
-- Telegram выдал ровно `can_reply=true`, а все остальные action rights
-  остались `false`;
+- Telegram выдал `can_reply=true`; связанное клиентом
+  `can_read_messages=true|false` допустимо, а все остальные известные и будущие
+  action rights остались `false`;
 - в выбранном личном Business-чате есть подходящее входящее сообщение не старше
   24 часов;
 - server-generated `intent_id`, `source_ref`, owner session и hash текста
   совпадают с подготовленным неистёкшим intent.
 
 Telegram-разрешение `can_reply` владелец включает вручную в настройках
-Telegram Business. Lifecycle-скрипт не может и не пытается выдать его через
-API. Все остальные права на сообщения, профиль, Stories, Gifts и Stars должны
-оставаться выключенными.
+Telegram Business. Telegram Desktop может автоматически связать его с
+`can_read_messages`; модуль принимает это право, но не вызывает
+`readBusinessMessage`. Lifecycle-скрипт не может и не пытается выдать права
+через API. Все остальные права на сообщения, профиль, Stories, Gifts и Stars
+должны оставаться выключенными.
 
 Текст команды, preview подтверждения, tool result и ответ ассистента могут
 сохраниться в Telegram, Hermes session/SQLite transcript и у настроенного
@@ -351,8 +354,9 @@ sudo -u <client> -- "$OWNER_PY" -B -E -s "$MANAGER" activate \
 ```
 
 Команда синхронно включает три локальных outbound gate. После штатного restart
-владелец вручную включает в Telegram Business ровно `can_reply`; другие action
-rights остаются выключены. Каждая фактическая отправка всё равно требует нового
+владелец вручную включает в Telegram Business «Ответы на сообщения»;
+автоматически связанное `can_read_messages` допустимо, другие action rights
+остаются выключены. Каждая фактическая отправка всё равно требует нового
 one-shot подтверждения владельца в управляющем DM.
 
 Порядок активации: `capture_enabled=true`, затем
@@ -541,8 +545,9 @@ PASSIVE_SECRETARY_SOURCE_REF_KEY=<at least 32 random characters>
 5. offline tests зелёные;
 6. сначала задан отдельный `test_run_id` и один согласованный тестовый чат;
 7. для receive-only проверки все Telegram Business action rights выключены;
-   для отдельного outbound-теста вручную включён ровно `can_reply`, остальные
-   права выключены;
+   для отдельного outbound-теста вручную включён `can_reply`, связанное
+   Telegram Desktop право `can_read_messages` может быть true или false,
+   остальные права выключены;
 8. для production retention service прошёл smoke, а timer реально
    `enabled + active/waiting` и соответствует exact unit identity;
 9. если включаются search/auto-context/outbound, согласованы LLM-provider

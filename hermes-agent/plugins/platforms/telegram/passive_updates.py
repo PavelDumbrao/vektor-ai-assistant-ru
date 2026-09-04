@@ -227,9 +227,10 @@ def _business_connection_payload(
     rights, rights_valid, receive_only, reply_only = (
         business_connection_rights_state(getattr(value, "rights", None))
     )
-    capture_authorized = rights_valid and (
-        receive_only or (business_reply_enabled and reply_only)
-    )
+    # Receiving owner-scoped updates does not exercise any Telegram action
+    # right. Keep rights metadata validated, but enforce action policy only
+    # at the outbound edge.
+    capture_authorized = rights_valid
     result = {
         "id": _str_or_none(getattr(value, "id", None), max_chars=512),
         "user": _identity(getattr(value, "user", None)),
@@ -335,7 +336,7 @@ def _normalize_connection_snapshot_mapping(
     )
     if not rights_valid:
         raise ValueError("Invalid recovered Telegram Business rights")
-    capture_authorized = receive_only or (business_reply_enabled and reply_only)
+    capture_authorized = rights_valid
     expected_flags = {
         "rights_valid": True,
         "receive_only": receive_only,
@@ -350,9 +351,6 @@ def _normalize_connection_snapshot_mapping(
         for name, expected in expected_flags.items()
     ):
         raise ValueError("Untrusted recovered Telegram Business snapshot flags")
-    if not capture_authorized:
-        raise ValueError("Recovered Telegram Business rights are not authorized")
-
     return {
         "id": connection_id,
         "user": user,

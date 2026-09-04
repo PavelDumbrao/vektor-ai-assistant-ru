@@ -190,7 +190,10 @@ def bind_core_metadata(profile: dict, code: Path, venv: Path) -> None:
     site = venv / "lib/python3.11/site-packages"
     pth = site / "vektor-code.pth"
     pth.write_text(str(code) + "\n", encoding="utf-8")
-    info = site / "hermes_agent-0.20.0.dist-info"
+    version = profile["packages"]["hermes-agent"]
+    if not VERSION_RE.fullmatch(version):
+        raise ValueError("invalid_core_metadata_version")
+    info = site / f"hermes_agent-{version}.dist-info"
     info.mkdir(exist_ok=True)
     written = [pth]
     for name, content in profile["metadata"].items():

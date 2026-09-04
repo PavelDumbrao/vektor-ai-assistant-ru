@@ -1,0 +1,11 @@
+{
+  "version": "0.21.0",
+  "tag": "v2026.8.31",
+  "commit": "29112bef099274229cadff79cdff7bf7b99c4b77",
+  "archive_format": "git archive --format=tar",
+  "archive_sha256": "b80dc110dc3f7fcbf7978f5f7c82c99022671acd2cdc7fdbd6ec5bfae6409e2a",
+  "patch_sha256": {
+    "legacy-capture-policy.patch": "b639bec9a6f2c4e0e43d53378119180beca7eab553a63cd2d378dced3d8610b0",
+    "vektor.patch": "ce4fd5c4a9642efdb96b0007277214cdc8de7ac110399c028b0b62cbdb274e7f"
+  }
+}

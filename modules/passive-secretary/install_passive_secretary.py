@@ -8,6 +8,7 @@ import json
 import os
 import pwd
 import re
+import runpy
 import shutil
 import stat
 import subprocess
@@ -40,6 +41,7 @@ OPTIONAL_OPERATOR_FILES = (
     "history_backfill.py",
     "legacy_media_seed.py",
 )
+RUNTIME_LAYOUT_FILE = "shared_runtime_layout.py"
 
 
 class InstallError(RuntimeError):
@@ -118,6 +120,7 @@ def _require_root_owned_launcher() -> None:
 def _require_root_owned_module_sources(module_dir: Path) -> None:
     _require_root_owned_path(module_dir)
     _require_root_owned_path(module_dir / "requirements.txt")
+    _require_root_owned_path(module_dir / RUNTIME_LAYOUT_FILE)
     source_plugin = module_dir / "passive_secretary_plugin"
     _require_root_owned_path(source_plugin)
     for filename in PLUGIN_FILES:
@@ -199,13 +202,23 @@ def _require_owner_layout(hermes_home_raw: Path, entry: Any) -> Path:
     uid = int(entry.pw_uid)
     agent_dir = expected / "hermes-agent"
     config_path = expected / "config.yaml"
-    for directory in (linux_home, expected, agent_dir):
+    for directory in (linux_home, expected):
         _require_owner_node(directory, uid=uid, directory=True)
+    if _shared_runtime(entry.pw_name, expected, uid) is None:
+        _require_owner_node(agent_dir, uid=uid, directory=True)
     _require_owner_node(config_path, uid=uid, directory=False)
     for optional in (expected / "plugins", expected / "backups"):
         if optional.exists() or optional.is_symlink():
             _require_owner_node(optional, uid=uid, directory=True)
     return expected
+
+
+def _shared_runtime(owner: str, hermes_home: Path, uid: int):
+    try:
+        helper = runpy.run_path(str(Path(__file__).with_name(RUNTIME_LAYOUT_FILE)))
+        return helper["load_shared_runtime"](owner, hermes_home, uid)
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise InstallError("Shared runtime registration is missing or unsafe") from exc
 
 
 def _atomic_write(path: Path, content: str, mode: int, owner: str) -> None:
@@ -320,6 +333,24 @@ def _install_dependency(
     module_dir: Path, hermes_home: Path, python_bin: Path, owner: str
 ) -> None:
     entry = _require_owner_identity(owner)
+    if _shared_runtime(owner, hermes_home, int(entry.pw_uid)) is not None:
+        # Never let an individual profile mutate the administrator-owned venv.
+        requirement = (module_dir / "requirements.txt").read_text(encoding="utf-8").strip()
+        pinned = re.fullmatch(r"psycopg\[binary\]==([A-Za-z0-9.+-]+)", requirement)
+        if pinned is None:
+            raise InstallError("Shared runtime dependency manifest requires administrator review")
+        verify = subprocess.run(
+            [str(python_bin), "-I", "-c",
+             "import psycopg, importlib.metadata, sys; "
+             "assert importlib.metadata.version('psycopg') == sys.argv[1]; "
+             "assert importlib.metadata.version('psycopg-binary') == sys.argv[1]",
+             pinned.group(1)],
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            timeout=30, check=False,
+        )
+        if verify.returncode != 0:
+            raise InstallError("Shared runtime PostgreSQL driver must be updated by its administrator")
+        return
     user_uv = hermes_home / "bin" / "uv"
     uv_bin = user_uv if user_uv.is_file() and os.access(user_uv, os.X_OK) else None
     if uv_bin is None:
@@ -667,6 +698,9 @@ def _stage_module(module_dir: Path, stage: Path) -> Path:
     requirements = stage / "requirements.txt"
     shutil.copyfile(module_dir / "requirements.txt", requirements)
     os.chmod(requirements, 0o444)
+    helper = stage / RUNTIME_LAYOUT_FILE
+    shutil.copyfile(module_dir / RUNTIME_LAYOUT_FILE, helper)
+    os.chmod(helper, 0o444)
     source = stage / "passive_secretary_plugin"
     source.mkdir(mode=0o755)
     for filename in PLUGIN_FILES:

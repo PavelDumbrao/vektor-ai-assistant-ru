@@ -13,6 +13,7 @@ import json
 import os
 import pwd
 import re
+import runpy
 import stat
 import subprocess
 import tempfile
@@ -1452,9 +1453,12 @@ def _require_service_stopped(service: str, paths: RuntimePaths) -> None:
 
     expected_workdir = paths.hermes_home / "hermes-agent"
     try:
-        _reject_symlink_components(expected_workdir)
+        helper = runpy.run_path(str(Path(__file__).with_name("shared_runtime_layout.py")))
+        shared = helper["load_shared_runtime"](paths.owner, paths.hermes_home, paths.uid)
+        if shared is None:
+            _reject_symlink_components(expected_workdir)
         expected_workdir.resolve(strict=True)
-    except (LifecycleError, OSError) as exc:
+    except (RuntimeError, OSError, ValueError) as exc:
         raise LifecycleError("service_identity_mismatch") from exc
     actual_workdir = _canonical_existing_directory(values.get("WorkingDirectory", ""))
     hermes_home_resolved = paths.hermes_home.resolve(strict=True)

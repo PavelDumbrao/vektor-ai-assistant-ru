@@ -8,6 +8,7 @@ import fcntl
 import os
 import pwd
 import re
+import runpy
 import stat
 import subprocess
 import sys
@@ -25,6 +26,7 @@ OWNER_RE = re.compile(r"^[a-z_][a-z0-9_-]{0,31}$")
 MAX_UNIT_BYTES = 1_048_576
 TRUSTED_BUNDLE_FILES = (
     "install_retention_timer.py",
+    "shared_runtime_layout.py",
     "run_retention.py",
     "passive_secretary_plugin/__init__.py",
     "passive_secretary_plugin/archive.py",
@@ -196,18 +198,30 @@ def _validate_owner_runtime(owner: str) -> OwnerRuntime:
     python_bin = agent_dir / "venv" / "bin" / "python"
     settings_path = plugin_dir / "settings.json"
     env_path = hermes_home / ".env"
+    try:
+        helper = runpy.run_path(str(Path(__file__).with_name("shared_runtime_layout.py")))
+        shared = helper["load_shared_runtime"](owner, hermes_home, uid)
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise TimerInstallError("shared_runtime_unsafe") from exc
     for directory in (
         linux_home,
         hermes_home,
-        agent_dir,
-        agent_dir / "venv",
-        agent_dir / "venv" / "bin",
         hermes_home / "plugins",
         plugin_dir,
     ):
         _require_owner_directory(directory, uid)
+    if shared is None:
+        for directory in (agent_dir, agent_dir / "venv", agent_dir / "venv" / "bin"):
+            _require_owner_directory(directory, uid)
     _require_owner_private_file(settings_path, uid, "settings_file_unsafe")
     _require_owner_private_file(env_path, uid, "environment_file_unsafe")
+
+    if shared is not None:
+        return OwnerRuntime(
+            owner=owner, uid=uid, gid=gid, linux_home=linux_home,
+            hermes_home=hermes_home, python_bin=python_bin,
+            settings_path=settings_path, env_path=env_path,
+        )
 
     # Venv launchers are normally symlinks. They are safe here because systemd
     # executes them after dropping to this same owner; still bind resolution to

@@ -50,6 +50,7 @@ class InstallerBundleTests(unittest.TestCase):
 
     def test_required_release_manifest_is_complete(self) -> None:
         expected = [MODULE_DIR / "requirements.txt"]
+        expected.append(MODULE_DIR / installer.RUNTIME_LAYOUT_FILE)
         expected.extend(
             MODULE_DIR / "passive_secretary_plugin" / filename
             for filename in installer.PLUGIN_FILES
@@ -64,6 +65,7 @@ class InstallerBundleTests(unittest.TestCase):
             stage = Path(raw)
             runner = installer._stage_module(MODULE_DIR, stage)
             self.assertTrue(runner.is_file())
+            self.assertTrue((stage / installer.RUNTIME_LAYOUT_FILE).is_file())
             for filename in installer.PLUGIN_FILES:
                 self.assertTrue((stage / "passive_secretary_plugin" / filename).is_file())
             for filename in installer.OPTIONAL_OPERATOR_FILES:
@@ -73,6 +75,7 @@ class InstallerBundleTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="passive-secretary-module-test-") as module_raw:
             module_copy = Path(module_raw)
             shutil.copy2(MODULE_DIR / "requirements.txt", module_copy / "requirements.txt")
+            shutil.copy2(MODULE_DIR / installer.RUNTIME_LAYOUT_FILE, module_copy / installer.RUNTIME_LAYOUT_FILE)
             shutil.copytree(
                 MODULE_DIR / "passive_secretary_plugin",
                 module_copy / "passive_secretary_plugin",
@@ -89,6 +92,7 @@ class InstallerBundleTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="passive-secretary-module-test-") as module_raw:
             module_copy = Path(module_raw)
             shutil.copy2(MODULE_DIR / "requirements.txt", module_copy / "requirements.txt")
+            shutil.copy2(MODULE_DIR / installer.RUNTIME_LAYOUT_FILE, module_copy / installer.RUNTIME_LAYOUT_FILE)
             shutil.copytree(
                 MODULE_DIR / "passive_secretary_plugin",
                 module_copy / "passive_secretary_plugin",

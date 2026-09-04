@@ -1,0 +1,77 @@
+--- a/plugins/platforms/telegram/adapter.py
++++ b/plugins/platforms/telegram/adapter.py
+@@ -4731,11 +4731,13 @@
+         return rights_valid and receive_only
+ 
+     def _business_connection_capture_authorized(self, connection: Any) -> bool:
+-        """Validate metadata without coupling incoming capture to action rights."""
+-        _, rights_valid, _receive_only, _reply_only = business_connection_rights_state(
++        """Accept strict receive-only or explicitly opted-in reply-only rights."""
++        _, rights_valid, receive_only, reply_only = business_connection_rights_state(
+             getattr(connection, "rights", None)
+         )
+-        return rights_valid
++        return rights_valid and (
++            receive_only or (self._business_reply_enabled() and reply_only)
++        )
+ 
+     async def send_business_reply(
+         self,
+@@ -4937,8 +4939,8 @@
+             )
+             if enabled and not capture_authorized:
+                 logger.error(
+-                    "[%s] Telegram Business connection rights metadata is invalid; "
+-                    "message capture remains disabled",
++                    "[%s] Telegram Business connection rights exceed the configured "
++                    "passive capture profile; message capture remains disabled",
+                     self.name,
+                 )
+             return owner_id
+@@ -5053,8 +5055,8 @@
+             return None, None
+         if not recovered_capture_authorized:
+             logger.error(
+-                "[%s] Rejected Telegram Business connection with invalid "
+-                "rights metadata during recovery",
++                "[%s] Rejected Telegram Business connection whose rights exceed "
++                "the configured passive capture profile during recovery",
+                 self.name,
+             )
+             return None, None
+--- a/plugins/platforms/telegram/passive_updates.py
++++ b/plugins/platforms/telegram/passive_updates.py
+@@ -241,10 +241,9 @@
+     rights, rights_valid, receive_only, reply_only = (
+         business_connection_rights_state(getattr(value, "rights", None))
+     )
+-    # Receiving owner-scoped updates does not exercise any Telegram action
+-    # right. Keep rights metadata validated, but enforce action policy only
+-    # at the outbound edge.
+-    capture_authorized = rights_valid
++    capture_authorized = rights_valid and (
++        receive_only or (business_reply_enabled and reply_only)
++    )
+     result = {
+         "id": _str_or_none(getattr(value, "id", None), max_chars=512),
+         "user": _identity(getattr(value, "user", None)),
+@@ -361,8 +360,7 @@
+     reply_only = rights.get("can_reply") is True and all(
+         enabled is False for name, enabled in rights.items() if name != "can_reply"
+     )
+-    # The rights mapping has passed the structural validation above.
+-    capture_authorized = True
++    capture_authorized = receive_only or (business_reply_enabled and reply_only)
+     expected_flags = {
+         "rights_valid": True,
+         "receive_only": receive_only,
+@@ -377,6 +375,9 @@
+         for name, expected in expected_flags.items()
+     ):
+         raise ValueError("Untrusted recovered Telegram Business snapshot flags")
++    if not capture_authorized:
++        raise ValueError("Recovered Telegram Business rights are not authorized")
++
+     return {
+         "id": connection_id,
+         "user": user,

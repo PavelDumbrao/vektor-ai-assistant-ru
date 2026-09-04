@@ -4125,13 +4125,11 @@ class TelegramAdapter(BasePlatformAdapter):
         return rights_valid and receive_only
 
     def _business_connection_capture_authorized(self, connection: Any) -> bool:
-        """Accept strict receive-only or explicitly opted-in reply-only rights."""
-        _, rights_valid, receive_only, reply_only = business_connection_rights_state(
+        """Validate metadata without coupling incoming capture to action rights."""
+        _, rights_valid, _receive_only, _reply_only = business_connection_rights_state(
             getattr(connection, "rights", None)
         )
-        return rights_valid and (
-            receive_only or (self._business_reply_enabled() and reply_only)
-        )
+        return rights_valid
 
     async def send_business_reply(
         self,
@@ -4333,8 +4331,8 @@ class TelegramAdapter(BasePlatformAdapter):
             )
             if enabled and not capture_authorized:
                 logger.error(
-                    "[%s] Telegram Business connection rights exceed the configured "
-                    "passive capture profile; message capture remains disabled",
+                    "[%s] Telegram Business connection rights metadata is invalid; "
+                    "message capture remains disabled",
                     self.name,
                 )
             return owner_id
@@ -4449,8 +4447,8 @@ class TelegramAdapter(BasePlatformAdapter):
             return None, None
         if not recovered_capture_authorized:
             logger.error(
-                "[%s] Rejected Telegram Business connection whose rights exceed "
-                "the configured passive capture profile during recovery",
+                "[%s] Rejected Telegram Business connection with invalid "
+                "rights metadata during recovery",
                 self.name,
             )
             return None, None

@@ -5,6 +5,7 @@ import sys
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -61,7 +62,7 @@ class FakeRights:
         return dict(self.values)
 
 
-def flags_for(rights: dict[str, bool], *, replies_enabled: bool = True) -> dict[str, bool]:
+def flags_for(rights: dict[str, bool]) -> dict[str, bool]:
     _rights, rights_valid, receive_only, reply_only = (
         classify_business_connection_rights_mapping(rights)
     )
@@ -69,8 +70,7 @@ def flags_for(rights: dict[str, bool], *, replies_enabled: bool = True) -> dict[
         "rights_valid": rights_valid,
         "receive_only": receive_only,
         "reply_only": reply_only,
-        "capture_authorized": rights_valid
-        and (receive_only or (replies_enabled and reply_only)),
+        "capture_authorized": rights_valid,
         "is_enabled": True,
     }
 
@@ -84,6 +84,193 @@ def snapshot_for(rights: dict[str, bool]) -> dict[str, object]:
         "rights": rights,
         **flags_for(rights),
     }
+
+
+CAPTURE_RIGHTS_CASES = (
+    {},
+    {"can_view_gifts_and_stars": True},
+    {"can_read_messages": True},
+    {"can_reply": True},
+    {
+        "can_reply": True,
+        "can_read_messages": True,
+        "can_delete_all_messages": True,
+        "can_edit_name": True,
+        "can_manage_stories": True,
+        "can_transfer_stars": True,
+        "can_future_action": True,
+    },
+)
+
+
+def connection_for(rights, *, owner_id=123, enabled=True):
+    return SimpleNamespace(
+        id="connection-1",
+        user=SimpleNamespace(id=owner_id, is_bot=False, first_name="Owner"),
+        user_chat_id=owner_id,
+        date=datetime(2026, 8, 31, tzinfo=timezone.utc),
+        rights=FakeRights(rights),
+        is_enabled=enabled,
+    )
+
+
+def normalizer_for_owner():
+    settings = Settings(
+        tenant_id="tenant",
+        source_id="telegram_business",
+        test_run_id="",
+        owner_telegram_user_ids=("123",),
+        postgres_dsn_env="PASSIVE_SECRETARY_DATABASE_URL",
+        source_ref_key_env="PASSIVE_SECRETARY_SOURCE_REF_KEY",
+        retention_days=365,
+    )
+    return PassiveEventNormalizer(settings, b"x" * 32)
+
+
+class IncomingCaptureRightsTests(unittest.TestCase):
+    def test_lifecycle_capture_does_not_require_an_action_rights_profile(self):
+        for module in (main_passive_updates, frozen_passive_updates):
+            for rights in CAPTURE_RIGHTS_CASES:
+                for replies_enabled in (False, True):
+                    with self.subTest(module=module.__name__, rights=rights,
+                                      replies_enabled=replies_enabled):
+                        event = module.build_business_update_dto(
+                            SimpleNamespace(update_id=100, business_connection=connection_for(rights)),
+                            tenant_owner_id=123,
+                            business_reply_enabled=replies_enabled,
+                        )
+                        self.assertTrue(event["payload"]["capture_authorized"])
+                        normalized = normalizer_for_owner().normalize(event)
+                        self.assertIsNotNone(normalized)
+                        self.assertTrue(normalized["enabled"])
+
+    def test_recovered_message_reaches_archive_with_additional_rights(self):
+        for module in (main_passive_updates, frozen_passive_updates):
+            for rights in CAPTURE_RIGHTS_CASES:
+                with self.subTest(module=module.__name__, rights=rights):
+                    snapshot = module.normalize_recovered_business_connection_snapshot(
+                        connection_for(rights),
+                        expected_connection_id="connection-1",
+                        tenant_owner_id=123,
+                        business_reply_enabled=False,
+                    )
+                    message = SimpleNamespace(
+                        message_id=101,
+                        business_connection_id="connection-1",
+                        date=datetime(2026, 8, 31, tzinfo=timezone.utc),
+                        chat=SimpleNamespace(id=456, type="private", first_name="Contact"),
+                        from_user=SimpleNamespace(id=456, is_bot=False, first_name="Contact"),
+                        text="Synthetic archive regression message",
+                    )
+                    event = module.build_business_update_dto(
+                        SimpleNamespace(update_id=101, business_message=message),
+                        tenant_owner_id=123,
+                        business_reply_enabled=False,
+                        connection_snapshot=snapshot,
+                    )
+                    normalized = normalizer_for_owner().normalize(event)
+                    self.assertIsNotNone(normalized)
+                    self.assertEqual(normalized["body"], message.text)
+                    self.assertTrue(normalized["connection_snapshot"]["enabled"])
+
+    def test_disabled_connection_does_not_become_enabled(self):
+        event = main_passive_updates.build_business_update_dto(
+            SimpleNamespace(update_id=100, business_connection=connection_for(
+                {"can_view_gifts_and_stars": True}, enabled=False)),
+            tenant_owner_id=123,
+        )
+        self.assertFalse(normalizer_for_owner().normalize(event)["enabled"])
+        with self.assertRaises(ValueError):
+            main_passive_updates.normalize_recovered_business_connection_snapshot(
+                connection_for({}, enabled=False),
+                expected_connection_id="connection-1",
+                tenant_owner_id=123,
+                business_reply_enabled=False,
+            )
+
+    def test_wrong_owner_and_connection_id_remain_rejected(self):
+        for owner_id, connection_id in ((999, "connection-1"), (123, "other-connection")):
+            with self.subTest(owner_id=owner_id, connection_id=connection_id):
+                with self.assertRaises(ValueError):
+                    main_passive_updates.normalize_recovered_business_connection_snapshot(
+                        connection_for(CAPTURE_RIGHTS_CASES[-1], owner_id=owner_id),
+                        expected_connection_id=connection_id,
+                        tenant_owner_id=123,
+                        business_reply_enabled=False,
+                    )
+        event = main_passive_updates.build_business_update_dto(
+            SimpleNamespace(update_id=100, business_connection=connection_for({}, owner_id=999)),
+            tenant_owner_id=999,
+        )
+        self.assertIsNone(normalizer_for_owner().normalize(event))
+
+    def test_malformed_rights_cannot_forge_capture_authorization(self):
+        for rights in ({"can_reply": "true"}, {"can_reply": 1}, {"unexpected": True}):
+            with self.subTest(rights=rights):
+                payload = snapshot_for({})
+                payload.update(rights=rights, rights_valid=True, receive_only=False,
+                               reply_only=False, capture_authorized=True)
+                normalized = normalizer_for_owner()._connection(
+                    {}, payload, "123", datetime(2026, 8, 31, tzinfo=timezone.utc))
+                self.assertFalse(normalized["enabled"])
+                with self.assertRaises(ValueError):
+                    main_passive_updates._normalize_connection_snapshot_mapping(
+                        payload,
+                        expected_connection_id="connection-1",
+                        tenant_owner_id=123,
+                        business_reply_enabled=False,
+                    )
+
+    def test_digest_tampering_remains_rejected(self):
+        event = main_passive_updates.build_business_update_dto(
+            SimpleNamespace(update_id=100, business_connection=connection_for({})),
+            tenant_owner_id=123,
+        )
+        event["payload"]["rights"] = {"can_view_gifts_and_stars": True}
+        self.assertIsNone(normalizer_for_owner().normalize(event))
+
+    def test_missing_rights_metadata_is_not_treated_as_an_empty_rights_object(self):
+        connection = connection_for({})
+        connection.rights = None
+        event = main_passive_updates.build_business_update_dto(
+            SimpleNamespace(update_id=100, business_connection=connection),
+            tenant_owner_id=123,
+        )
+        self.assertFalse(event["payload"]["rights_valid"])
+        self.assertFalse(normalizer_for_owner().normalize(event)["enabled"])
+
+    def test_non_private_business_message_remains_rejected(self):
+        snapshot = main_passive_updates.normalize_recovered_business_connection_snapshot(
+            connection_for(CAPTURE_RIGHTS_CASES[-1]),
+            expected_connection_id="connection-1",
+            tenant_owner_id=123,
+            business_reply_enabled=False,
+        )
+        message = SimpleNamespace(
+            message_id=101,
+            business_connection_id="connection-1",
+            date=datetime(2026, 8, 31, tzinfo=timezone.utc),
+            chat=SimpleNamespace(id=-456, type="supergroup", title="Excluded group"),
+            from_user=SimpleNamespace(id=456, is_bot=False, first_name="Contact"),
+            text="Synthetic out-of-scope message",
+        )
+        event = main_passive_updates.build_business_update_dto(
+            SimpleNamespace(update_id=101, business_message=message),
+            tenant_owner_id=123,
+            connection_snapshot=snapshot,
+        )
+        self.assertIsNone(normalizer_for_owner().normalize(event))
+
+    def test_additional_rights_do_not_enable_outbound_profile(self):
+        for rights in (CAPTURE_RIGHTS_CASES[1], CAPTURE_RIGHTS_CASES[2], CAPTURE_RIGHTS_CASES[-1]):
+            with self.subTest(rights=rights):
+                event = main_passive_updates.build_business_update_dto(
+                    SimpleNamespace(update_id=100, business_connection=connection_for(rights)),
+                    tenant_owner_id=123,
+                )
+                normalized = normalizer_for_owner().normalize(event)
+                self.assertTrue(normalized["enabled"])
+                self.assertFalse(normalized["telegram_can_reply"])
 
 
 class BusinessRightsPolicyTests(unittest.TestCase):
@@ -132,14 +319,14 @@ class BusinessRightsPolicyTests(unittest.TestCase):
             reply_only=True,
         )
 
-    def test_read_without_reply_is_not_an_authorized_profile(self) -> None:
+    def test_read_without_reply_is_not_an_outbound_profile(self) -> None:
         self.assert_profile(
             {"can_reply": False, "can_read_messages": True},
             receive_only=False,
             reply_only=False,
         )
 
-    def test_known_action_right_remains_forbidden(self) -> None:
+    def test_additional_action_right_remains_forbidden_for_outbound(self) -> None:
         for action in (
             "can_delete_sent_messages",
             "can_delete_all_messages",

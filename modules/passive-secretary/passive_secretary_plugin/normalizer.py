@@ -249,11 +249,11 @@ class PassiveEventNormalizer:
             classify_business_connection_rights_mapping(raw_rights)
         )
         capture_authorized = (
-            payload.get("rights_valid") is True
+            rights_shape_valid
+            and payload.get("rights_valid") is True
             and payload.get("receive_only") is receive_only
             and payload.get("reply_only") is reply_only
             and payload.get("capture_authorized") is True
-            and (receive_only or reply_only)
         )
         result.update(
             {

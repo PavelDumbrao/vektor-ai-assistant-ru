@@ -86,6 +86,11 @@ def upgrade(owner: str, release_id: str, *, apply: bool):
     if builder.source_manifest(code) != expected:
         raise ValueError('release_code_changed')
     old_code = binding['code']
+    old_manifest = binding['release'] / 'code-manifest.json'
+    layout['_root_node'](old_manifest, directory=False)
+    old_expected = json.loads(old_manifest.read_text())
+    if builder.source_manifest(old_code) != old_expected:
+        raise ValueError('current_runtime_drift_requires_reconciliation')
     if code == old_code:
         return {'owner': owner, 'state': 'already_current', 'release_id': release_id}
     state = common.service_state(owner)
@@ -124,6 +129,9 @@ def upgrade(owner: str, release_id: str, *, apply: bool):
                 or builder.digest(unit) != unit_hash or link.resolve() != old_code
                 or registration.read_bytes() != old_registration):
             raise RuntimeError('concurrent_change_requires_review')
+        if (builder.source_manifest(old_code) != old_expected
+                or builder.source_manifest(code) != expected):
+            raise RuntimeError('runtime_changed_during_upgrade')
         receipt.update(snapshot(home, backup))
         if any(builder.digest(path) != value for path, value in protected.items()):
             raise ValueError('private_configuration_changed_before_switch')

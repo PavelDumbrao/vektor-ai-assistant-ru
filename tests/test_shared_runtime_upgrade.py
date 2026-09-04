@@ -24,6 +24,7 @@ class UpgradeTests(unittest.TestCase):
         self.addCleanup(self.fixture.doCleanups)
         f = self.fixture
         (f.root / 'backups').mkdir(mode=0o700)
+        (f.release / 'code-manifest.json').write_text(json.dumps(upgrade.builder.source_manifest(f.code)))
         self.new_id = 'hermes-0.21.0-test'
         self.new_release = f.root / 'releases' / self.new_id
         self.new_code = self.new_release / 'hermes-agent'
@@ -114,6 +115,13 @@ class UpgradeTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'compatibility_not_verified'):
             upgrade.upgrade('owner', self.new_id, apply=True)
         self.assertEqual(self.actions, [])
+
+    def test_current_runtime_drift_is_preserved_and_refused(self):
+        (self.fixture.code / 'module.py').write_text('VALUE = "parallel operator edit"\n')
+        with self.assertRaisesRegex(ValueError, 'current_runtime_drift'):
+            upgrade.upgrade('owner', self.new_id, apply=True)
+        self.assertEqual(self.actions, [])
+        self.assertIn('parallel operator edit', (self.fixture.code / 'module.py').read_text())
 
     def test_requirement_names_cover_extras_and_markers(self):
         text = '# comment\nhttpx[socks]==0.28.1\nruamel_yaml==0.18.17 ; python_version > "3"\n'

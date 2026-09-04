@@ -68,7 +68,10 @@ commit `29112bef099274229cadff79cdff7bf7b99c4b77`. Версия и SHA-256
 `upgrade_profile.py --owner <linux-user> --release-id <verified-release>` — preview.
 Тот же вызов с `--apply` переключает только этот idle-профиль. Есть общий lock,
 повторная проверка PID/leases, backup private state, атомарные ссылки и контроль
-регистрации. Unit, модели, ключи, SOUL и настройки плагинов не изменяются.
+регистрации. Содержимое **текущего** runtime сверяется с его manifest до остановки
+и ещё раз после: новые правки другого оператора должны попасть в новую сборку,
+а не потеряться при переключении. ExecStart, пользователь, модели, ключи, SOUL
+и настройки плагинов не изменяются.
 
 Успех требует новый процесс, `gateway_state=running`, `Telegram=connected`,
 живую `code_version=0.21.0` и неизменность защищённых файлов. Затем проверяется
@@ -78,3 +81,20 @@ commit `29112bef099274229cadff79cdff7bf7b99c4b77`. Версия и SHA-256
 backup-архивом. При независимом изменении unit/ссылок скрипт требует ручной
 проверки. Private backups закрыты root и не публикуются. Старые releases остаются
 для отката; не удаляйте их одновременно с обновлением.
+
+## Выявленные совместимости эксплуатации
+
+- У старых cron-заданий может одновременно стоять `enabled: true` и старый
+  `paused_at`/`state: paused`. В 0.21.0 такой противоречивый объект считается
+  приостановленным. Сравните с pre-upgrade snapshot и фактическими предыдущими
+  запусками. Если задание действительно было включено, восстановите его через
+  штатный `resume_job`/`hermes cron resume`, не ручной записью `enabled`.
+- Для Telegram callback plugins используйте штатный
+  `ctx.register_telegram_handler(factory)`: factory получает `(application,
+  adapter)` и сам добавляет `CallbackQueryHandler(..., pattern=r'^prefix:')`.
+  Возврат factory не используется. Старый нештатный middleware
+  `telegram_callback_handlers` сам по себе не подключает кнопки. Миграцию
+  private plugin согласуйте с его владельцем; не добавляйте второй core hook.
+- Новый gateway рекомендует для текущих drain-настроек `TimeoutStopSec >= 70`.
+  Допустимо установить отдельный drop-in `TimeoutStopSec=120` и выполнить
+  `systemctl daemon-reload` без перезапуска и изменения остального unit.

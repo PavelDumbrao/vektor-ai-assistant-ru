@@ -2,6 +2,7 @@
 """Check the published server boundary and frozen component digests."""
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 from pathlib import Path
@@ -22,6 +23,38 @@ PEM = re.compile(r'-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----')
 def digest(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
+
+
+def canonical_modern_client(config, owner):
+    """Normalize identity and intentionally client-specific tool surfaces."""
+    value=copy.deepcopy(config)
+
+    def normalize_paths(item):
+        if isinstance(item,dict):
+            return {key:normalize_paths(val) for key,val in item.items()}
+        if isinstance(item,list):
+            return [normalize_paths(val) for val in item]
+        if isinstance(item,str):
+            return item.replace(f'/home/{owner}', '/home/OWNER')
+        return item
+
+    value=normalize_paths(value)
+    value.get('agent',{}).pop('disabled_toolsets',None)
+    value.pop('plugins',None)
+    telegram=value.get('platforms',{}).get('telegram',{})
+    home=telegram.get('home_channel',{})
+    if isinstance(home,dict):
+        home['name']='OWNER'
+    extra=telegram.get('extra',{})
+    if isinstance(extra,dict):
+        admins=extra.get('allow_admin_from',[])
+        extra['allow_admin_from']=['OWNER_TELEGRAM_USER_ID'] if 'OWNER_TELEGRAM_USER_ID' in admins else []
+        extra.pop('group_passive_enabled',None)
+        extra.pop('group_passive_chat_ids',None)
+    maton=value.get('mcp_servers',{}).get('maton')
+    if isinstance(maton,dict):
+        maton.pop('enabled',None)
+    return value
 
 def main():
     errors=[]
@@ -77,6 +110,21 @@ def main():
             errors.append(owner+': real Telegram admin id in public example')
         if config['model']['api_key']!='${LLM_API_KEY}':
             errors.append(owner+': provider secret is not an env reference')
+
+    baseline_owner='vyacheslav'
+    baseline_profile=next((item for item in fleet if item['owner_label']==baseline_owner),None)
+    if baseline_profile is None:
+        errors.append('server/fleet.json: modern client baseline is missing')
+    else:
+        baseline_config=yaml.safe_load((ROOT/'server'/baseline_profile['config_template']).read_text())
+        baseline=canonical_modern_client(baseline_config,baseline_owner)
+        for profile in fleet:
+            owner=profile['owner_label']
+            if profile.get('variant')!='modern' or owner in {'pavel',baseline_owner}:
+                continue
+            config=yaml.safe_load((ROOT/'server'/profile['config_template']).read_text())
+            if canonical_modern_client(config,owner)!=baseline:
+                errors.append(owner+': modern client base config drifted from vyacheslav baseline')
     if errors:
         raise SystemExit('\n'.join(errors))
     print(f'Public bundle: {count} files checked; no credentials/private state; checksums match')

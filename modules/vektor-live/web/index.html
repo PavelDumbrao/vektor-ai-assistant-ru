@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ВЕКТОР Live</title>
+<style>
+  :root {
+    --bg: #0f1115; --panel: #171a21; --line: #262a34; --text: #e8eaf0;
+    --muted: #8f97a8; --accent: #4c8dff; --ok: #3ecf8e; --warn: #ffb020; --err: #ff6b6b;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 15px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+  header { padding: 14px 20px; border-bottom: 1px solid var(--line); display: flex;
+           align-items: center; gap: 14px; flex-wrap: wrap; }
+  h1 { font-size: 24px; margin: 0; letter-spacing: .2px; }
+  .state { font-size: 12px; color: var(--muted); }
+  .state.live { color: var(--ok); }
+  .state.off { color: var(--muted); }
+  .wrap { display: grid; grid-template-columns: 1fr 340px; gap: 16px; padding: 16px 20px; align-items: start; }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 14px; }
+  .controls { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
+  .modes { display: flex; gap: 0; flex-wrap: wrap; align-items: center; margin-bottom: 14px; }
+  .modes button.mode { background: transparent; border: 1px solid var(--line); color: var(--muted);
+                       border-radius: 0; padding: 7px 14px; font-size: 14px; }
+  .modes button.mode:first-of-type { border-radius: 9px 0 0 9px; }
+  .modes button.mode:nth-of-type(3) { border-radius: 0 9px 9px 0; }
+  .modes button.mode + button.mode { border-left: 0; }
+  .modes button.mode.is-on { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .modes button.mode.is-act.is-on { background: var(--warn); border-color: var(--warn); color: #1a1200; }
+  .mode-note { font-size: 12px; color: var(--muted); margin-left: 12px; }
+  button { background: var(--accent); color: #fff; border: 0; border-radius: 9px;
+           padding: 9px 14px; font-size: 15px; cursor: pointer; }
+  button:disabled { opacity: .4; cursor: default; }
+  button.ghost { background: transparent; border: 1px solid var(--line); color: var(--text); }
+  .row { display: flex; gap: 8px; }
+  input[type=text] { flex: 1; background: #0d0f14; border: 1px solid var(--line); color: var(--text);
+                     border-radius: 9px; padding: 9px 12px; font-size: 15px; }
+  #chat { height: 46vh; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; padding-right: 4px;
+          border-radius: 10px; transition: outline-color .15s ease; outline: 2px dashed transparent; outline-offset: 4px; }
+  #chat.drop { outline-color: var(--accent); }
+  .msg img { max-width: 260px; border-radius: 8px; display: block; margin-top: 6px; border: 1px solid var(--line); }
+  .msg { padding: 8px 11px; border-radius: 10px; max-width: 85%; white-space: pre-wrap; }
+  .msg.user { background: #1e2430; align-self: flex-end; }
+  .msg.vektor { background: #1a2a24; align-self: flex-start; }
+  .msg.sys { background: transparent; color: var(--muted); font-size: 12px; align-self: center; text-align: center; }
+  .who { display: block; font-size: 12px; color: var(--muted); margin-bottom: 2px; }
+  .facts { display: grid; grid-template-columns: auto 1fr; gap: 7px 10px; font-size: 15px; }
+  .facts b { color: var(--muted); font-weight: 400; }
+  .ok { color: var(--ok); } .off { color: var(--muted); } .warn { color: var(--warn); }
+  #preview { width: 100%; border-radius: 8px; margin-top: 10px; display: none; border: 1px solid var(--line); }
+  .task { border: 1px solid var(--line); border-radius: 10px; padding: 10px; margin-bottom: 10px; background: #12151b; }
+  .task-head { display: flex; justify-content: space-between; align-items: center; font-size: 15px; margin-bottom: 7px; }
+  .badge { font-size: 12px; padding: 2px 7px; border-radius: 20px; background: #232833; color: var(--muted); }
+  .badge.awaiting_confirmation { background: #3a2f12; color: var(--warn); }
+  .badge.running { background: #14293a; color: var(--accent); }
+  .badge.done { background: #123027; color: var(--ok); }
+  .badge.error { background: #3a1a1a; color: var(--err); }
+  .task-payload { font-size: 12px; white-space: pre-wrap; background: #0d0f14; padding: 8px;
+                  border-radius: 7px; max-height: 160px; overflow-y: auto; }
+  .task-actions { display: flex; gap: 8px; margin-top: 8px; }
+  .task-actions button { padding: 7px 12px; font-size: 15px; }
+  .task-result { margin-top: 8px; font-size: 12px; white-space: pre-wrap; border-left: 2px solid var(--ok); padding-left: 8px; }
+  .task-error { margin-top: 8px; font-size: 12px; color: var(--err); }
+  .note { font-size: 12px; color: var(--muted); margin-top: 14px; line-height: 1.5; }
+  h2 { font-size: 12px; color: var(--muted); margin: 0 0 10px; font-weight: 500; text-transform: uppercase; letter-spacing: .5px; }
+  @media (max-width: 900px) { .wrap { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>ВЕКТОР Live</h1>
+  <span id="state-line" class="state off">Нажмите «Начать разговор».</span>
+</header>
+
+<div class="wrap">
+  <div>
+    <div class="panel">
+      <div class="controls">
+        <button id="btn-start">Начать разговор</button>
+        <button id="btn-stop" class="ghost" disabled>Завершить</button>
+        <button id="btn-mic" class="ghost" disabled>Включить микрофон</button>
+        <button id="btn-screen" class="ghost" disabled>Показать экран</button>
+        <button id="btn-screen-off" class="ghost" disabled>Остановить показ</button>
+        <button id="btn-look" class="ghost" disabled>Посмотри на экран</button>
+      </div>
+      <div class="modes" role="group" aria-label="Что ВЕКТОРУ разрешено">
+        <button class="mode is-on" data-mode="watch" disabled>Смотрит</button>
+        <button class="mode" data-mode="hint" disabled>Подсказывает</button>
+        <button class="mode" data-mode="act" disabled>Действует</button>
+        <span class="mode-note" id="mode-note">Видит экран и говорит. Ничего не трогает.</span>
+      </div>
+      <div id="chat"></div>
+      <div class="row" style="margin-top:12px">
+        <input id="input-text" type="text" placeholder="Или напишите вопрос текстом…">
+        <button id="btn-attach" class="ghost" disabled title="Можно и просто вставить из буфера, и перетащить сюда">Картинка</button>
+        <button id="btn-send" disabled>Отправить</button>
+        <input id="file-image" type="file" accept="image/*" multiple hidden>
+      </div>
+    </div>
+  </div>
+
+  <div>
+    <div class="panel">
+      <h2>Состояние</h2>
+      <div class="facts">
+        <b>Gemini</b><span id="st-gemini" class="off">отключено</span>
+        <b>Гермес</b><span id="st-hermes" class="off">проверяется</span>
+        <b>Микрофон</b><span id="st-mic" class="off">выключен</span>
+        <b>Экран</b><span id="st-screen" class="off">выключен</span>
+        <b>Источник</b><span id="src-name">—</span>
+        <b>Руки на маке</b><span id="st-hands" class="off">не подключены</span>
+        <b>Режим</b><span id="st-mode">смотрит</span>
+        <b>Последний кадр</b><span id="st-frame">—</span>
+        <b>Расход</b><span id="st-usage" class="off">—</span>
+      </div>
+      <img id="preview" alt="последний отправленный кадр"
+           src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7">
+      <p class="note">Ваш голос и кадры выбранного экрана уходят в Google (Gemini Live).
+        Личный контекст и поручения выполняет ваш Гермес — только после нажатия «Передать Гермесу».
+        Микрофон работает и без показа экрана. Кадр экрана уходит только когда ВЕКТОР сам решил посмотреть или когда вы нажали «Посмотри на экран».</p>
+    </div>
+
+    <div class="panel" style="margin-top:16px">
+      <h2>Поручения Гермесу</h2>
+      <div id="tasks"></div>
+    </div>
+  </div>
+</div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

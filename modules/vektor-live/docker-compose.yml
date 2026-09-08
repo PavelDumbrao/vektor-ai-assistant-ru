@@ -1,0 +1,35 @@
+services:
+  vektor-live:
+    build: .
+    container_name: vektor-live
+    restart: unless-stopped
+    environment:
+      VEKTOR_HOST: "0.0.0.0"
+      VEKTOR_PORT: "8765"
+      VEKTOR_PUBLIC_URL: "${VEKTOR_PUBLIC_URL}"
+      VEKTOR_ADMIN_KEY: "${VEKTOR_ADMIN_KEY}"
+      VEKTOR_LINK_TTL_MINUTES: "${VEKTOR_LINK_TTL_MINUTES:-30}"
+      VEKTOR_HANDS_KEY: "${VEKTOR_HANDS_KEY}"
+      GEMINI_API_KEY: "${GEMINI_API_KEY}"
+      GEMINI_LIVE_MODEL: "${GEMINI_LIVE_MODEL:-gemini-3.1-flash-live-preview}"
+      GEMINI_VOICE: "${GEMINI_VOICE:-Charon}"
+      HERMES_BASE_URL: "${HERMES_BASE_URL:-http://172.17.0.1:8642}"
+      HERMES_API_KEY: "${HERMES_API_KEY}"
+      HERMES_MODEL: "${HERMES_MODEL:-hermes-agent}"
+      HERMES_CONVERSATION: "${HERMES_CONVERSATION:-vektor-live}"
+      VEKTOR_IDLE_TIMEOUT: "${VEKTOR_IDLE_TIMEOUT:-900}"
+    volumes:
+      - ./state:/app/state
+    networks:
+      - n8n_default
+    labels:
+      traefik.enable: "true"
+      traefik.docker.network: "n8n_default"
+      traefik.http.routers.vektorlive.rule: "Host(`${VEKTOR_DOMAIN}`)"
+      traefik.http.routers.vektorlive.entrypoints: "websecure"
+      traefik.http.routers.vektorlive.tls.certresolver: "mytlschallenge"
+      traefik.http.services.vektorlive.loadbalancer.server.port: "8765"
+
+networks:
+  n8n_default:
+    external: true

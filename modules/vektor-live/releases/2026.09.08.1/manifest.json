@@ -1,0 +1,75 @@
+{
+  "schema_version": 1,
+  "release_id": "vektor-live-2026.09.08.1",
+  "version": "2026.09.08.1",
+  "captured_date": "2026-09-08",
+  "production_sources": {
+    "vps": {
+      "path": "/opt/vektor-live",
+      "shared_file_count": 16
+    },
+    "mac_hands": {
+      "path": "~/Desktop/vektor-live/hands",
+      "file_count": 4
+    },
+    "shared_vps_mac_sha256_equal": true
+  },
+  "observed_runtime": {
+    "vps_container": "vektor-live",
+    "vps_health": "ok",
+    "gemini_model": "gemini-3.1-flash-live-preview",
+    "hermes_model": "hermes-agent",
+    "macos_version": "26.6.2",
+    "mac_hands_python": "3.13.3"
+  },
+  "excluded_private_or_runtime": [
+    ".env",
+    ".venv/",
+    "logs/",
+    "state/",
+    "__pycache__/",
+    "*.pyc",
+    "backups/",
+    "host-specific launchers and SSH routing"
+  ],
+  "shared_vps_files": [
+    "README.md",
+    "Dockerfile",
+    "docker-compose.yml",
+    "requirements.txt",
+    "app/__init__.py",
+    "app/config.py",
+    "app/hands_hub.py",
+    "app/hermes.py",
+    "app/links.py",
+    "app/live_smoke.py",
+    "app/server.py",
+    "web/app.js",
+    "web/expired.html",
+    "web/index.html",
+    "web/mic-worklet.js",
+    "web/player-worklet.js"
+  ],
+  "files_sha256": {
+    "README.md": "0c065bf12869e5975772300cff08d95aeda93a5df299e3b57ea4699dc8cdfdb6",
+    "Dockerfile": "9e8b1ba32b79ef024ff82cb071f2045873c093fcd7cb8539e718f62192169284",
+    "docker-compose.yml": "5b3a81b92ea8e0195b6f962391242f38cef3f0fb137da0958b1b2be43e943767",
+    "requirements.txt": "8f0e1be4ddc569d7ddcaa2e52be40a2217d35d3396d0a460b36abfb5408ece88",
+    "app/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "app/config.py": "68654a1175cf6fa2cf5e055b3f44f27c41b25c6aa5fa3a0401d786b293e47f1b",
+    "app/hands_hub.py": "6d17b89ed34486b8797adb7a540bdebb6f27e57aca4c2f7e3d3d2d25c8766296",
+    "app/hermes.py": "2ec7cb95e1cac49383c45f115e1fea5d913a2c0270260cd848684b71e97fce63",
+    "app/links.py": "062deda2b1c5c6255ac978f71fa0b441e00b52bcfc3985a7bcc8ea1a6c124a6e",
+    "app/live_smoke.py": "1eb4eea6d08534896830bd24f08d36587fc461dd1787aa33cffa0e4ac78650f0",
+    "app/server.py": "9888962383479f0cf2951392ec864e484342b6f13327d1d11e9ec9d15a7879ba",
+    "web/app.js": "157c3515191771dd579e616e74e9947b587c9a33c16178cb58c5a7cb5e587d38",
+    "web/expired.html": "9f124a920b23388fbc472b2135d9af5b79b3bb6f5a22b669349e3ed53221a90d",
+    "web/index.html": "1a395ed7b99755e11e54ce3033290cb1c321fcc1f0e03eb2c0a59a9baee4e559",
+    "web/mic-worklet.js": "0846c3e9c16f57c174b78c88ba927c97fe254780077dce7d19604d20d7cd808d",
+    "web/player-worklet.js": "c2a2ca19487d5377d437ceaa92765d8da91775655c0c58d6cbfed74887235c59",
+    "hands/vektor_hands.py": "24f58247881f034ec738f849226ee01fdfe372f78adb4aee2838b6451463219d",
+    "hands/scripts/axfind.applescript": "1484ac36a1882a2ad3a470a8de922ea9be973029ce95faa29996cfae80b8e907",
+    "hands/scripts/highlight.js": "ec00da64a3d524f5266114f6a4e6a6ca4f7e3dff96254c1776ed2e0ab2a22f5c",
+    "hands/scripts/jxaclick.js": "d363dcaa2abc8c57b414bfbaabe29287471ba94d58521a291aeffc9c6a657567"
+  }
+}

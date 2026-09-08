@@ -11,7 +11,7 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 SCOPES = ['server', 'modules/focus-assistant', 'modules/ai-fixer-social',
-          'modules/maton-legacy', 'modules/profile-tools']
+          'modules/maton-legacy', 'modules/profile-tools', 'modules/vektor-live']
 PRIVATE_FILES = {'settings.json','auth.json','credentials.json','secrets.json',
                  'USER.md','MEMORY.md','SOUL.md','SOURCE_NOTES.md','PROFILE.md'}
 TOKEN = re.compile(r'\b\d{7,12}:[A-Za-z0-9_-]{30,}\b')
@@ -44,6 +44,13 @@ def main():
         path=(ROOT/relative).resolve()
         if not path.is_relative_to(ROOT) or not path.is_file() or digest(path)!=expected:
             errors.append(relative+': component digest mismatch')
+    vektor_root=ROOT/'modules/vektor-live'
+    vektor_version=(vektor_root/'VERSION').read_text().strip()
+    vektor_spec=json.loads((vektor_root/'releases'/vektor_version/'manifest.json').read_text())
+    for relative,expected in vektor_spec['files_sha256'].items():
+        path=vektor_root/relative
+        if not path.is_file() or digest(path)!=expected:
+            errors.append('modules/vektor-live/'+relative+': release digest mismatch')
     release=ROOT/'modules/shared-runtime/releases/v0.21.0'
     spec=json.loads((release/'vektor3.json').read_text())
     for name,expected in spec['patch_sha256'].items():

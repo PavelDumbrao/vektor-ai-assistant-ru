@@ -1,0 +1,9 @@
+# Private/runtime state is never published
+.env
+.venv/
+logs/
+state/
+__pycache__/
+*.pyc
+.DS_Store
+._*

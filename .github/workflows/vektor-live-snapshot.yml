@@ -1,0 +1,36 @@
+name: Vektor Live production snapshot
+
+on:
+  pull_request:
+    paths: ["modules/vektor-live/**", "scripts/check_public_bundle.py", ".github/workflows/vektor-live-snapshot.yml"]
+  push:
+    branches: [main]
+    paths: ["modules/vektor-live/**", "scripts/check_public_bundle.py", ".github/workflows/vektor-live-snapshot.yml"]
+
+permissions:
+  contents: read
+
+jobs:
+  contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Verify frozen production files
+        run: python modules/vektor-live/verify_release.py
+      - name: Run Vektor Live contract tests
+        run: python -m unittest discover -s modules/vektor-live/tests -p "test_*.py" -v
+      - name: Compile Python sources
+        run: python -m compileall -q modules/vektor-live/app modules/vektor-live/hands
+      - name: Check browser JavaScript syntax
+        run: node --check modules/vektor-live/web/app.js
+      - name: Check public source boundary
+        run: |
+          python -m pip install pyyaml
+          python scripts/check_public_bundle.py

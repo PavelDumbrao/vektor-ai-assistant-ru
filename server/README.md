@@ -43,6 +43,9 @@ hermes_<owner>          отдельная PostgreSQL БД архива
 - `modules/maton-onboarding` и `modules/maton-legacy`: оба используемых варианта.
 - `modules/profile-tools`: ограниченная по времени озвучка и чистые PDF metadata;
   параметры владельца вынесены в env.
+- `modules/vektor-live`: отдельный production snapshot голосового Gemini Live bridge
+  и Mac Hands; server/web побайтно сверены с `/opt/vektor-live`, release manifest
+  фиксирует SHA-256 исходников. Секреты и runtime-state не публикуются.
 - `profiles/`: конфигурационные примеры без Telegram ID, подключений и секретов.
 - [RESTORE.md](RESTORE.md): точный порядок сборки/восстановления.
 

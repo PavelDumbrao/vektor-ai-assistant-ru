@@ -83,3 +83,23 @@ preview → idle/backup/source-drift check → apply → running/Telegram ready.
 Maton status без секретов и реальное новое Business-сообщение в архиве.
 Проверить отсутствие доступа к соседним private homes/DB. Старые code releases
 и private backups не удалять одновременно с новым выпуском.
+
+## ВЕКТОР Live и Mac Hands
+
+Исходники production snapshot находятся в `modules/vektor-live`. Перед восстановлением
+запустите `python3 modules/vektor-live/verify_release.py`: все 20 production-файлов
+должны совпасть с release manifest.
+
+VPS: скопируйте `Dockerfile`, `docker-compose.yml`, `requirements.txt`, `app/` и `web/`
+в `/opt/vektor-live`, восстановите `.env` из закрытого хранилища и выполните
+`docker compose up -d --build`. Не создавайте ключи из GitHub: `GEMINI_API_KEY`,
+`HERMES_API_KEY`, `VEKTOR_ADMIN_KEY` и `VEKTOR_HANDS_KEY` являются private state.
+Проверка после запуска: контейнер `vektor-live` работает, `/health` возвращает `ok: true`
+и Hermes доступен.
+
+Mac Hands: перенесите `modules/vektor-live/hands/`, установите зависимости из
+`hands/requirements.txt`, восстановите `VEKTOR_HANDS_KEY`/`VEKTOR_HANDS_URL` в
+`~/.claude/secrets/vektor-live.env` и запустите `python3 hands/vektor_hands.py`.
+macOS должен выдать процессу Accessibility и Screen Recording. В логах VPS должно
+появиться подключение рук. Host-specific launcher и SSH routing намеренно не лежат
+в публичном репозитории.

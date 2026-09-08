@@ -18,6 +18,73 @@ SETTINGS_PATH: Path
 ENV_PATH: Path
 OWNER_ID: str
 
+REDACTED_BODY = '[REDACTED: message contained credentials or secret access]'
+SECRET_PATTERNS = (
+    re.compile(r'\b\d{7,12}:[A-Za-z0-9_-]{30,}\b'),
+    re.compile(r'\b(?:sk-[A-Za-z0-9_-]{20,}|ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})\b'),
+    re.compile(r'\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b'),
+    re.compile(r'(?i)(?:api[_ -]?key|access[_ -]?token|auth[_ -]?token|secret|парол[ья]|password|логин|login)\s*[:=]?\s*\S+'),
+    re.compile(r'(?i)https?://\S+[?&](?:pwd|token|key|secret|auth)=[^&\s]+'),
+)
+SENSITIVE_HINT_RE = re.compile(
+    r'(?i)\b(?:парол[ья]|password|api[_ -]?key|секрет|secret|токен|token|логин|login|доступы?|access(?:\s+key)?)\b'
+)
+EMAIL_WITH_SECRET_RE = re.compile(
+    r'(?i)\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b\s+\S{8,}'
+)
+PAYMENT_REQUISITE_RE = re.compile(r'(?<!\d)(?:\d[ -]?){13,19}(?!\d)')
+
+
+def explicit_secret(text: str) -> bool:
+    return bool(
+        SENSITIVE_HINT_RE.search(text)
+        or EMAIL_WITH_SECRET_RE.search(text)
+        or any(pattern.search(text) for pattern in SECRET_PATTERNS)
+    )
+
+
+def looks_like_credential_payload(text: str) -> bool:
+    value = text.strip()
+    if EMAIL_WITH_SECRET_RE.search(value):
+        return True
+    if len(value) > 180:
+        return False
+    parts = value.split()
+    if len(parts) not in (1, 2, 3):
+        return False
+    if not any('@' in part and '.' in part for part in parts):
+        return False
+    return any(
+        len(part) >= 8
+        and re.search(r'[A-Za-z]', part)
+        and re.search(r'[^A-Za-z0-9@._+-]', part)
+        for part in parts
+    )
+
+
+def mask_payment_requisites(text: str) -> str:
+    def replace(match: re.Match[str]) -> str:
+        digits = re.sub(r'\D', '', match.group(0))
+        return '[PAYMENT_REQUISITE_REDACTED]' if len(digits) >= 13 else match.group(0)
+
+    return PAYMENT_REQUISITE_RE.sub(replace, text)
+
+
+def sanitized_message_bodies(messages: list[Any]) -> dict[int, str]:
+    bodies: dict[int, str] = {}
+    protect_until = -1
+    for index, message in enumerate(messages):
+        if not isinstance(message, dict):
+            continue
+        raw = flatten_text(message.get('text')).strip()
+        if SENSITIVE_HINT_RE.search(raw):
+            protect_until = max(protect_until, index + 3)
+        if explicit_secret(raw) or (index <= protect_until and looks_like_credential_payload(raw)):
+            bodies[index] = REDACTED_BODY
+        else:
+            bodies[index] = mask_payment_requisites(raw)
+    return bodies
+
 
 def load_env(path: Path) -> dict[str, str]:
     values: dict[str, str] = {}
@@ -113,7 +180,8 @@ def normalize_export(path: Path, data: dict[str, Any], key: bytes, settings: dic
         chat_id = synthetic_chat_id(key, chat_key)
         source_ref = opaque_ref(key, settings, 'chat', chat_key)
         chat_rows: list[dict[str, Any]] = []
-        for message in messages:
+        sanitized_bodies = sanitized_message_bodies(messages)
+        for message_index, message in enumerate(messages):
             if not isinstance(message, dict) or message.get('type') not in (None, 'message'):
                 continue
             mid = message.get('id')
@@ -121,7 +189,7 @@ def normalize_export(path: Path, data: dict[str, Any], key: bytes, settings: dic
                 continue
             raw_sender = message.get('from_id') or message.get('from') or 'unknown'
             sid = sender_id(raw_sender)
-            body = flatten_text(message.get('text')).strip() or None
+            body = sanitized_bodies.get(message_index, '').strip() or None
             sent_at = parse_date(message)
             reply_id = message.get('reply_to_message_id')
             if isinstance(reply_id, bool) or not isinstance(reply_id, int) or reply_id < 0:

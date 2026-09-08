@@ -57,5 +57,38 @@ class HistoryBackfillTests(unittest.TestCase):
         self.assertNotEqual(rows[0]['chat_id'], rows[1]['chat_id'])
 
 
+    def test_explicit_password_message_is_redacted(self):
+        data = {'name': 'A', 'messages': [
+            {'id': 1, 'type': 'message', 'from': 'Admin', 'text': 'password: temporary-secret'},
+        ]}
+        rows, _ = hb.normalize_export(Path('/tmp/result.json'), data, self.key, self.settings)
+        self.assertEqual(rows[0]['body'], hb.REDACTED_BODY)
+
+    def test_split_credentials_after_access_hint_are_redacted(self):
+        data = {'name': 'A', 'messages': [
+            {'id': 1, 'type': 'message', 'from': 'Admin', 'text': 'скину доступ следующим сообщением'},
+            {'id': 2, 'type': 'message', 'from': 'Admin', 'text': '@operator'},
+            {'id': 3, 'type': 'message', 'from': 'Admin', 'text': 'person@example.test Abc!123456'},
+        ]}
+        rows, _ = hb.normalize_export(Path('/tmp/result.json'), data, self.key, self.settings)
+        self.assertEqual(rows[0]['body'], hb.REDACTED_BODY)
+        self.assertEqual(rows[1]['body'], '@operator')
+        self.assertEqual(rows[2]['body'], hb.REDACTED_BODY)
+
+    def test_payment_requisite_is_masked_without_losing_message(self):
+        data = {'name': 'A', 'messages': [
+            {'id': 1, 'type': 'message', 'from': 'Manager', 'text': 'Возврат на 4111 1111 1111 1111, сумма 23900'},
+        ]}
+        rows, _ = hb.normalize_export(Path('/tmp/result.json'), data, self.key, self.settings)
+        self.assertEqual(rows[0]['body'], 'Возврат на [PAYMENT_REQUISITE_REDACTED], сумма 23900')
+
+    def test_plain_email_is_not_redacted(self):
+        data = {'name': 'A', 'messages': [
+            {'id': 1, 'type': 'message', 'from': 'Manager', 'text': 'Напиши клиенту на person@example.test'},
+        ]}
+        rows, _ = hb.normalize_export(Path('/tmp/result.json'), data, self.key, self.settings)
+        self.assertEqual(rows[0]['body'], 'Напиши клиенту на person@example.test')
+
+
 if __name__ == '__main__':
     unittest.main()

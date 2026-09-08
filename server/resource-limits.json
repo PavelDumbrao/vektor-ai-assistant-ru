@@ -3,5 +3,6 @@
   "note": "Observed systemd properties, not a capacity recommendation. Apply explicitly per host.",
   "pavel": {"MemoryMax": 734003200, "MemoryHigh": "infinity", "CPUQuotaPerSecUSec": "infinity", "TasksMax": 19092, "TimeoutStopSec": 120},
   "baysangur": {"MemoryMax": 629145600, "MemoryHigh": "infinity", "CPUQuotaPerSecUSec": "infinity", "TasksMax": 19092, "TimeoutStopSec": 120},
-  "vyacheslav": {"MemoryMax": 734003200, "MemoryHigh": 1073741824, "CPUQuotaPerSecUSec": "1s", "TasksMax": 256, "TimeoutStopSec": 120}
+  "vyacheslav": {"MemoryMax": 734003200, "MemoryHigh": 1073741824, "CPUQuotaPerSecUSec": "1s", "TasksMax": 256, "TimeoutStopSec": 120},
+  "bebov": {"MemoryMax": 734003200, "MemoryHigh": 1073741824, "CPUQuotaPerSecUSec": "1s", "TasksMax": 256, "TimeoutStopSec": 120}
 }

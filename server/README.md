@@ -1,7 +1,7 @@
 # Серверный Hermes/Vektor
 
-Программный состав действующей установки на 8 сентября 2026 года. Здесь три
-раздельных профиля на одном VPS: `pavel`, `baysangur`, `vyacheslav`. Они используют
+Программный состав действующей установки на 8 сентября 2026 года. Здесь четыре
+раздельных профиля на одном VPS: `pavel`, `baysangur`, `vyacheslav`, `bebov`. Они используют
 Hermes 0.21.0 (`29112bef099274229cadff79cdff7bf7b99c4b77`) и наши патчи `vektor3`.
 Корневой `hermes-agent/` — прежний учебный снапшот, а не исходники live vektor3.
 
@@ -10,16 +10,19 @@ Hermes 0.21.0 (`29112bef099274229cadff79cdff7bf7b99c4b77`) и наши патч�
 | pavel | modern | gpt-5.6-sol / 500000 | passive-secretary, Maton, Focus Assistant, AI Fixer; Curator gpt-5.6-terra |
 | baysangur | legacy | gpt-5.6-sol / 180000 | passive-secretary, прежний maton-chat-onboarding |
 | vyacheslav | modern | gpt-5.6-sol / 180000 | passive-secretary, maton-onboarding, bounded TTS и PDF hook |
+| bebov | modern | gpt-5.6-sol / 180000 | passive-secretary с owner-consent для рабочих групп, maton-onboarding, bounded TTS и PDF hook |
 
 У всех FIFO queue, потоковый вывод, один временный статус выполнения. Входящий
 архив и исходящие Business-действия имеют раздельные разрешения; исходящие
 Business-ответы в этом снимке отключены. Legacy-вариант сохраняет прежнюю политику
-существующего профиля, не является шаблоном новых установок.
+существующего профиля, не является шаблоном новых установок. `bebov` намеренно
+ссылается на тот же immutable modern release, что и `vyacheslav`: изоляция профиля
+обеспечивается отдельным Linux user, `HERMES_HOME`, процессом и БД, а не копией core.
 
 ## Где находятся программы и данные
 
 ```text
-/opt/vektor/releases/hermes-0.21.0-29112bef-vektor3-<owner>/
+/opt/vektor/releases/<release-id>/
   hermes-agent/         код, root-owned
   venv/                 pinned Python packages, общие hardlinks
   runtime.json          готовность и hash
@@ -31,7 +34,7 @@ hermes_<owner>          отдельная PostgreSQL БД архива
 
 Код и зависимости не изменяются агентами клиентов. Одинаковые файлы физических
 версий разделяют hardlinks; процессы, user IDs и данные остаются отдельными.
-Это разделение Linux/БД на общем сервере, не три отдельные виртуальные машины.
+Это разделение Linux/БД на общем сервере, не четыре отдельные виртуальные машины.
 
 ## Что сохранено в GitHub
 

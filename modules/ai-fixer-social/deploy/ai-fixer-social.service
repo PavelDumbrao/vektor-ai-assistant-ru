@@ -1,0 +1,33 @@
+[Unit]
+Description=AI Fixer Telegram Social Autopilot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ai-fixer-social
+Group=ai-fixer-social
+WorkingDirectory=/opt/ai-fixer-social
+EnvironmentFile=/etc/ai-fixer-social.env
+ExecStart=/opt/ai-fixer-social/.venv/bin/python -m ai_fixer_social.service
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=20
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+ReadWritePaths=/var/lib/ai-fixer-social
+RestrictSUIDSGID=true
+RestrictNamespaces=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+CapabilityBoundingSet=
+LockPersonality=true
+MemoryDenyWriteExecute=true
+
+[Install]
+WantedBy=multi-user.target

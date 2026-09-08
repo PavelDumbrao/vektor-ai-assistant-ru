@@ -1,0 +1,2 @@
+# No arguments, no shell, no environment preservation. JSON is validated after privilege drop.
+pavel ALL=(root) NOPASSWD: /usr/local/bin/ai-fixer-control ""

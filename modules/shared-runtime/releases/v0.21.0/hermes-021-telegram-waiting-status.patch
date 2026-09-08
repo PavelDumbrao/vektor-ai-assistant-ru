@@ -1,0 +1,704 @@
+--- a/gateway/config.py
++++ b/gateway/config.py
+@@ -768,6 +768,68 @@
+ DEFAULT_STREAMING_EDIT_INTERVAL: float = 0.8
+ DEFAULT_STREAMING_BUFFER_THRESHOLD: int = 24
+ DEFAULT_STREAMING_CURSOR: str = " ▉"
++DEFAULT_STREAMING_WAITING_STATUS_PHRASES: tuple[str, ...] = (
++    "Думаю",
++    "Вникаю",
++    "Мозгую",
++    "Формулирую",
++)
++
++
++@dataclass
++class StreamingWaitingStatusConfig:
++    """Generic pre-token status shown while a Telegram reply is starting.
++
++    The status is deliberately generic and never contains hidden reasoning.
++    It is disabled by default so existing profiles keep their current UX.
++    """
++
++    enabled: bool = False
++    initial_delay: float = 0.45
++    update_interval: float = 2.0
++    elapsed_after: float = 2.0
++    phrases: List[str] = field(
++        default_factory=lambda: list(DEFAULT_STREAMING_WAITING_STATUS_PHRASES)
++    )
++
++    def to_dict(self) -> Dict[str, Any]:
++        return {
++            "enabled": self.enabled,
++            "initial_delay": self.initial_delay,
++            "update_interval": self.update_interval,
++            "elapsed_after": self.elapsed_after,
++            "phrases": list(self.phrases),
++        }
++
++    @classmethod
++    def from_dict(cls, data: Any) -> "StreamingWaitingStatusConfig":
++        if not isinstance(data, dict):
++            return cls()
++
++        raw_phrases = data.get("phrases")
++        phrases: List[str] = []
++        if isinstance(raw_phrases, (list, tuple)):
++            phrases = [
++                str(value).strip()
++                for value in raw_phrases
++                if str(value).strip()
++            ]
++        if not phrases:
++            phrases = list(DEFAULT_STREAMING_WAITING_STATUS_PHRASES)
++
++        return cls(
++            enabled=_coerce_bool(data.get("enabled"), False),
++            initial_delay=max(
++                0.0, _coerce_float(data.get("initial_delay"), 0.45)
++            ),
++            update_interval=max(
++                0.5, _coerce_float(data.get("update_interval"), 2.0)
++            ),
++            elapsed_after=max(
++                0.0, _coerce_float(data.get("elapsed_after"), 2.0)
++            ),
++            phrases=phrases,
++        )
+ 
+ 
+ @dataclass
+@@ -802,6 +864,9 @@
+     # Telegram only (other platforms ignore the setting).  Default 0 disables
+     # the fresh-message replacement path; set >0 to opt in.
+     fresh_final_after_seconds: float = 0.0
++    waiting_status: StreamingWaitingStatusConfig = field(
++        default_factory=StreamingWaitingStatusConfig
++    )
+ 
+     def to_dict(self) -> Dict[str, Any]:
+         return {
+@@ -811,6 +876,7 @@
+             "buffer_threshold": self.buffer_threshold,
+             "cursor": self.cursor,
+             "fresh_final_after_seconds": self.fresh_final_after_seconds,
++            "waiting_status": self.waiting_status.to_dict(),
+         }
+ 
+     @classmethod
+@@ -861,6 +927,9 @@
+             cursor=data.get("cursor", DEFAULT_STREAMING_CURSOR),
+             fresh_final_after_seconds=_coerce_float(
+                 data.get("fresh_final_after_seconds"), 0.0
++            ),
++            waiting_status=StreamingWaitingStatusConfig.from_dict(
++                data.get("waiting_status")
+             ),
+         )
+ 
+--- a/gateway/run.py
++++ b/gateway/run.py
+@@ -29809,6 +29809,20 @@
+             if source.platform == Platform.TELEGRAM
+             else 0.0
+         )
++        # The animated pre-token waiting label is intentionally Telegram-only
++        # for now.  Telegram supports both native drafts and an editable
++        # fallback; keeping the opt-in out of other adapters avoids surprising
++        # persistent status messages on platforms with different semantics.
++        _waiting_cfg = getattr(scfg, "waiting_status", None)
++        _waiting_enabled = bool(
++            source.platform == Platform.TELEGRAM
++            and getattr(_waiting_cfg, "enabled", False)
++        )
++        _waiting_phrases = tuple(
++            phrase.strip()
++            for phrase in (getattr(_waiting_cfg, "phrases", None) or ())
++            if isinstance(phrase, str) and phrase.strip()
++        )
+         _consumer_cfg = StreamConsumerConfig(
+             edit_interval=scfg.edit_interval,
+             buffer_threshold=scfg.buffer_threshold,
+@@ -29817,6 +29831,21 @@
+             fresh_final_after_seconds=_fresh_final_secs,
+             transport=scfg.transport or "edit",
+             chat_type=getattr(source, "chat_type", "") or "",
++            waiting_status_enabled=_waiting_enabled,
++            waiting_status_initial_delay=float(
++                getattr(_waiting_cfg, "initial_delay", 0.45) or 0.0
++            ),
++            waiting_status_update_interval=float(
++                getattr(_waiting_cfg, "update_interval", 2.0) or 2.0
++            ),
++            waiting_status_elapsed_after=float(
++                getattr(_waiting_cfg, "elapsed_after", 2.0) or 0.0
++            ),
++            **(
++                {"waiting_status_phrases": _waiting_phrases}
++                if _waiting_phrases
++                else {}
++            ),
+         )
+         return _consumer_cfg, _pause_typing_before_finalize
+ 
+--- a/gateway/stream_consumer.py
++++ b/gateway/stream_consumer.py
+@@ -33,6 +33,7 @@
+     DEFAULT_STREAMING_EDIT_INTERVAL as _DEFAULT_STREAMING_EDIT_INTERVAL,
+     DEFAULT_STREAMING_BUFFER_THRESHOLD as _DEFAULT_STREAMING_BUFFER_THRESHOLD,
+     DEFAULT_STREAMING_CURSOR as _DEFAULT_STREAMING_CURSOR,
++    DEFAULT_STREAMING_WAITING_STATUS_PHRASES as _DEFAULT_WAITING_STATUS_PHRASES,
+ )
+ from gateway.response_filters import (
+     is_intentional_silence_response as _is_intentional_silence_response,
+@@ -182,6 +183,15 @@
+     # "group", "supergroup", "forum").  Used to gate native draft streaming,
+     # which is platform-specific (Telegram drafts are DM-only).
+     chat_type: str = ""
++    # Optional Telegram-only pre-token activity message.  The gateway enables
++    # it per platform; the consumer keeps all draft/edit writes serialized so
++    # the waiting status, streamed tokens, tool progress, and final answer can
++    # never race each other.
++    waiting_status_enabled: bool = False
++    waiting_status_initial_delay: float = 0.45
++    waiting_status_update_interval: float = 2.0
++    waiting_status_elapsed_after: float = 2.0
++    waiting_status_phrases: tuple[str, ...] = _DEFAULT_WAITING_STATUS_PHRASES
+ 
+ 
+ class GatewayStreamConsumer:
+@@ -425,6 +435,17 @@
+         self._tool_progress_lines: list[str] = []
+         self._tool_progress_active: bool = False
+ 
++        # Generic pre-token waiting status ("Thinking…", "Reading…", etc.).
++        # It never contains hidden model reasoning.  ``_waiting_status_visible``
++        # remains true until the first real delta successfully replaces it;
++        # this forces that replacement immediately instead of waiting for the
++        # normal edit debounce.
++        self._waiting_status_visible = False
++        self._waiting_status_suspended = False
++        self._waiting_status_started_ts: Optional[float] = None
++        self._waiting_status_next_ts: Optional[float] = None
++        self._waiting_status_index = 0
++
+ 
+     def _stream_is_message(self) -> bool:
+         """Whether THIS chat's transport treats the stream as the message.
+@@ -448,16 +469,21 @@
+     def accepts_tool_progress(self) -> bool:
+         """Whether this consumer can absorb tool progress into its stream.
+ 
+-        True only when native streaming is resolved and active. Callers use
+-        this to decide the progress routing path (in-stream vs progress_queue).
++        Native streaming and Telegram-style native drafts both update one
++        ephemeral bubble, so either can carry tool progress without creating
++        permanent progress-message clutter.
+         """
+-        return self._use_native_streaming
++        return self._use_native_streaming or (
++            self.cfg.waiting_status_enabled
++            and self._use_draft_streaming
++            and not self._stream_is_message()
++        )
+ 
+     def on_tool_progress(self, line: str) -> None:
+-        """Inject a tool-progress status line into the native stream bubble.
++        """Inject a tool-progress status line into the active stream bubble.
+ 
+         Thread-safe (called from agent worker thread via queue.Queue). Only
+-        meaningful when native streaming is active — callers should gate on
++        meaningful when native streaming or draft streaming is active — callers should gate on
+         ``accepts_tool_progress``.
+ 
+         The line is displayed as an overlay until the next text delta arrives,
+@@ -481,6 +507,69 @@
+         elif self._tool_progress_lines:
+             return "\n".join(self._tool_progress_lines)
+         return ""
++
++    def _format_waiting_status(self, elapsed: float) -> str:
++        """Return the next generic, non-reasoning pre-token status line."""
++        phrases = tuple(
++            phrase.strip()
++            for phrase in self.cfg.waiting_status_phrases
++            if isinstance(phrase, str) and phrase.strip()
++        ) or _DEFAULT_WAITING_STATUS_PHRASES
++        phrase = phrases[self._waiting_status_index % len(phrases)]
++        self._waiting_status_index += 1
++        if elapsed >= max(0.0, self.cfg.waiting_status_elapsed_after):
++            return f"{phrase}… {max(1, int(elapsed))}с"
++        return f"{phrase}…"
++
++    async def _clear_waiting_status_preview(self) -> None:
++        """Best-effort cleanup when a turn ends before producing real text.
++
++        Edit-based previews are ordinary messages and can be deleted. Native
++        Telegram drafts have no message id and expire server-side; an adapter
++        may optionally expose ``clear_draft`` for an earlier best-effort clear.
++        No delivery flag is retained because a waiting label is not an answer.
++        """
++        if not self._waiting_status_visible or self._accumulated:
++            return
++
++        clear_draft = getattr(type(self.adapter), "clear_draft", None)
++        if self._use_draft_streaming and clear_draft is not None:
++            try:
++                result = self.adapter.clear_draft(
++                    chat_id=self.chat_id,
++                    draft_id=self._draft_id,
++                    metadata=self._metadata_for_send(),
++                )
++                if inspect.isawaitable(result):
++                    await result
++            except Exception as e:
++                logger.debug("Waiting-status draft cleanup failed: %s", e)
++
++        stale_ids = set(self._preview_message_ids)
++        if self._message_id and self._message_id != "__no_edit__":
++            stale_ids.add(str(self._message_id))
++        delete_fn = getattr(self.adapter, "delete_message", None)
++        if delete_fn is not None:
++            for stale_id in stale_ids:
++                try:
++                    await delete_fn(self.chat_id, stale_id)
++                except Exception as e:
++                    logger.debug(
++                        "Waiting-status preview cleanup failed (%s): %s",
++                        stale_id, e,
++                    )
++
++        self._preview_message_ids = set()
++        self._segment_preview_message_ids = set()
++        self._message_id = None
++        self._message_created_ts = None
++        self._last_sent_text = ""
++        self._already_sent = False
++        self._final_response_sent = False
++        self._final_content_delivered = False
++        self._delivered_final_text = None
++        self._waiting_status_visible = False
++        self._waiting_status_suspended = True
+ 
+     def _metadata_for_send(
+         self,
+@@ -576,6 +665,7 @@
+         """Append to the live buffer and the split-stable stream ledger."""
+         if not text:
+             return
++        self._waiting_status_suspended = True
+         # New text delta arriving: clear tool-progress overlay so the next
+         # frame shows real content (Strategy B: text overwrites tool lines).
+         if self._tool_progress_lines:
+@@ -731,6 +821,11 @@
+             loop = asyncio.get_running_loop()
+         except RuntimeError:
+             pass
++
++        # An interactive prompt owns the user's attention now. Stop rotating
++        # generic waiting labels immediately, including on draft/edit platforms
++        # where the native-boundary machinery below is intentionally a no-op.
++        self._waiting_status_suspended = True
+ 
+         if not self._use_native_streaming:
+             # No native stream to close — return resolved future
+@@ -1274,12 +1369,20 @@
+                     self.chat_id, self._draft_id,
+                 )
+ 
++        if self.cfg.waiting_status_enabled:
++            self._waiting_status_started_ts = time.monotonic()
++            self._waiting_status_next_ts = (
++                self._waiting_status_started_ts
++                + max(0.0, self.cfg.waiting_status_initial_delay)
++            )
++
+         try:
+             while True:
+                 # Abandon the stream early if the session has been reset
+                 # (e.g. /new or /stop). Prevents stale deltas from being
+                 # delivered after the user has already moved on.
+                 if not self._run_still_current():
++                    await self._clear_waiting_status_preview()
+                     await self._abandon_native_stream()
+                     return
+ 
+@@ -1375,10 +1478,13 @@
+                             break
+                         if isinstance(item, tuple) and len(item) == 2 and item[0] is _TOOL_PROGRESS:
+                             # Tool-progress overlay: accumulate the status line.
+-                            # Only effective in native-streaming mode (callers
+-                            # gate before enqueue via accepts_tool_progress).
+-                            if self._use_native_streaming:
++                            # Effective in native-stream and native-draft modes
++                            # (callers gate before enqueue via accepts_tool_progress).
++                            if self.accepts_tool_progress:
+                                 self._tool_progress_lines.append(item[1])
++                                if not self._use_native_streaming:
++                                    self._tool_progress_lines = self._tool_progress_lines[-4:]
++                                    self._waiting_status_suspended = True
+                                 self._tool_progress_active = True
+                             continue  # continue draining to batch simultaneous progress lines
+                         self._filter_and_accumulate(item)
+@@ -1472,8 +1578,48 @@
+                         await self._suppress_silence_marker()
+                         return
+ 
++                    # A waiting label is activity UI, never a substantive
++                    # answer. If the turn completed without real text, remove
++                    # an edit preview (or let a native draft expire) and keep
++                    # delivery flags false.
++                    if not self._accumulated and self._waiting_status_visible:
++                        await self._clear_waiting_status_preview()
++                        return
++
+                 # Decide whether to flush an edit
+                 now = time.monotonic()
++                if (
++                    self.cfg.waiting_status_enabled
++                    and not self.cfg.buffer_only
++                    and not self._use_native_streaming
++                    and not self._stream_is_message()
++                    and not self._waiting_status_suspended
++                    and not got_done
++                    and not got_segment_break
++                    and commentary_text is None
++                    and not self._accumulated
++                    and not self._tool_progress_lines
++                    and self._waiting_status_started_ts is not None
++                    and self._waiting_status_next_ts is not None
++                    and now >= self._waiting_status_next_ts
++                ):
++                    status_elapsed = now - self._waiting_status_started_ts
++                    status_text = self._format_waiting_status(status_elapsed)
++                    status_display = status_text
++                    if self.cfg.cursor:
++                        status_display += self.cfg.cursor
++                    status_visible = await self._send_or_edit(status_display)
++                    if status_visible:
++                        self._waiting_status_visible = True
++                        self._last_edit_time = time.monotonic()
++                    elif not self._edit_supported:
++                        self._waiting_status_suspended = True
++                    self._waiting_status_next_ts = (
++                        time.monotonic()
++                        + max(0.5, self.cfg.waiting_status_update_interval,
++                              self._current_edit_interval)
++                    )
++                    now = time.monotonic()
+                 elapsed = now - self._last_edit_time
+                 should_edit = (
+                     got_done
+@@ -1495,7 +1641,17 @@
+                             # it's a debounce heuristic ("send updates roughly
+                             # every N visible characters"), not a platform-limit
+                             # check. _len_fn is reserved for overflow detection.
+-                            or len(self._accumulated) >= self.cfg.buffer_threshold
++                            or (
++                                len(self._accumulated) >= self.cfg.buffer_threshold
++                                and (not self.cfg.waiting_status_enabled
++                                     or elapsed >= self._current_edit_interval)
++                            )
++                            or bool(self._waiting_status_visible and self._accumulated)
++                            or bool(
++                                self._use_draft_streaming
++                                and self._tool_progress_active
++                                and elapsed >= self._current_edit_interval
++                            )
+                         )
+ 
+                 current_update_visible = False
+@@ -1525,7 +1681,13 @@
+                     )
+                 ):
+                     should_edit = False
+-                if should_edit and (self._accumulated or (self._use_native_streaming and self._tool_progress_active)):
++                if should_edit and (
++                    self._accumulated
++                    or (
++                        (self._use_native_streaming or self._use_draft_streaming)
++                        and self._tool_progress_active
++                    )
++                ):
+                     # Split overflow: if accumulated text exceeds the platform
+                     # limit, split into properly sized chunks.
+                     # Native streaming bypasses this entirely — the adapter's
+@@ -1679,7 +1841,9 @@
+                         # Native streaming with tool-progress: compose frame
+                         # content that includes tool status overlay. The cursor
+                         # is appended to the composed content for consistency.
+-                        if self._use_native_streaming:
++                        if self._use_native_streaming or (
++                            self._use_draft_streaming and self._tool_progress_lines
++                        ):
+                             display_text = self._compose_frame_content()
+                             if display_text and self.cfg.cursor:
+                                 display_text += self.cfg.cursor
+@@ -1704,6 +1868,10 @@
+                         # turn-final answer — only got_done marks delivered (#29346).
+                         is_turn_final=got_done,
+                     )
++                    if current_update_visible and self._accumulated:
++                        self._waiting_status_visible = False
++                    elif current_update_visible and self._tool_progress_lines:
++                        self._waiting_status_visible = True
+                     self._last_edit_time = time.monotonic()
+                     # Reset tool_progress_active flag after frame delivery —
+                     # the lines are still in _tool_progress_lines (for the next
+@@ -1932,6 +2100,17 @@
+                         and self._use_draft_streaming
+                     ) or self._use_native_streaming:
+                         pass
++                    elif (
++                        self._use_draft_streaming
++                        and self._waiting_status_visible
++                        and not self._accumulated
++                    ):
++                        # Keep the draft identity across a pre-token tool
++                        # boundary. The next tool label will replace the generic
++                        # waiting label in the same ephemeral Telegram bubble.
++                        pass
++                    elif self._waiting_status_visible and not self._accumulated:
++                        await self._clear_waiting_status_preview()
+                     else:
+                         # If the segment-break edit failed to deliver the
+                         # accumulated content (flood control that has not yet
+@@ -1968,7 +2147,9 @@
+             # is_turn_final=False keeps _try_fresh_final from setting
+             # _final_response_sent itself; this handler owns the flags.
+             _best_effort_ok = False
+-            if self._accumulated and self._message_id:
++            if self._waiting_status_visible and not self._accumulated:
++                await self._clear_waiting_status_preview()
++            elif self._accumulated and self._message_id:
+                 try:
+                     _best_effort_ok = bool(
+                         await self._send_or_edit(
+@@ -1997,6 +2178,8 @@
+                 self._final_content_delivered = True
+                 self._record_turn_final_payload(self._accumulated)
+         except Exception as e:
++            if self._waiting_status_visible and not self._accumulated:
++                await self._clear_waiting_status_preview()
+             logger.error("Stream consumer error: %s", e)
+         finally:
+             # Safety net: if run() exits (normal return, cancellation, or
+--- a/hermes_cli/config_defaults.py
++++ b/hermes_cli/config_defaults.py
+@@ -3383,6 +3383,14 @@
+         # least this many seconds, so the platform timestamp reflects
+         # completion time. Telegram only; other platforms ignore it.
+         "fresh_final_after_seconds": 0.0,
++        # Optional generic pre-token Telegram status; never model reasoning.
++        "waiting_status": {
++            "enabled": False,
++            "initial_delay": 0.45,
++            "update_interval": 2.0,
++            "elapsed_after": 2.0,
++            "phrases": ["Думаю", "Вникаю", "Мозгую", "Формулирую"],
++        },
+     },
+ 
+     # Session storage — controls automatic cleanup of ~/.hermes/state.db.
+--- /dev/null
++++ b/tests/gateway/test_stream_waiting_status.py
+@@ -0,0 +1,154 @@
++"""Behavior checks for optional Telegram waiting labels and final delivery."""
++import asyncio
++from types import SimpleNamespace
++from unittest.mock import AsyncMock
++
++import pytest
++
++from gateway.platforms.base import BasePlatformAdapter, SendResult
++from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
++
++
++def adapter(drafts=True, reject_draft=False):
++    cls = type('WaitingAdapter', (BasePlatformAdapter,), {'MAX_MESSAGE_LENGTH': 4096})
++    cls.__abstractmethods__ = frozenset()
++    a = cls.__new__(cls)
++    a._typing_paused = set()
++    a._fatal_error_message = None
++    a.frames = []
++    a.changed = asyncio.Event()
++    a.supports_draft_streaming = lambda **kw: drafts
++    async def frame(**kw):
++        a.frames.append(kw)
++        a.changed.set()
++        return SendResult(success=not reject_draft, error='rejected' if reject_draft else None)
++    a.send_draft = frame
++    a.send = AsyncMock(return_value=SimpleNamespace(success=True, message_id='real'))
++    a.edit_message = AsyncMock(return_value=SimpleNamespace(success=True))
++    a.delete_message = AsyncMock(return_value=True)
++    return a
++
++
++def consumer(a, thread='11', **kw):
++    cfg = dict(transport='auto', chat_type='dm', cursor='', edit_interval=.01,
++               waiting_status_enabled=True, waiting_status_initial_delay=0,
++               waiting_status_update_interval=2, buffer_threshold=1)
++    cfg.update(kw)
++    return GatewayStreamConsumer(a, '123', StreamConsumerConfig(**cfg),
++                                 metadata={'thread_id': thread}, initial_reply_to_id='99')
++
++
++async def until(predicate):
++    async def wait():
++        while not predicate():
++            await asyncio.sleep(.01)
++    await asyncio.wait_for(wait(), 3)
++
++
++@pytest.mark.asyncio
++async def test_waiting_replaced_by_text_same_draft_then_one_real_final():
++    a = adapter()
++    c = consumer(a)
++    task = asyncio.create_task(c.run())
++    await asyncio.wait_for(a.changed.wait(), 3)
++    assert 'Думаю' in a.frames[0]['content']
++    c.on_delta('Первый ответ')
++    await until(lambda: any(f['content'] == 'Первый ответ' for f in a.frames))
++    c.finish(final_text='Первый ответ. Готово.')
++    await task
++    assert len({f['draft_id'] for f in a.frames}) == 1
++    assert all(f['metadata']['thread_id'] == '11' for f in a.frames)
++    a.send.assert_awaited_once()
++    assert a.send.call_args.kwargs['content'] == 'Первый ответ. Готово.'
++    assert c.delivered_final_matches('Первый ответ. Готово.') is True
++    assert c._waiting_status_suspended is True
++
++
++@pytest.mark.asyncio
++async def test_fast_turn_has_no_waiting_flash():
++    a = adapter()
++    c = consumer(a, waiting_status_initial_delay=.45)
++    c.on_delta('Готово')
++    c.finish(final_text='Готово')
++    await c.run()
++    assert not a.frames
++    a.send.assert_awaited_once()
++    assert a.send.call_args.kwargs['content'] == 'Готово'
++
++
++@pytest.mark.asyncio
++async def test_draft_rejection_falls_back_to_one_editable_message():
++    a = adapter(reject_draft=True)
++    c = consumer(a)
++    task = asyncio.create_task(c.run())
++    await until(lambda: a.send.await_count == 1)
++    c.on_delta('Ответ после отказа draft')
++    c.finish()
++    await task
++    a.send.assert_awaited_once()
++    assert a.edit_message.call_args.kwargs['content'] == 'Ответ после отказа draft'
++    assert c.final_content_delivered
++
++
++@pytest.mark.asyncio
++@pytest.mark.parametrize('end', ['cancel', 'empty', 'stale'])
++async def test_waiting_only_edit_preview_removed_on_turn_end(end):
++    a = adapter(drafts=False)
++    c = consumer(a)
++    task = asyncio.create_task(c.run())
++    await until(lambda: a.send.await_count == 1)
++    if end == 'cancel':
++        task.cancel()
++    elif end == 'empty':
++        c.finish()
++    else:
++        c._run_still_current = lambda: False
++    await task
++    a.delete_message.assert_awaited_once_with('123', 'real')
++    assert not c.final_response_sent
++    assert not c.final_content_delivered
++
++
++@pytest.mark.asyncio
++async def test_independent_topics_have_distinct_draft_ids_and_routing():
++    a = adapter()
++    consumers = [consumer(a, thread='11'), consumer(a, thread='22')]
++    tasks = [asyncio.create_task(c.run()) for c in consumers]
++    await until(lambda: len(a.frames) >= 2)
++    for n,c in enumerate(consumers):
++        c.on_delta(f'Ответ {n}')
++        c.finish()
++    await asyncio.gather(*tasks)
++    routes = {(f['draft_id'], f['metadata']['thread_id']) for f in a.frames}
++    assert len(routes) == 2
++    assert len({r[0] for r in routes}) == 2
++    assert {r[1] for r in routes} == {'11', '22'}
++    assert a.send.await_count == 2
++
++
++@pytest.mark.asyncio
++async def test_tool_status_is_temporary_and_excluded_from_final():
++    a = adapter()
++    c = consumer(a)
++    task = asyncio.create_task(c.run())
++    await asyncio.wait_for(a.changed.wait(), 3)
++    c.on_segment_break()
++    c.on_tool_progress('Проверяю подключение…')
++    await until(lambda: any('Проверяю' in f['content'] for f in a.frames))
++    c.on_delta('Подключение работает')
++    c.finish()
++    await task
++    a.send.assert_awaited_once()
++    assert a.send.call_args.kwargs['content'] == 'Подключение работает'
++    assert len({f['draft_id'] for f in a.frames}) == 1
++
++
++@pytest.mark.asyncio
++async def test_raw_reasoning_never_enters_waiting_or_final():
++    a = adapter()
++    c = consumer(a)
++    c.on_delta('<think>PRIVATE_REASONING</think>Готово')
++    c.finish()
++    await c.run()
++    assert a.send.call_args.kwargs['content'] == 'Готово'
++    assert all('PRIVATE_REASONING' not in f['content'] for f in a.frames)
+--- a/tests/test_gateway_streaming_nested_config.py
++++ b/tests/test_gateway_streaming_nested_config.py
+@@ -78,6 +78,35 @@
+         assert sc.enabled is False
+ 
+ 
++class TestStreamingWaitingStatusConfig:
++    def test_waiting_status_is_opt_in(self):
++        from gateway.config import StreamingConfig
++
++        sc = StreamingConfig.from_dict({"mode": "auto"})
++        assert sc.waiting_status.enabled is False
++
++    def test_nested_waiting_status_is_normalized(self):
++        from gateway.config import StreamingConfig
++
++        sc = StreamingConfig.from_dict({
++            "mode": "auto",
++            "waiting_status": {
++                "enabled": True,
++                "initial_delay": -2,
++                "update_interval": 0.1,
++                "elapsed_after": -1,
++                "phrases": [" Думаю ", "", "Вникаю"],
++            },
++        })
++
++        assert sc.waiting_status.enabled is True
++        assert sc.waiting_status.initial_delay == 0.0
++        assert sc.waiting_status.update_interval == 0.5
++        assert sc.waiting_status.elapsed_after == 0.0
++        assert sc.waiting_status.phrases == ["Думаю", "Вникаю"]
++        assert sc.to_dict()["waiting_status"]["enabled"] is True
++
++
+ 
+ class TestStreamingYamlBooleanQuirk:
+     """YAML 1.1 parses bare ``off``/``on`` as booleans; ``mode``/``transport``
+@@ -111,4 +140,3 @@
+         cfg = _load_with_yaml_dict({"streaming": {"mode": False}})
+         assert cfg.streaming.enabled is False
+         assert cfg.streaming.transport == "off"
+-
+

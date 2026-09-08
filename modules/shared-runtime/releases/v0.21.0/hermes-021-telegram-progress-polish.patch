@@ -1,0 +1,272 @@
+--- a/gateway/run.py
++++ b/gateway/run.py
+@@ -4794,6 +4794,21 @@
+     def progress_callback(self, event_type: str, tool_name: str = None, preview: str = None, args: dict = None, **kwargs):
+         """Callback invoked by agent on tool lifecycle events."""
+         ctx = self._ctx
++        # Telegram's compact activity line consumes lifecycle events before
++        # legacy progress formatting can expose raw tool names or arguments.
++        _activity_consumer = (
++            ctx.stream_consumer_holder[0] if ctx.stream_consumer_holder else None
++        )
++        if (
++            _activity_consumer is not None
++            and getattr(_activity_consumer, 'accepts_friendly_activity', False) is True
++            and ctx.tool_progress_enabled
++            and event_type in {'tool.started', 'tool.completed'}
++            and tool_name and tool_name != '_thinking'
++            and ctx._run_still_current()
++        ):
++            _activity_consumer.on_tool_activity(event_type, tool_name)
++            return
+         # Failed subagent → one clean user-facing notice. Handled FIRST,
+         # before every progress-queue gate: platforms that keep
+         # tool_progress off (Telegram, Slack, ...) must still hear about a
+--- a/gateway/stream_consumer.py
++++ b/gateway/stream_consumer.py
+@@ -49,6 +49,7 @@
+ # Sentinel for tool-progress lines injected into the native stream bubble.
+ # Enqueued as ``(_TOOL_PROGRESS, line_text)`` by ``on_tool_progress()``.
+ _TOOL_PROGRESS = object()
++_TOOL_ACTIVITY = object()
+ # Authoritative turn-final payload, enqueued by ``finish(final_text=...)``
+ # just before ``_DONE``.  Carries the completed ``final_response`` —
+ # including post-stream augmentation (file-mutation verifier footer,
+@@ -445,6 +446,8 @@
+         self._waiting_status_started_ts: Optional[float] = None
+         self._waiting_status_next_ts: Optional[float] = None
+         self._waiting_status_index = 0
++        self._active_tool_names: list[str] = []
++        self._friendly_tool_cycle = False
+ 
+ 
+     def _stream_is_message(self) -> bool:
+@@ -466,6 +469,39 @@
+         return getattr(self.adapter, "draft_stream_is_message", False) is True
+ 
+     @property
++    def accepts_friendly_activity(self) -> bool:
++        """Opt-in public activity UI, shared by Telegram draft and edit paths."""
++        return bool(
++            self.cfg.waiting_status_enabled
++            and self.cfg.chat_type in {'dm', 'private'}
++            and not self._use_native_streaming
++            and not self._stream_is_message()
++        )
++
++    def on_tool_activity(self, event: str, tool_name: str) -> None:
++        """Queue only a lifecycle event and tool name, never tool arguments."""
++        if event in {'tool.started', 'tool.completed'} and tool_name:
++            self._queue.put((_TOOL_ACTIVITY, (event, tool_name)))
++
++    @staticmethod
++    def _friendly_tool_label(tool_name: str) -> str:
++        name = tool_name.lower()
++        labels = (
++            (('clarify', 'approval'), '💬 Жду твой ответ'),
++            (('search', 'tavily'), '🔎 Ищу информацию'),
++            (('connection_status', 'health', 'status'), '🔌 Проверяю подключение'),
++            (('fetch', 'read_file', 'browse', 'snapshot'), '📖 Изучаю материалы'),
++            (('image', 'photo'), '🎨 Работаю с изображением'),
++            (('document', 'docx', 'pdf'), '📄 Работаю с документом'),
++            (('write', 'edit', 'patch'), '✍️ Вношу изменения'),
++            (('terminal', 'execute', 'python', 'bash'), '🛠 Выполняю задачу'),
++        )
++        for fragments, label in labels:
++            if any(fragment in name for fragment in fragments):
++                return label
++        return '⚙️ Работаю над задачей'
++
++    @property
+     def accepts_tool_progress(self) -> bool:
+         """Whether this consumer can absorb tool progress into its stream.
+ 
+@@ -515,11 +551,18 @@
+             for phrase in self.cfg.waiting_status_phrases
+             if isinstance(phrase, str) and phrase.strip()
+         ) or _DEFAULT_WAITING_STATUS_PHRASES
+-        phrase = phrases[self._waiting_status_index % len(phrases)]
++        if self._active_tool_names:
++            phrase = self._friendly_tool_label(self._active_tool_names[-1])
++        elif self._friendly_tool_cycle:
++            phrase = '✍️ Готовлю ответ'
++        else:
++            phrase = phrases[self._waiting_status_index % len(phrases)]
+         self._waiting_status_index += 1
+         if elapsed >= max(0.0, self.cfg.waiting_status_elapsed_after):
+-            return f"{phrase}… {max(1, int(elapsed))}с"
+-        return f"{phrase}…"
++            seconds = max(1, int(elapsed))
++            duration = f'{seconds} с' if seconds < 60 else f'{seconds // 60}:{seconds % 60:02d}'
++            return f"**{phrase}…** · {duration}"
++        return f"**{phrase}…**"
+ 
+     async def _clear_waiting_status_preview(self) -> None:
+         """Best-effort cleanup when a turn ends before producing real text.
+@@ -666,6 +709,7 @@
+         if not text:
+             return
+         self._waiting_status_suspended = True
++        self._friendly_tool_cycle = False
+         # New text delta arriving: clear tool-progress overlay so the next
+         # frame shows real content (Strategy B: text overwrites tool lines).
+         if self._tool_progress_lines:
+@@ -1481,15 +1525,48 @@
+                             # Effective in native-stream and native-draft modes
+                             # (callers gate before enqueue via accepts_tool_progress).
+                             if self.accepts_tool_progress:
++                                self._friendly_tool_cycle = False
+                                 self._tool_progress_lines.append(item[1])
+                                 if not self._use_native_streaming:
+                                     self._tool_progress_lines = self._tool_progress_lines[-4:]
+                                     self._waiting_status_suspended = True
+                                 self._tool_progress_active = True
+                             continue  # continue draining to batch simultaneous progress lines
++                        if isinstance(item, tuple) and len(item) == 2 and item[0] is _TOOL_ACTIVITY:
++                            event, name = item[1]
++                            if event == 'tool.started':
++                                self._active_tool_names.append(name)
++                            elif name in self._active_tool_names:
++                                self._active_tool_names.remove(name)
++                            self._friendly_tool_cycle = True
++                            self._waiting_status_suspended = False
++                            self._tool_progress_lines.clear()
++                            self._tool_progress_active = False
++                            self._waiting_status_next_ts = max(
++                                time.monotonic(),
++                                self._last_edit_time + self._current_edit_interval,
++                            )
++                            continue
+                         self._filter_and_accumulate(item)
+                     except queue.Empty:
+                         break
++
++                # Handle approval boundary: close current stream, reset for new turn.
++                if (got_segment_break and not got_flush
++                        and self.accepts_friendly_activity and self._use_draft_streaming):
++                    # Pre-tool prose is an ephemeral preview. Keep one draft
++                    # identity through the next tool and final text instead of
++                    # publishing a separate "I'll check…" message per tool.
++                    self._accumulated = ''
++                    self._stream_ledger = ''
++                    self._tool_progress_lines.clear()
++                    self._tool_progress_active = False
++                    self._friendly_tool_cycle = True
++                    self._waiting_status_suspended = False
++                    self._waiting_status_next_ts = max(
++                        time.monotonic(), self._last_edit_time + self._current_edit_interval
++                    )
++                    got_segment_break = False
+ 
+                 # Handle approval boundary: close current stream, reset for new turn.
+                 # Must happen before got_done/segment_break processing since it
+@@ -1597,7 +1674,7 @@
+                     and not got_done
+                     and not got_segment_break
+                     and commentary_text is None
+-                    and not self._accumulated
++                    and (not self._accumulated or self._friendly_tool_cycle)
+                     and not self._tool_progress_lines
+                     and self._waiting_status_started_ts is not None
+                     and self._waiting_status_next_ts is not None
+@@ -1605,7 +1682,10 @@
+                 ):
+                     status_elapsed = now - self._waiting_status_started_ts
+                     status_text = self._format_waiting_status(status_elapsed)
+-                    status_display = status_text
++                    status_display = (
++                        self._accumulated.rstrip() + '\n\n' + status_text
++                        if self._accumulated else status_text
++                    )
+                     if self.cfg.cursor:
+                         status_display += self.cfg.cursor
+                     status_visible = await self._send_or_edit(status_display)
+@@ -1653,6 +1733,13 @@
+                                 and elapsed >= self._current_edit_interval
+                             )
+                         )
++
++                if (self._friendly_tool_cycle and not got_done
++                        and not got_segment_break and commentary_text is None):
++                    # The activity tick owns this preview until a new text
++                    # delta arrives. Do not immediately erase its status with
++                    # an unchanged accumulated prose buffer.
++                    should_edit = False
+ 
+                 current_update_visible = False
+                 # Whether the got_done update below was delivered as a FRESH
+--- a/tests/gateway/test_stream_waiting_status.py
++++ b/tests/gateway/test_stream_waiting_status.py
+@@ -152,3 +152,71 @@
+     await c.run()
+     assert a.send.call_args.kwargs['content'] == 'Готово'
+     assert all('PRIVATE_REASONING' not in f['content'] for f in a.frames)
++
++
++@pytest.mark.asyncio
++async def test_real_tool_callback_has_friendly_status_without_arguments():
++    from gateway.run import TurnRunner
++    a = adapter()
++    c = consumer(a)
++    ctx = SimpleNamespace(stream_consumer_holder=[c],tool_progress_enabled=True,
++                          _run_still_current=lambda: True)
++    runner = TurnRunner(SimpleNamespace(),ctx)
++    task = asyncio.create_task(c.run())
++    await asyncio.wait_for(a.changed.wait(),3)
++    runner.progress_callback('tool.started','web_search',preview='PRIVATE_QUERY',
++                             args={'query':'PRIVATE_QUERY','key':'PRIVATE_KEY'})
++    await until(lambda: any('🔎 Ищу информацию' in f['content'] for f in a.frames))
++    runner.progress_callback('tool.completed','web_search')
++    await until(lambda: any('✍️ Готовлю ответ' in f['content'] for f in a.frames))
++    c.on_delta('Вот результат поиска.')
++    c.finish()
++    await task
++    assert all('PRIVATE_' not in f['content'] and 'web_search' not in f['content']
++               for f in a.frames)
++    assert a.send.call_args.kwargs['content']=='Вот результат поиска.'
++    assert len({f['draft_id'] for f in a.frames})==1
++
++
++@pytest.mark.asyncio
++async def test_activity_survives_buffered_text_until_new_delta():
++    a=adapter()
++    c=consumer(a)
++    c.on_delta('Смотрю материалы.')
++    task=asyncio.create_task(c.run())
++    await until(lambda: bool(a.frames))
++    c.on_tool_activity('tool.started','read_file')
++    await until(lambda: any('📖 Изучаю материалы' in f['content'] for f in a.frames))
++    assert a.frames[-1]['content'].startswith('Смотрю материалы.')
++    c.on_tool_activity('tool.completed','read_file')
++    await until(lambda: 'Готовлю ответ' in a.frames[-1]['content'])
++    c.on_delta(' Готово.')
++    c.finish()
++    await task
++    assert a.send.call_args.kwargs['content']=='Смотрю материалы. Готово.'
++
++
++def test_activity_duration_and_labels_are_compact():
++    c=consumer(adapter())
++    c._active_tool_names=['integration_connection_status']
++    assert c._format_waiting_status(8)=='**🔌 Проверяю подключение…** · 8 с'
++    assert c._format_waiting_status(65)=='**🔌 Проверяю подключение…** · 1:05'
++
++
++@pytest.mark.asyncio
++async def test_pretool_preamble_stays_ephemeral_with_one_final():
++    a=adapter()
++    c=consumer(a)
++    c.on_delta('Сейчас проверю подключение.')
++    task=asyncio.create_task(c.run())
++    await until(lambda: bool(a.frames))
++    c.on_segment_break()
++    c.on_tool_activity('tool.started','integration_connection_status')
++    await until(lambda: any('Проверяю подключение' in f['content'] for f in a.frames))
++    c.on_tool_activity('tool.completed','integration_connection_status')
++    c.on_delta('Подключение исправно.')
++    c.finish(final_text='Подключение исправно.')
++    await task
++    a.send.assert_awaited_once()
++    assert a.send.call_args.kwargs['content']=='Подключение исправно.'
++    assert len({f['draft_id'] for f in a.frames})==1
+

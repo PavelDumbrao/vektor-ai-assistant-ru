@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "snapshot_date": "2026-09-08",
+  "version": "0.21.0",
+  "upstream_commit": "29112bef099274229cadff79cdff7bf7b99c4b77",
+  "upstream_tag": "v2026.8.31",
+  "archive_format": "git archive --format=tar (optionally gzip compressed)",
+  "archive_sha256": "b80dc110dc3f7fcbf7978f5f7c82c99022671acd2cdc7fdbd6ec5bfae6409e2a",
+  "dependencies_sha256": "109fd8cd13df8d819a7ffe9aa057f8477ac999c0160de19c7faa9b86f32ab66b",
+  "patch_sha256": {
+    "vektor.patch": "ce4fd5c4a9642efdb96b0007277214cdc8de7ac110399c028b0b62cbdb274e7f",
+    "legacy-capture-policy.patch": "b639bec9a6f2c4e0e43d53378119180beca7eab553a63cd2d378dced3d8610b0",
+    "hermes-021-telegram-waiting-status.patch": "ed92b48ec66cb1e12cabe4b550e6d89f01202013e3de01f82b722c6f54ba0ce5",
+    "hermes-021-telegram-progress-polish.patch": "6a79326b1407519adc6151b08bd12729080db52f526a556aa86d89708847d640",
+    "normalizer-modern.patch": "8afb3a2963e098db9ada5849719cb722247ae5eb7f891f4e1391c207e60920ca",
+    "normalizer-legacy.patch": "8cd5594c4792a050125b80f321c07fa669368893cbc7c31a0567264fb5d31ac3"
+  },
+  "variants": {
+    "modern": {
+      "patches": [
+        "vektor.patch",
+        "hermes-021-telegram-waiting-status.patch",
+        "hermes-021-telegram-progress-polish.patch"
+      ],
+      "code_sha256": "30cf4141ea4e9bdde54babea4c6abd8f108dce6399f1b3cae342a30d46376b49",
+      "source_files": 10927,
+      "normalizer_patch": "normalizer-modern.patch",
+      "normalizer_sha256": "6bc222c9934d66c5c3dd8ad8908b782d533510618abc8a035bed57ffe0e789d5"
+    },
+    "legacy": {
+      "patches": [
+        "vektor.patch",
+        "legacy-capture-policy.patch",
+        "hermes-021-telegram-waiting-status.patch",
+        "hermes-021-telegram-progress-polish.patch"
+      ],
+      "code_sha256": "91a139bb01dfe907a1999cc9d959465d5e361c2810c4f95215182b28ef3bd8e1",
+      "source_files": 10927,
+      "normalizer_patch": "normalizer-legacy.patch",
+      "normalizer_sha256": "279b5a3622ea960e8d0e9a3ba1d5738f0c989a6da98650e53b4650c0e4318d03"
+    }
+  }
+}

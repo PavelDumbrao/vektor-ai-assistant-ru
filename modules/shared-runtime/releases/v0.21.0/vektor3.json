@@ -4,6 +4,7 @@
   "version": "0.21.0",
   "upstream_commit": "29112bef099274229cadff79cdff7bf7b99c4b77",
   "upstream_tag": "v2026.8.31",
+  "source_archive_url": "https://github.com/PavelDumbrao/vektor-ai-assistant-ru/releases/download/hermes-vps-2026.09.08/upstream-0.21.0.tar.gz",
   "archive_format": "git archive --format=tar (optionally gzip compressed)",
   "archive_sha256": "b80dc110dc3f7fcbf7978f5f7c82c99022671acd2cdc7fdbd6ec5bfae6409e2a",
   "dependencies_sha256": "109fd8cd13df8d819a7ffe9aa057f8477ac999c0160de19c7faa9b86f32ab66b",

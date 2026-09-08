@@ -7,6 +7,12 @@
 tarball не имеет той же контрольной суммы. Можно использовать сохранённый
 `source.tar.gz` из закрытого административного архива: проверяется содержимое tar.
 
+Проверенная копия официального `git archive` также закреплена в
+[GitHub Release hermes-vps-2026.09.08](https://github.com/PavelDumbrao/vektor-ai-assistant-ru/releases/tag/hermes-vps-2026.09.08).
+CI скачивает её с retries и перед распаковкой проверяет исходный tar checksum.
+Это уменьшает зависимость от GitHub upstream rate limits; итоговая проверка
+всех файлов modern/legacy остаётся обязательной.
+
 ```bash
 python3 modules/shared-runtime/verify_release_source.py \
   --archive /absolute/path/source.tar.gz \

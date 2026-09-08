@@ -50,6 +50,7 @@ hermes_<owner>          отдельная PostgreSQL БД архива
   и Mac Hands; server/web побайтно сверены с `/opt/vektor-live`, release manifest
   фиксирует SHA-256 исходников. Секреты и runtime-state не публикуются.
 - `profiles/`: конфигурационные примеры без Telegram ID, подключений и секретов.
+- `server/tools/history_backfill.py`: operator-only импорт Telegram Desktop JSON в Passive Secretary с отдельным provenance `history_backfill`, dry-run и идемпотентной записью.
 - [RESTORE.md](RESTORE.md): точный порядок сборки/восстановления.
 
 Снимок не включает `.env`, OAuth, живые configuration files, SOUL/USER/MEMORY,

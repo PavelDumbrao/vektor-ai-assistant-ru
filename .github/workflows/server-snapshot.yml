@@ -30,6 +30,10 @@ jobs:
         env:
           PYTHONPATH: modules/ai-fixer-social/src
         run: python -m unittest discover -s modules/ai-fixer-social/tests -q
+      - name: Server operator tools
+        run: |
+          python -m py_compile server/tools/history_backfill.py
+          python -m unittest tests.test_passive_secretary_history_backfill -v
       - name: Compile new program sources
         run: python -m compileall -q modules/focus-assistant modules/ai-fixer-social modules/maton-legacy modules/profile-tools
 

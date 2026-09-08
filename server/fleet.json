@@ -1,0 +1,43 @@
+{
+  "snapshot_date": "2026-09-08",
+  "code_release": "../modules/shared-runtime/releases/v0.21.0/vektor3.json",
+  "profiles": [
+    {
+      "owner_label": "pavel",
+      "hermes_home": "/home/pavel/.hermes",
+      "service": "pavel-hermes.service",
+      "release_id": "hermes-0.21.0-29112bef-vektor3-pavel",
+      "variant": "modern",
+      "config_template": "profiles/pavel/config.yaml.example",
+      "plugins": [
+        "ai_fixer",
+        "passive-secretary",
+        "focus_assistant"
+      ]
+    },
+    {
+      "owner_label": "baysangur",
+      "hermes_home": "/home/baysangur/.hermes",
+      "service": "baysangur-hermes.service",
+      "release_id": "hermes-0.21.0-29112bef-vektor3-baysangur",
+      "variant": "legacy",
+      "config_template": "profiles/baysangur/config.yaml.example",
+      "plugins": [
+        "maton-chat-onboarding",
+        "passive-secretary"
+      ]
+    },
+    {
+      "owner_label": "vyacheslav",
+      "hermes_home": "/home/vyacheslav/.hermes",
+      "service": "vyacheslav-hermes.service",
+      "release_id": "hermes-0.21.0-29112bef-vektor3-vyacheslav",
+      "variant": "modern",
+      "config_template": "profiles/vyacheslav/config.yaml.example",
+      "plugins": [
+        "maton-onboarding",
+        "passive-secretary"
+      ]
+    }
+  ]
+}

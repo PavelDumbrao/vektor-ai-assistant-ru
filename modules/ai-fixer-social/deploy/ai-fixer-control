@@ -1,0 +1,63 @@
+#!/opt/ai-fixer-social/.venv/bin/python -I
+"""Root-owned no-argument launcher; drop privilege before parsing operator input."""
+import json
+import os
+import pwd
+from pathlib import Path
+import shlex
+import sys
+
+
+def main():
+    if os.geteuid() != 0 or len(sys.argv) != 1 or os.environ.get("SUDO_USER", "root") not in {"root", "pavel"}:
+        raise PermissionError("caller_not_allowed")
+    environment = {}
+    env_paths = [Path("/etc/ai-fixer-social.env")]
+    media_env = Path("/etc/ai-fixer-media.env")
+    if media_env.exists():
+        env_paths.append(media_env)
+    for env_path in env_paths:
+        with env_path.open(encoding="utf-8") as handle:
+            for line in handle:
+                value = line.strip()
+                if not value or value.startswith("#"):
+                    continue
+                key, raw = value.split("=", 1)
+                if env_path == media_env and not key.startswith("GRSAI_"):
+                    raise ValueError("invalid_media_environment_key")
+                parts = shlex.split(raw, comments=False)
+                if len(parts) > 1:
+                    raise ValueError("invalid_environment")
+                environment[key] = parts[0] if parts else ""
+    # Only the narrow analytics operation can use this key. It never enters Hermes.
+    engine_env = Path("/opt/telegram-api-engine/.env")
+    with engine_env.open(encoding="utf-8") as handle:
+        for line in handle:
+            if line.strip().startswith("API_KEY="):
+                parts = shlex.split(line.strip().split("=", 1)[1], comments=False)
+                if len(parts) != 1:
+                    raise ValueError("invalid_analytics_environment")
+                environment["AI_FIXER_ANALYTICS_API_KEY"] = parts[0]
+                break
+    account = pwd.getpwnam("ai-fixer-social")
+    os.setgroups([])
+    os.setgid(account.pw_gid)
+    os.setuid(account.pw_uid)
+    os.umask(0o077)
+    os.chdir("/opt/ai-fixer-social")
+    os.environ.clear()
+    os.environ.update(environment)
+    sys.path.insert(0, "/opt/ai-fixer-social/src")
+    data = sys.stdin.buffer.read(72 * 1024 * 1024 + 1)
+    if len(data) > 72 * 1024 * 1024:
+        raise ValueError("request_too_large")
+    from ai_fixer_social.broker import run
+    print(json.dumps(run(json.loads(data)), ensure_ascii=False))
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except Exception as exc:
+        print(json.dumps({"ok": False, "error": "launcher_rejected", "error_type": type(exc).__name__}))
+        sys.exit(1)

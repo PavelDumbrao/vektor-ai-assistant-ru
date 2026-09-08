@@ -1,0 +1,54 @@
+name: Server snapshot
+
+on:
+  pull_request:
+    paths: ["server/**", "modules/**", "scripts/check_public_bundle.py", "tests/**", ".github/workflows/server-snapshot.yml"]
+  push:
+    branches: [main]
+    paths: ["server/**", "modules/**", "scripts/check_public_bundle.py", "tests/**", ".github/workflows/server-snapshot.yml"]
+
+permissions:
+  contents: read
+
+jobs:
+  modules:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install -r tests/server-requirements.txt
+      - name: Check public source boundary and checksums
+        run: python scripts/check_public_bundle.py
+      - name: Focus and profile tools
+        env:
+          PYTHONPATH: hermes-agent
+        run: python -m pytest modules/focus-assistant/tests modules/profile-tools/tests -q
+      - name: AI Fixer
+        env:
+          PYTHONPATH: modules/ai-fixer-social/src
+        run: python -m unittest discover -s modules/ai-fixer-social/tests -q
+      - name: Compile new program sources
+        run: python -m compileall -q modules/focus-assistant modules/ai-fixer-social modules/maton-legacy modules/profile-tools
+
+  reconstruct:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Obtain the exact official source archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          git init "$RUNNER_TEMP/hermes-upstream"
+          git -C "$RUNNER_TEMP/hermes-upstream" fetch --depth 1 https://github.com/NousResearch/hermes-agent.git 29112bef099274229cadff79cdff7bf7b99c4b77
+          git -C "$RUNNER_TEMP/hermes-upstream" archive --format=tar --output="$RUNNER_TEMP/hermes-source.tar" FETCH_HEAD
+      - name: Reconstruct both VPS source variants
+        run: |
+          python modules/shared-runtime/verify_release_source.py --archive "$RUNNER_TEMP/hermes-source.tar" --variant modern --output "$RUNNER_TEMP/hermes-modern"
+          python modules/shared-runtime/verify_release_source.py --archive "$RUNNER_TEMP/hermes-source.tar" --variant legacy --output "$RUNNER_TEMP/hermes-legacy"

@@ -1,0 +1,26 @@
+name: focus_assistant
+version: 1.2.0
+description: Evidence-backed assistant workflows, non-executable focus ledger and scoped integrations.
+author: Pavel Dumbrao
+provides_hooks:
+  - pre_llm_call
+  - pre_tool_call
+  - transform_tool_result
+provides_tools:
+  - focus_task_list
+  - focus_task_save
+  - focus_task_update
+  - focus_attention
+  - focus_goals
+  - focus_capture
+  - focus_commitments
+  - assistant_brief
+  - assistant_meeting
+  - assistant_voice_intake
+  - assistant_mail
+  - assistant_project
+  - assistant_weekly
+  - fathom_recent_meetings
+  - fathom_meeting_summary
+  - fathom_meeting_transcript
+  - integration_connection_status

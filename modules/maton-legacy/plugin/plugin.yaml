@@ -1,0 +1,8 @@
+name: maton-chat-onboarding
+version: 1.0.0
+kind: standalone
+description: Secure Maton onboarding in Telegram DMs.
+author: ProAI
+provides_hooks:
+  - pre_gateway_dispatch
+

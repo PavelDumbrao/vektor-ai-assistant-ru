@@ -1,0 +1,7 @@
+name: ai_fixer
+version: 1.0.0
+description: Owner-scoped AI Fixer publishing gateway and Pavel visual reference.
+author: Pavel Dumbrao
+hooks:
+  - pre_llm_call
+  - pre_tool_call

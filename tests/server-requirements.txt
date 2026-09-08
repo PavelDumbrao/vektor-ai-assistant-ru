@@ -1,0 +1,6 @@
+pytest==8.3.5
+PyYAML==6.0.2
+httpx==0.28.1
+python-dotenv==1.2.2
+pypdf==6.16.2
+edge-tts==7.2.7

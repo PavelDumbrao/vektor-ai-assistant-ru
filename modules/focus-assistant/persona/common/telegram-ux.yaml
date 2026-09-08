@@ -1,0 +1,26 @@
+# Безопасный profile-local fragment после установки supporting core patch.
+streaming:
+  mode: auto
+  edit_interval: 1.2
+  buffer_threshold: 24
+  cursor: ""
+  fresh_final_after_seconds: 20
+  waiting_status:
+    enabled: true
+    initial_delay: 0.5
+    update_interval: 2.0
+    elapsed_after: 4.0
+    phrases: ["⏳ Думаю", "⌛ Разбираюсь"]
+
+display:
+  busy_input_mode: queue
+  busy_ack_enabled: true
+  platforms:
+    telegram:
+      streaming: true
+      tool_progress: all
+      tool_progress_grouping: accumulate
+      interim_assistant_messages: false
+      thinking_progress: false
+      long_running_notifications: generic
+      cleanup_progress: true

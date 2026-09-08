@@ -38,6 +38,18 @@
         "maton-onboarding",
         "passive-secretary"
       ]
+    },
+    {
+      "owner_label": "bebov",
+      "hermes_home": "/home/bebov/.hermes",
+      "service": "bebov-hermes.service",
+      "release_id": "hermes-0.21.0-29112bef-vektor3-vyacheslav",
+      "variant": "modern",
+      "config_template": "profiles/bebov/config.yaml.example",
+      "plugins": [
+        "maton-onboarding",
+        "passive-secretary"
+      ]
     }
   ]
 }

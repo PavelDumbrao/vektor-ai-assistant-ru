@@ -58,13 +58,25 @@ def main():
             errors.append(name+': patch digest mismatch')
     if digest(release/'server-requirements.lock')!=spec['dependencies_sha256']:
         errors.append('server-requirements.lock: digest mismatch')
-    for profile in json.loads((ROOT/'server/fleet.json').read_text())['profiles']:
+    fleet=json.loads((ROOT/'server/fleet.json').read_text())['profiles']
+    owners=[profile['owner_label'] for profile in fleet]
+    homes=[profile['hermes_home'] for profile in fleet]
+    services=[profile['service'] for profile in fleet]
+    if len(owners)!=len(set(owners)) or len(homes)!=len(set(homes)) or len(services)!=len(set(services)):
+        errors.append('server/fleet.json: duplicate owner, home or service')
+    for profile in fleet:
+        owner=profile['owner_label']
         config=yaml.safe_load((ROOT/'server'/profile['config_template']).read_text())
         extra=config['platforms']['telegram']['extra']
+        if profile['hermes_home']!=f'/home/{owner}/.hermes' or config['terminal']['cwd']!=f'/home/{owner}/workspace':
+            errors.append(owner+': cross-profile home/workspace path')
         if extra['business_owner_ids']!=['OWNER_TELEGRAM_USER_ID'] or extra['business_reply_enabled'] is not False:
-            errors.append(profile['owner_label']+': unsafe public example')
+            errors.append(owner+': unsafe public example')
+        admins=extra.get('allow_admin_from',[])
+        if any(item not in {'OWNER_TELEGRAM_USER_ID','TECH_ADMIN_TELEGRAM_USER_ID'} for item in admins):
+            errors.append(owner+': real Telegram admin id in public example')
         if config['model']['api_key']!='${LLM_API_KEY}':
-            errors.append(profile['owner_label']+': provider secret is not an env reference')
+            errors.append(owner+': provider secret is not an env reference')
     if errors:
         raise SystemExit('\n'.join(errors))
     print(f'Public bundle: {count} files checked; no credentials/private state; checksums match')

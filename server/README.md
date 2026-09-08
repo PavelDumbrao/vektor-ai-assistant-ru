@@ -61,6 +61,8 @@ hermes_<owner>          отдельная PostgreSQL БД архива
 ## Проверки и выпуск
 
 CI проверяет общие модули, Focus, AI Fixer, profile tools, отсутствие private files
-и реконструкцию обоих source trees на Linux. Пофайловый manifest совпадает с VPS.
+и реконструкцию обоих source trees на Linux. Для обычных modern-client профилей также
+проверяется базовый config parity с `vyacheslav`; различия в identity и client-specific
+tool surfaces разрешены отдельно. Пофайловый manifest совпадает с VPS.
 Существующие тесты не получают настоящие API-ключи и не отправляют сообщения.
 `push`/merge не запускает деплой. Живые боты при публикации снимка продолжают работу.

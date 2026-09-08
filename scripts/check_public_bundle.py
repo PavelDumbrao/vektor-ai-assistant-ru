@@ -34,7 +34,7 @@ def main():
             relative=str(path.relative_to(ROOT))
             if path.is_symlink() or path.name in PRIVATE_FILES or path.suffix in {'.db','.sqlite','.sqlite3','.session','.pem','.key','.log','.pyc'}:
                 errors.append(relative+': private/runtime file')
-            if path.name=='.env' or (path.name.endswith('.env') and not path.name.endswith('.example')):
+            if (path.name.startswith('.env') or path.name.endswith('.env')) and not path.name.endswith('.example'):
                 errors.append(relative+': environment secret file')
             text=path.read_text(errors='replace')
             if TOKEN.search(text) or PROVIDER_KEY.search(text) or PEM.search(text):

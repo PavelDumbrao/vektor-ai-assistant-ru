@@ -41,14 +41,14 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Obtain the exact official source archive
+      - name: Obtain the checksum-pinned official source snapshot
         shell: bash
         run: |
           set -euo pipefail
-          git init "$RUNNER_TEMP/hermes-upstream"
-          git -C "$RUNNER_TEMP/hermes-upstream" fetch --depth 1 https://github.com/NousResearch/hermes-agent.git 29112bef099274229cadff79cdff7bf7b99c4b77
-          git -C "$RUNNER_TEMP/hermes-upstream" archive --format=tar --output="$RUNNER_TEMP/hermes-source.tar" FETCH_HEAD
+          curl --fail --location --retry 4 --retry-delay 10 --max-time 180 \
+            https://github.com/PavelDumbrao/vektor-ai-assistant-ru/releases/download/hermes-vps-2026.09.08/upstream-0.21.0.tar.gz \
+            --output "$RUNNER_TEMP/hermes-source.tar.gz"
       - name: Reconstruct both VPS source variants
         run: |
-          python modules/shared-runtime/verify_release_source.py --archive "$RUNNER_TEMP/hermes-source.tar" --variant modern --output "$RUNNER_TEMP/hermes-modern"
-          python modules/shared-runtime/verify_release_source.py --archive "$RUNNER_TEMP/hermes-source.tar" --variant legacy --output "$RUNNER_TEMP/hermes-legacy"
+          python modules/shared-runtime/verify_release_source.py --archive "$RUNNER_TEMP/hermes-source.tar.gz" --variant modern --output "$RUNNER_TEMP/hermes-modern"
+          python modules/shared-runtime/verify_release_source.py --archive "$RUNNER_TEMP/hermes-source.tar.gz" --variant legacy --output "$RUNNER_TEMP/hermes-legacy"

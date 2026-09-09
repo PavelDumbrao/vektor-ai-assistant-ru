@@ -6,10 +6,12 @@ and implement the required methods.
 """
 
 import asyncio
+import errno
 import inspect
 import ipaddress
 import logging
 import os
+import stat
 import random
 import re
 import socket as _socket
@@ -2027,6 +2029,141 @@ def cache_media_bytes(
     else:
         out_mime = mime if mime else "application/octet-stream"
     return CachedMedia(to_agent_visible_cache_path(path), out_mime, "document", display or fallback_name)
+
+
+def _copy_regular_file_bounded(source: Path, target: Path, *, max_bytes: int = 0) -> int:
+    """Stream-copy one regular file with a hard byte ceiling and fsync.
+
+    This is the disk-backed counterpart to the in-memory media limit.  It never
+    accumulates the payload in RAM and aborts while copying if the source grows
+    past ``max_bytes``.  The caller owns both paths and is responsible for
+    atomically publishing ``target`` after validation.
+    """
+    copied = 0
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    fd = os.open(target, flags, 0o600)
+    try:
+        with source.open("rb", buffering=0) as src, os.fdopen(fd, "wb", buffering=0) as dst:
+            fd = -1
+            while True:
+                chunk = src.read(1024 * 1024)
+                if not chunk:
+                    break
+                copied += len(chunk)
+                if max_bytes and copied > max_bytes:
+                    raise ValueError(
+                        f"Inbound file payload is too large ({copied} bytes > {max_bytes} bytes)"
+                    )
+                dst.write(chunk)
+            dst.flush()
+            os.fsync(dst.fileno())
+    finally:
+        if fd >= 0:
+            os.close(fd)
+    return copied
+
+
+def cache_media_file(
+    source_path: Union[str, Path],
+    *,
+    filename: str = "",
+    mime_type: str = "",
+    default_kind: Optional[str] = None,
+    max_bytes: int = 0,
+    consume_source: bool = True,
+) -> Optional[CachedMedia]:
+    """Classify and atomically cache a disk-backed attachment without buffering it.
+
+    ``source_path`` must be a regular, non-symlink file.  The payload is checked
+    against ``max_bytes`` on disk, classified using the same extension/MIME
+    rules as :func:`cache_media_bytes`, and published with mode ``0600``.
+    ``consume_source=True`` uses an atomic rename when source and cache share a
+    filesystem, which is the normal Telegram large-file ingress path.
+    """
+    from tools.credential_files import to_agent_visible_cache_path
+
+    source = Path(source_path)
+    info = os.lstat(source)
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
+        raise ValueError("Inbound media source must be a regular non-symlink file")
+    if info.st_size <= 0:
+        raise ValueError("Inbound media source is empty")
+    if max_bytes and info.st_size > max_bytes:
+        raise ValueError(
+            f"Inbound file payload is too large ({info.st_size} bytes > {max_bytes} bytes)"
+        )
+
+    ext = _resolve_media_ext(filename, mime_type)
+    mime = (mime_type or "").lower()
+    display = re.sub(r"[^\w.\- ]", "_", filename) if filename else (ext.lstrip(".") or "file")
+    is_image = mime.startswith("image/") or ext in SUPPORTED_IMAGE_DOCUMENT_TYPES or default_kind == "image"
+    is_video = mime.startswith("video/") or ext in SUPPORTED_VIDEO_TYPES or default_kind == "video"
+    is_audio = mime.startswith("audio/") or ext in _AUDIO_EXTS or default_kind == "audio"
+
+    if is_image:
+        with source.open("rb") as fh:
+            head = fh.read(32)
+        if not _looks_like_image(head):
+            return None
+        img_ext = ext if ext in SUPPORTED_IMAGE_DOCUMENT_TYPES else ".jpg"
+        cache_dir = get_image_cache_dir()
+        final_name = f"img_{uuid.uuid4().hex[:12]}{img_ext}"
+        out_mime = mime if mime.startswith("image/") else SUPPORTED_IMAGE_DOCUMENT_TYPES.get(img_ext, "image/jpeg")
+        kind = "image"
+    elif is_video:
+        vid_ext = ext if ext in SUPPORTED_VIDEO_TYPES else ".mp4"
+        cache_dir = get_video_cache_dir()
+        final_name = f"video_{uuid.uuid4().hex[:12]}{vid_ext}"
+        out_mime = mime if mime.startswith("video/") else SUPPORTED_VIDEO_TYPES.get(vid_ext, "video/mp4")
+        kind = "video"
+    elif is_audio:
+        fallback_ext = ext if ext in _AUDIO_EXTS else ".ogg"
+        with source.open("rb") as fh:
+            sniffed_ext = _sniff_audio_ext(fh.read(64), fallback_ext)
+        cache_dir = get_audio_cache_dir()
+        final_name = f"audio_{uuid.uuid4().hex[:12]}{sniffed_ext}"
+        out_mime = mime if mime.startswith("audio/") else _AUDIO_MIME_TYPES.get(sniffed_ext, "audio/ogg")
+        kind = "audio"
+    else:
+        cache_dir = get_document_cache_dir()
+        safe_name = Path(filename).name if filename else (f"document{ext}" if ext else "document.bin")
+        safe_name = safe_name.replace("\x00", "").strip()
+        if not safe_name or safe_name in {".", ".."}:
+            safe_name = "document.bin"
+        final_name = f"doc_{uuid.uuid4().hex[:12]}_{safe_name}"
+        out_mime = SUPPORTED_DOCUMENT_TYPES.get(ext, mime or "application/octet-stream")
+        kind = "document"
+
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    final_path = cache_dir / final_name
+    if not final_path.resolve().is_relative_to(cache_dir.resolve()):
+        raise ValueError(f"Path traversal rejected: {filename!r}")
+
+    try:
+        if consume_source:
+            try:
+                os.replace(source, final_path)
+            except OSError as exc:
+                if exc.errno != errno.EXDEV:
+                    raise
+                _copy_regular_file_bounded(source, final_path, max_bytes=max_bytes)
+                source.unlink()
+        else:
+            _copy_regular_file_bounded(source, final_path, max_bytes=max_bytes)
+        os.chmod(final_path, 0o600)
+    except Exception:
+        try:
+            final_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
+
+    return CachedMedia(
+        to_agent_visible_cache_path(str(final_path)),
+        out_mime,
+        kind,
+        display or final_name,
+    )
 
 
 class MessageType(Enum):

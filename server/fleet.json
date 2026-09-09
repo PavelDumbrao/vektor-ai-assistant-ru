@@ -12,7 +12,8 @@
       "plugins": [
         "ai_fixer",
         "passive-secretary",
-        "focus_assistant"
+        "focus_assistant",
+        "video-editor"
       ]
     },
     {
@@ -24,7 +25,8 @@
       "config_template": "profiles/baysangur/config.yaml.example",
       "plugins": [
         "maton-chat-onboarding",
-        "passive-secretary"
+        "passive-secretary",
+        "video-editor"
       ]
     },
     {
@@ -36,7 +38,8 @@
       "config_template": "profiles/vyacheslav/config.yaml.example",
       "plugins": [
         "maton-onboarding",
-        "passive-secretary"
+        "passive-secretary",
+        "video-editor"
       ]
     },
     {
@@ -48,7 +51,8 @@
       "config_template": "profiles/bebov/config.yaml.example",
       "plugins": [
         "maton-onboarding",
-        "passive-secretary"
+        "passive-secretary",
+        "video-editor"
       ]
     }
   ]

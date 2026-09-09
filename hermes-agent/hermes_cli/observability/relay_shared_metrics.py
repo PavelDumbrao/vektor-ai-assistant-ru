@@ -20,12 +20,10 @@ from .shared_metrics_contract import (
     SCHEMA_VERSION,
     SUBSCRIBER_NAME,
     TASK_SCOPE,
-    TOOL_CALL_METRIC,
     model_call_fields,
     model_call_outcome,
     task_start_fields,
     task_terminal_fields,
-    tool_call_dimensions,
 )
 from .shared_metrics_subscriber import SharedMetricsSubscriber
 
@@ -300,27 +298,14 @@ class _Runtime:
         if session is None or task is None:
             return
         tool_call_id = str(event.get("tool_call_id") or "")
-        is_new = False
         with session.lock:
             if session.closing:
                 return
             self._remember_turn(session, task, event)
             if tool_call_id:
-                if tool_call_id not in task.tool_call_ids:
-                    task.tool_call_ids.add(tool_call_id)
-                    is_new = True
+                task.tool_call_ids.add(tool_call_id)
             else:
                 task.unidentified_tool_calls += 1
-                is_new = True
-        if is_new:
-            try:
-                self.subscriber.store.record_counter(
-                    TOOL_CALL_METRIC,
-                    tool_call_dimensions(event),
-                    __version__,
-                )
-            except Exception:
-                logger.warning("Unable to persist Hermes tool metric", exc_info=True)
 
     def end_model_call(self, event: dict[str, Any], outcome: str | None = None) -> None:
         session = self._task_session(event, allow_task_id_fallback=True)

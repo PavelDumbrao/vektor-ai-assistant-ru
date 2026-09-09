@@ -6,7 +6,7 @@
       "owner_label": "pavel",
       "hermes_home": "/home/pavel/.hermes",
       "service": "pavel-hermes.service",
-      "release_id": "hermes-0.21.0-29112bef-vektor3-pavel-tglf2",
+      "release_id": "hermes-0.21.0-29112bef-vektor3-pavel-tglf2-vtm1",
       "variant": "modern",
       "config_template": "profiles/pavel/config.yaml.example",
       "plugins": [
@@ -20,7 +20,7 @@
       "owner_label": "baysangur",
       "hermes_home": "/home/baysangur/.hermes",
       "service": "baysangur-hermes.service",
-      "release_id": "hermes-0.21.0-29112bef-vektor3-baysangur-tglf1",
+      "release_id": "hermes-0.21.0-29112bef-vektor3-baysangur-tglf1-vtm1",
       "variant": "legacy",
       "config_template": "profiles/baysangur/config.yaml.example",
       "plugins": [
@@ -33,7 +33,7 @@
       "owner_label": "vyacheslav",
       "hermes_home": "/home/vyacheslav/.hermes",
       "service": "vyacheslav-hermes.service",
-      "release_id": "hermes-0.21.0-29112bef-vektor3-vyacheslav-tglf1",
+      "release_id": "hermes-0.21.0-29112bef-vektor3-vyacheslav-tglf1-vtm1",
       "variant": "modern",
       "config_template": "profiles/vyacheslav/config.yaml.example",
       "plugins": [
@@ -46,7 +46,7 @@
       "owner_label": "bebov",
       "hermes_home": "/home/bebov/.hermes",
       "service": "bebov-hermes.service",
-      "release_id": "hermes-0.21.0-29112bef-vektor4-modern-tglf1",
+      "release_id": "hermes-0.21.0-29112bef-vektor4-modern-tglf1-vtm1",
       "variant": "modern",
       "config_template": "profiles/bebov/config.yaml.example",
       "plugins": [
@@ -60,7 +60,14 @@
     "version": "0.3.0",
     "primary_asr": "openrouter/openai/whisper-large-v3-turbo",
     "fallback_asr": "whisper.cpp v1.9.2",
-    "broker": "loopback per-profile auth"
+    "broker": "loopback per-profile auth",
+    "agent_master_timeout_seconds": 1200,
+    "caption_max_words_per_timed_chunk": 4,
+    "autonomous_style_modes": [
+      "punchy",
+      "balanced",
+      "restrained"
+    ]
   },
   "telegram_large_file_ingress": {
     "status": "rolled_out",

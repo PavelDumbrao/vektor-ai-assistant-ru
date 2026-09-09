@@ -38,3 +38,23 @@ def test_relative_file_checkpoint_uses_task_workspace(tmp_path, monkeypatch):
 
     assert manager.list_checkpoints(str(workspace_cwd))
     assert manager.list_checkpoints(str(process_cwd)) == []
+
+
+def test_concurrent_timeout_uses_registered_tool_override(monkeypatch):
+    from agent import tool_executor
+    from types import SimpleNamespace
+    from tools.registry import registry
+
+    monkeypatch.delenv("HERMES_CONCURRENT_TOOL_TIMEOUT_S", raising=False)
+    monkeypatch.setattr(
+        registry, "get_entry",
+        lambda name: SimpleNamespace(timeout_seconds=1200) if name == "video_editor_master" else None,
+    )
+    assert tool_executor._resolve_concurrent_tool_timeout(["video_editor_master"]) == 1200.0
+    assert tool_executor._resolve_concurrent_tool_timeout(["ordinary_tool"]) == 420.0
+
+
+def test_concurrent_timeout_operator_env_wins(monkeypatch):
+    from agent import tool_executor
+    monkeypatch.setenv("HERMES_CONCURRENT_TOOL_TIMEOUT_S", "300")
+    assert tool_executor._resolve_concurrent_tool_timeout(["video_editor_master"]) == 300.0

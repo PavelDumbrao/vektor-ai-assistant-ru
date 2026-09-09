@@ -117,10 +117,23 @@ def _parse_tool_arguments(raw_arguments: Any) -> tuple[dict, Optional[str]]:
     )
 
 
-def _resolve_concurrent_tool_timeout() -> float | None:
+def _resolve_concurrent_tool_timeout(tool_names: list[str] | None = None) -> float | None:
     raw = os.getenv("HERMES_CONCURRENT_TOOL_TIMEOUT_S", "").strip()
     if not raw:
-        return _DEFAULT_CONCURRENT_TOOL_TIMEOUT_S
+        timeout = _DEFAULT_CONCURRENT_TOOL_TIMEOUT_S
+        if tool_names:
+            try:
+                from tools.registry import registry
+                for name in tool_names:
+                    entry = registry.get_entry(name)
+                    requested = getattr(entry, "timeout_seconds", None) if entry else None
+                    if requested is not None:
+                        value = float(requested)
+                        if value > 0:
+                            timeout = max(timeout, value)
+            except Exception:
+                logger.debug("failed to resolve per-tool timeout; using default", exc_info=True)
+        return timeout
     try:
         value = float(raw)
     except ValueError:
@@ -919,7 +932,9 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         futures = []
         future_to_index = {}
         timed_out_indices: set[int] = set()
-        timeout_s = _resolve_concurrent_tool_timeout()
+        timeout_s = _resolve_concurrent_tool_timeout([
+            name for _, _, name, _, _ in runnable_calls
+        ])
         deadline = time.monotonic() + timeout_s if timeout_s is not None else None
         if runnable_calls:
             max_workers = min(len(runnable_calls), _MAX_TOOL_WORKERS)

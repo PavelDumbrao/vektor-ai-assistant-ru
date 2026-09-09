@@ -7,7 +7,9 @@ handles technical provisioning.
 ## Flow
 
 1. User opens Hermes Forge and chooses **Create Hermes**.
-2. Telegram shows the native `request_managed_bot` creation UI.
+2. The inline button opens Telegram's official `t.me/newbot/...` managed-bot
+   deep link, so the native creation UI is visible even when reply keyboards are
+   collapsed. The user edits name/@username in that native window, not in chat.
 3. The manager receives a `managed_bot` update.
 4. It calls `getManagedBotToken` and stores the child token in a root-only file.
 5. Access is switched to restricted by default: owner + Pavel tech admin.

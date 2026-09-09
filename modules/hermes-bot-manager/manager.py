@@ -7,6 +7,7 @@ import os
 import re
 import signal
 import subprocess
+import sys
 import tempfile
 import time
 import urllib.error
@@ -14,11 +15,20 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
+HERE = Path(__file__).resolve().parent
+if str(HERE) not in sys.path:
+    sys.path.insert(0, str(HERE))
+from hermes_instance import HermesInstance, normalize_bot_username, owner_for_telegram_id
+
 SECRET_FILE = Path('/etc/proai-hermes-manager.env')
 ROOT = Path('/opt/proai-hermes-manager')
 STATE_DIR = ROOT / 'state'
 STATE_FILE = STATE_DIR / 'state.json'
 MANAGED_DIR = STATE_DIR / 'managed'
+INSTANCES_DIR = STATE_DIR / 'instances'
+PROVISIONING_DIR = STATE_DIR / 'provisioning'
+JOBS_DIR = STATE_DIR / 'jobs'
+PROVISIONER_UNIT = 'proai-hermes-provisioner@{instance_id}.service'
 PROFILE_DIR = Path('/opt/vektor/profiles')
 PAVEL_ID = 450206471
 BOT_USERNAME = 'ProAIHermesBot'
@@ -35,6 +45,58 @@ def load_token() -> str:
         if TOKEN_RE.fullmatch(value):
             return value
     raise RuntimeError('manager_token_missing')
+
+
+def load_manager_settings() -> dict[str, str]:
+    values: dict[str, str] = {}
+    for raw in SECRET_FILE.read_text(encoding='utf-8').splitlines():
+        line = raw.strip()
+        if not line or line.startswith('#') or '=' not in line:
+            continue
+        key, value = line.split('=', 1)
+        values[key.strip()] = value.strip().strip('"\'')
+    return values
+
+
+def stable_release_id() -> str:
+    value = load_manager_settings().get('FORGE_STABLE_RELEASE_ID', '').strip()
+    if not value:
+        raise RuntimeError('forge_stable_release_missing')
+    return value
+
+
+def build_instance(owner_id: int, bot: dict) -> HermesInstance:
+    username = normalize_bot_username(str(bot.get('username') or ''))
+    return HermesInstance(
+        instance_id=f'hermes-{int(owner_id)}',
+        owner_linux=owner_for_telegram_id(owner_id),
+        owner_telegram_id=int(owner_id),
+        bot_id=int(bot.get('id') or 0),
+        bot_username=username,
+        bot_name=str(bot.get('first_name') or username)[:64],
+        release_id=stable_release_id(),
+    ).validate()
+
+
+def start_provisioning(instance: HermesInstance) -> str:
+    for directory in (INSTANCES_DIR, PROVISIONING_DIR, JOBS_DIR):
+        directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+        os.chmod(directory, 0o700)
+    instance_file = INSTANCES_DIR / f'{instance.instance_id}.json'
+    if instance_file.exists():
+        current = HermesInstance.from_dict(json.loads(instance_file.read_text(encoding='utf-8')))
+        if current != instance:
+            raise RuntimeError('instance_desired_state_conflict')
+    else:
+        instance.write_atomic(instance_file)
+    unit = PROVISIONER_UNIT.format(instance_id=instance.instance_id)
+    result = subprocess.run(
+        ['/usr/bin/systemctl', 'start', '--no-block', unit],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=15, check=False,
+    )
+    if result.returncode != 0:
+        raise RuntimeError('provisioner_unit_start_failed')
+    return unit
 
 
 def api(method: str, payload: dict | None = None, timeout: int = 65):
@@ -99,6 +161,66 @@ def answer_callback(callback_id: str, text: str = ''):
         api('answerCallbackQuery', payload)
     except Exception:
         pass
+
+
+def reconcile_provisioning(state: dict) -> None:
+    changed = False
+    for item in state.get('managed', {}).values():
+        instance_id = str(item.get('instance_id') or '')
+        if not instance_id:
+            continue
+        receipt_path = PROVISIONING_DIR / f'{instance_id}.json'
+        if receipt_path.is_symlink() or not receipt_path.is_file():
+            continue
+        try:
+            receipt = json.loads(receipt_path.read_text(encoding='utf-8'))
+        except Exception:
+            continue
+        result_state = str(receipt.get('state') or '')
+        if result_state == 'active' and item.get('profile_status') != 'active':
+            item['profile_status'] = 'active'
+            item['health'] = receipt.get('health') or {}
+            item['updated_at'] = int(time.time())
+            changed = True
+        elif result_state == 'failed' and item.get('profile_status') != 'provision_failed':
+            item['profile_status'] = 'provision_failed'
+            item['error_code'] = str(receipt.get('error_code') or 'provision_failed')[:120]
+            item['updated_at'] = int(time.time())
+            changed = True
+
+        status = item.get('profile_status')
+        if status not in {'active', 'provision_failed'} or item.get('notified_state') == status:
+            continue
+        owner_id = int(item.get('owner_user_id') or 0)
+        username = item.get('username') or ''
+        try:
+            if status == 'active':
+                send(owner_id,
+                     f'✅ <b>AI-ассистент готов к работе.</b>\n\n@{username} полностью развёрнут и прошёл проверку. Можно открывать его и начинать работать.',
+                     main_menu())
+            else:
+                send(owner_id,
+                     f'⚠️ <b>@{username} создан, но настройка Hermes не завершилась.</b>\n\nТехническая ошибка уже зафиксирована. Сам бот остаётся твоим; повторное развёртывание не требует создавать его заново.',
+                     main_menu())
+            item['notified_state'] = status
+            changed = True
+        except Exception:
+            pass
+        if owner_id != PAVEL_ID and item.get('admin_notified_state') != status:
+            try:
+                detail = item.get('error_code') or 'healthy'
+                send(PAVEL_ID,
+                     '<b>Hermes Forge provisioning</b>\n\n'
+                     f'Бот: <b>@{username}</b>\n'
+                     f'Профиль: <code>{item.get("profile") or ""}</code>\n'
+                     f'Статус: <b>{status}</b>\n'
+                     f'Деталь: <code>{html.escape(str(detail))}</code>')
+                item['admin_notified_state'] = status
+                changed = True
+            except Exception:
+                pass
+    if changed:
+        save_state(state)
 
 
 def welcome_text() -> str:
@@ -350,11 +472,22 @@ def managed_event(update: dict, state: dict):
     except Exception:
         access = 'default'
     owner = find_profile_for_owner(owner_id)
+    instance = None
+    provision_job = None
+    provision_error = ''
     if owner:
         profile_status = install_profile_token(owner, token)
     else:
-        profile_status = 'awaiting_profile'
-    uname = bot.get('username') or str(bot_id)
+        try:
+            instance = build_instance(owner_id, bot)
+            owner = instance.owner_linux
+            provision_job = start_provisioning(instance)
+            profile_status = 'provisioning'
+        except Exception as exc:
+            owner = owner_for_telegram_id(owner_id)
+            profile_status = 'provision_failed'
+            provision_error = str(exc)[:120] or type(exc).__name__
+    uname = (bot.get('username') or str(bot_id)).lower()
     state.setdefault('managed', {})[str(bot_id)] = {
         'owner_user_id': owner_id,
         'profile': owner,
@@ -364,6 +497,10 @@ def managed_event(update: dict, state: dict):
         'name': bot.get('first_name') or '',
         'access': access,
         'token_path': str(token_path),
+        'instance_id': instance.instance_id if instance else '',
+        'release_id': instance.release_id if instance else '',
+        'provision_job': provision_job,
+        'error_code': provision_error,
         'updated_at': int(time.time()),
     }
     state.setdefault('drafts', {}).pop(hire_key(owner_id), None)
@@ -371,12 +508,12 @@ def managed_event(update: dict, state: dict):
     if profile_status == 'active':
         text = (f'✅ <b>AI-ассистент нанят и готов к работе.</b>\n\n@{uname} уже подключён и запущен. '
                 'Он будет запоминать твой рабочий контекст и учиться на твоих правках. Доступ для посторонних закрыт.')
-    elif profile_status == 'awaiting_profile':
-        text = (f'✅ <b>@{uname} создан.</b>\n\nБот уже зарегистрирован в Hermes Forge. '
-                'Персональный профиль будет подключён следующим шагом.')
+    elif profile_status == 'provisioning':
+        text = (f'✅ <b>@{uname} создан.</b>\n\nТеперь Hermes Forge автоматически разворачивает персональную среду: память, runtime, базу и инструменты. '
+                'Когда health-check пройдёт, я напишу сюда, что ассистент готов.')
     else:
-        text = (f'✅ <b>@{uname} создан.</b>\n\nСтатус подключения профиля: '
-                f'<code>{profile_status}</code>.')
+        text = (f'⚠️ <b>@{uname} создан, но Hermes пока не развёрнут.</b>\n\n'
+                'Ошибка зафиксирована безопасно. Бота заново создавать не нужно.')
     send(owner_id, text, main_menu())
     if owner_id != PAVEL_ID:
         try:
@@ -588,8 +725,9 @@ def stop_handler(*_):
 def run():
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     MANAGED_DIR.mkdir(parents=True, exist_ok=True)
-    os.chmod(STATE_DIR, 0o700)
-    os.chmod(MANAGED_DIR, 0o700)
+    for directory in (STATE_DIR, MANAGED_DIR, INSTANCES_DIR, PROVISIONING_DIR, JOBS_DIR):
+        directory.mkdir(parents=True, exist_ok=True)
+        os.chmod(directory, 0o700)
     state = load_state()
     api('deleteWebhook', {'drop_pending_updates': False})
     me = api('getMe')
@@ -597,6 +735,7 @@ def run():
         raise RuntimeError('unexpected_manager_bot')
     while RUNNING:
         try:
+            reconcile_provisioning(state)
             updates = api('getUpdates', {
                 'offset': int(state.get('offset', 0)),
                 'timeout': 40,
@@ -611,6 +750,7 @@ def run():
                     print('update_error=' + type(exc).__name__, flush=True)
                 state['offset'] = max(int(state.get('offset', 0)), update_id + 1)
                 save_state(state)
+            reconcile_provisioning(state)
         except Exception as exc:
             print('poll_error=' + type(exc).__name__, flush=True)
             time.sleep(3)

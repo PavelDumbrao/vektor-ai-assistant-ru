@@ -4,6 +4,7 @@ import importlib.util
 import json
 import sys
 import unittest
+from unittest import mock
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -29,7 +30,7 @@ def load_submodule(name: str):
     return module
 
 
-load_submodule("settings")
+settings_mod = load_submodule("settings")
 load_submodule("retrieval")
 load_submodule("archive")
 recall = load_submodule("recall")
@@ -53,6 +54,53 @@ class RecallInputTests(unittest.TestCase):
             recall._mode("semantic-magic")
         with self.assertRaises(recall.RecallInputError):
             recall._origin("everything")
+
+
+class _FakeConn:
+    def cursor(self):
+        return object()
+
+
+class _FakeArchive:
+    def ensure_schema(self):
+        return None
+
+    def _connect(self):
+        return _FakeConn()
+
+    def _close(self, _conn, _cursor=None):
+        return None
+
+
+def _settings():
+    return settings_mod.Settings(
+        tenant_id="tester",
+        source_id="telegram_business",
+        test_run_id="",
+        owner_telegram_user_ids=("1",),
+        postgres_dsn_env="PASSIVE_SECRETARY_DATABASE_URL",
+        source_ref_key_env="PASSIVE_SECRETARY_SOURCE_REF_KEY",
+        retention_days=365,
+    )
+
+
+class RecallHybridCascadeTests(unittest.TestCase):
+    def test_hybrid_skips_fuzzy_when_fts_fills_limit(self):
+        engine = recall.HybridRecall(_settings(), _FakeArchive())
+        rows = [{"message_ref": f"message:{i}"} for i in range(3)]
+        with mock.patch.object(engine, "_execute", return_value=rows) as execute, \
+             mock.patch.object(engine, "_render", return_value="ok"):
+            self.assertEqual(engine.search({"query": "задача", "limit": 3}, owner_id="1"), "ok")
+        self.assertEqual([call.kwargs["mode"] for call in execute.call_args_list], ["fts"])
+
+    def test_hybrid_uses_fuzzy_only_when_fts_is_short(self):
+        engine = recall.HybridRecall(_settings(), _FakeArchive())
+        fts = [{"message_ref": "message:1", "match_score": 0.7, "sent_at": datetime.now(timezone.utc)}]
+        fuzzy = [{"message_ref": "message:2", "match_score": 0.4, "sent_at": datetime.now(timezone.utc)}]
+        with mock.patch.object(engine, "_execute", side_effect=[fts, fuzzy]) as execute, \
+             mock.patch.object(engine, "_render", return_value="ok"):
+            self.assertEqual(engine.search({"query": "лоялност", "limit": 3}, owner_id="1"), "ok")
+        self.assertEqual([call.kwargs["mode"] for call in execute.call_args_list], ["fts", "fuzzy"])
 
 
 class RecallReleaseContractTests(unittest.TestCase):

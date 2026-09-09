@@ -110,10 +110,11 @@ class HybridRecall:
         cursor = None
         try:
             cursor = conn.cursor()
+            effective_mode = "fts" if mode == "hybrid" else mode
             rows = self._execute(
                 cursor,
                 query=query,
-                mode=mode,
+                mode=effective_mode,
                 origin=origin,
                 sender=sender,
                 source_ref=source_ref,
@@ -122,6 +123,20 @@ class HybridRecall:
                 owner_id=owner_id,
                 limit=limit,
             )
+            if mode == "hybrid" and len(rows) < limit:
+                fuzzy_rows = self._execute(
+                    cursor,
+                    query=query,
+                    mode="fuzzy",
+                    origin=origin,
+                    sender=sender,
+                    source_ref=source_ref,
+                    start=start,
+                    end=end,
+                    owner_id=owner_id,
+                    limit=limit,
+                )
+                rows = self._merge_hybrid_rows(rows, fuzzy_rows, limit=limit)
             return self._render(rows, query=query, mode=mode, origin=origin, start=start, end=end)
         except RecallInputError:
             raise
@@ -129,6 +144,39 @@ class HybridRecall:
             raise ArchiveUnavailable("postgres_recall_failed") from exc
         finally:
             self.archive._close(conn, cursor)
+
+    @staticmethod
+    def _merge_hybrid_rows(
+        fts_rows: list[dict[str, Any]],
+        fuzzy_rows: list[dict[str, Any]],
+        *,
+        limit: int,
+    ) -> list[dict[str, Any]]:
+        merged: dict[str, dict[str, Any]] = {}
+        for row in [*fts_rows, *fuzzy_rows]:
+            key = str(row.get("message_ref") or "")
+            if not key:
+                continue
+            existing = merged.get(key)
+            if existing is None:
+                merged[key] = dict(row)
+                continue
+            existing["fts_rank"] = max(float(existing.get("fts_rank") or 0), float(row.get("fts_rank") or 0))
+            existing["fuzzy_rank"] = max(float(existing.get("fuzzy_rank") or 0), float(row.get("fuzzy_rank") or 0))
+            existing["exact_boost"] = max(float(existing.get("exact_boost") or 0), float(row.get("exact_boost") or 0))
+            fts = float(existing["fts_rank"])
+            fuzzy = float(existing["fuzzy_rank"])
+            exact = float(existing["exact_boost"])
+            existing["match_score"] = (
+                0.20 * exact
+                + 0.65 * (fts / (fts + 0.10) if fts > 0 else 0)
+                + 0.25 * fuzzy
+            )
+        return sorted(
+            merged.values(),
+            key=lambda row: (float(row.get("match_score") or 0), row.get("sent_at") or datetime.min.replace(tzinfo=timezone.utc)),
+            reverse=True,
+        )[:limit]
 
     def _execute(
         self,
@@ -152,31 +200,112 @@ class HybridRecall:
             "message.is_deleted=FALSE",
             "message.sent_at IS NOT NULL",
         ]
-        params: list[Any] = [query, query, self.settings.tenant_id, int(owner_id), self.settings.source_id, self.settings.test_run_id]
+        scope_params: list[Any] = [
+            self.settings.tenant_id,
+            int(owner_id),
+            self.settings.source_id,
+            self.settings.test_run_id,
+        ]
         if source_ref:
             filters.append("message.source_ref=%s")
-            params.append(source_ref)
+            scope_params.append(source_ref)
         if start is not None and end is not None:
             filters.append("message.sent_at >= %s AND message.sent_at < %s")
-            params.extend((start, end))
+            scope_params.extend((start, end))
         if origin == "history":
             filters.append("message.ingest_origin='history_backfill'")
         elif origin == "live":
             filters.append("message.ingest_origin IN ('group_update','business_update')")
         if sender:
             filters.append("position(lower(%s) in lower(message.sender_label)) > 0")
-            params.append(sender)
+            scope_params.append(sender)
 
-        if mode == "fts":
-            match_filter = "fts_rank > 0"
-        elif mode == "fuzzy":
-            match_filter = "fuzzy_rank >= 0.24"
-        else:
-            match_filter = "fts_rank > 0 OR fuzzy_rank >= 0.24 OR exact_boost > 0"
+        where = " AND ".join(filters)
+        text_expr = "coalesce(message.body,'') || ' ' || coalesce(message.caption,'')"
+        candidate_limit = max(50, min(150, limit * 4))
+        branches: list[str] = []
+        params: list[Any] = [query, query]
+
+        if mode in {"fts", "hybrid"}:
+            branches.append(f"""(
+              SELECT message.tenant_id, message.tenant_owner_id, message.source_id,
+                     message.test_run_id, message.chat_id, message.message_id,
+                     ts_rank_cd(to_tsvector('russian'::regconfig, {text_expr}), q.tsq, 32) AS fts_rank,
+                     0::real AS fuzzy_rank
+              FROM passive_secretary.messages message CROSS JOIN q
+              WHERE {where}
+                AND to_tsvector('russian'::regconfig, {text_expr}) @@ q.tsq
+              ORDER BY fts_rank DESC, message.sent_at DESC
+              LIMIT %s
+            )""")
+            params.extend([*scope_params, candidate_limit])
+            branches.append(f"""(
+              SELECT message.tenant_id, message.tenant_owner_id, message.source_id,
+                     message.test_run_id, message.chat_id, message.message_id,
+                     max(ts_rank_cd(to_tsvector('russian'::regconfig, coalesce(e.transcript,'')), q.tsq, 32)) AS fts_rank,
+                     0::real AS fuzzy_rank
+              FROM passive_secretary.messages message
+              JOIN passive_secretary.media_enrichments e
+                ON e.tenant_id=message.tenant_id
+               AND e.tenant_owner_id=message.tenant_owner_id
+               AND e.source_id=message.source_id
+               AND e.test_run_id=message.test_run_id
+               AND e.chat_id=message.chat_id AND e.message_id=message.message_id
+              CROSS JOIN q
+              WHERE {where} AND e.status='transcribed'
+                AND to_tsvector('russian'::regconfig, coalesce(e.transcript,'')) @@ q.tsq
+              GROUP BY message.tenant_id, message.tenant_owner_id, message.source_id,
+                       message.test_run_id, message.chat_id, message.message_id, message.sent_at
+              ORDER BY fts_rank DESC, message.sent_at DESC
+              LIMIT %s
+            )""")
+            params.extend([*scope_params, candidate_limit])
+
+        if mode in {"fuzzy", "hybrid"}:
+            branches.append(f"""(
+              SELECT message.tenant_id, message.tenant_owner_id, message.source_id,
+                     message.test_run_id, message.chat_id, message.message_id,
+                     0::real AS fts_rank,
+                     word_similarity(q.rawq, {text_expr}) AS fuzzy_rank
+              FROM passive_secretary.messages message CROSS JOIN q
+              WHERE {where} AND q.rawq <%% ({text_expr})
+              ORDER BY fuzzy_rank DESC, message.sent_at DESC
+              LIMIT %s
+            )""")
+            params.extend([*scope_params, candidate_limit])
+            branches.append(f"""(
+              SELECT message.tenant_id, message.tenant_owner_id, message.source_id,
+                     message.test_run_id, message.chat_id, message.message_id,
+                     0::real AS fts_rank,
+                     max(word_similarity(q.rawq, coalesce(e.transcript,''))) AS fuzzy_rank
+              FROM passive_secretary.messages message
+              JOIN passive_secretary.media_enrichments e
+                ON e.tenant_id=message.tenant_id
+               AND e.tenant_owner_id=message.tenant_owner_id
+               AND e.source_id=message.source_id
+               AND e.test_run_id=message.test_run_id
+               AND e.chat_id=message.chat_id AND e.message_id=message.message_id
+              CROSS JOIN q
+              WHERE {where} AND e.status='transcribed'
+                AND q.rawq <%% coalesce(e.transcript,'')
+              GROUP BY message.tenant_id, message.tenant_owner_id, message.source_id,
+                       message.test_run_id, message.chat_id, message.message_id, message.sent_at
+              ORDER BY fuzzy_rank DESC, message.sent_at DESC
+              LIMIT %s
+            )""")
+            params.extend([*scope_params, candidate_limit])
+
         params.append(limit)
         sql = f"""
         WITH q AS (
           SELECT websearch_to_tsquery('russian'::regconfig, %s) AS tsq, %s::text AS rawq
+        ), candidates_raw AS (
+          {' UNION ALL '.join(branches)}
+        ), candidates AS (
+          SELECT tenant_id, tenant_owner_id, source_id, test_run_id, chat_id, message_id,
+                 max(fts_rank) AS fts_rank, max(fuzzy_rank) AS fuzzy_rank
+          FROM candidates_raw
+          GROUP BY tenant_id, tenant_owner_id, source_id, test_run_id, chat_id, message_id
         ), scored AS (
           SELECT message.source_ref, message.chat_label, message.message_ref,
                  message.sender_ref, message.sender_label, message.direction,
@@ -194,35 +323,18 @@ class HybridRecall:
                      AND e.test_run_id=message.test_run_id
                      AND e.chat_id=message.chat_id AND e.message_id=message.message_id
                      AND e.status='transcribed'), '[]'::jsonb) AS media_transcripts,
-                 GREATEST(
-                   ts_rank_cd(to_tsvector('russian'::regconfig,
-                     coalesce(message.body,'') || ' ' || coalesce(message.caption,'')), q.tsq, 32),
-                   COALESCE((SELECT max(ts_rank_cd(
-                     to_tsvector('russian'::regconfig, coalesce(e.transcript,'')), q.tsq, 32))
-                     FROM passive_secretary.media_enrichments e
-                     WHERE e.tenant_id=message.tenant_id
-                       AND e.tenant_owner_id=message.tenant_owner_id
-                       AND e.source_id=message.source_id
-                       AND e.test_run_id=message.test_run_id
-                       AND e.chat_id=message.chat_id AND e.message_id=message.message_id
-                       AND e.status='transcribed'), 0)
-                 ) AS fts_rank,
-                 GREATEST(
-                   word_similarity(q.rawq, coalesce(message.body,'') || ' ' || coalesce(message.caption,'')),
-                   COALESCE((SELECT max(word_similarity(q.rawq, coalesce(e.transcript,'')))
-                     FROM passive_secretary.media_enrichments e
-                     WHERE e.tenant_id=message.tenant_id
-                       AND e.tenant_owner_id=message.tenant_owner_id
-                       AND e.source_id=message.source_id
-                       AND e.test_run_id=message.test_run_id
-                       AND e.chat_id=message.chat_id AND e.message_id=message.message_id
-                       AND e.status='transcribed'), 0)
-                 ) AS fuzzy_rank,
-                 CASE WHEN position(lower(q.rawq) in lower(
-                   coalesce(message.body,'') || ' ' || coalesce(message.caption,''))) > 0
-                   THEN 1.0 ELSE 0.0 END AS exact_boost
-          FROM passive_secretary.messages message CROSS JOIN q
-          WHERE {' AND '.join(filters)}
+                 candidates.fts_rank, candidates.fuzzy_rank,
+                 CASE WHEN position(lower(q.rawq) in lower({text_expr})) > 0
+                      THEN 1.0 ELSE 0.0 END AS exact_boost
+          FROM candidates
+          JOIN passive_secretary.messages message
+            ON message.tenant_id=candidates.tenant_id
+           AND message.tenant_owner_id=candidates.tenant_owner_id
+           AND message.source_id=candidates.source_id
+           AND message.test_run_id=candidates.test_run_id
+           AND message.chat_id=candidates.chat_id
+           AND message.message_id=candidates.message_id
+          CROSS JOIN q
         ), ranked AS (
           SELECT *,
             (0.20 * exact_boost
@@ -231,10 +343,10 @@ class HybridRecall:
           FROM scored
         )
         SELECT * FROM ranked
-        WHERE {match_filter}
         ORDER BY match_score DESC, sent_at DESC, message_ref
         LIMIT %s
         """
+        cursor.execute("SET LOCAL pg_trgm.word_similarity_threshold = 0.40")
         cursor.execute(sql, tuple(params))
         columns = [d.name if hasattr(d, "name") else d[0] for d in cursor.description]
         return [dict(zip(columns, row)) for row in cursor.fetchall()]

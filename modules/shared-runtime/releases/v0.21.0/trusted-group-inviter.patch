@@ -1,0 +1,42 @@
+--- a/plugins/platforms/telegram/adapter.py
++++ b/plugins/platforms/telegram/adapter.py
+@@ -4543,6 +4543,23 @@
+             raise ValueError("Telegram group passive mode requires exactly one tenant owner")
+         return next(iter(owners))
+ 
++    def _group_passive_trusted_inviter_ids(self) -> set[int]:
++        raw = (self.config.extra or {}).get("group_passive_trusted_inviter_ids", [])
++        if not isinstance(raw, list):
++            raise ValueError("Telegram group_passive_trusted_inviter_ids must be a list")
++        result: set[int] = set()
++        for value in raw:
++            if isinstance(value, bool):
++                raise ValueError("Telegram trusted inviter ids must contain positive integers")
++            try:
++                user_id = int(value)
++            except (TypeError, ValueError, OverflowError) as exc:
++                raise ValueError("Telegram trusted inviter ids must contain positive integers") from exc
++            if user_id <= 0 or user_id > 2**63 - 1:
++                raise ValueError("Telegram trusted inviter ids must contain positive integers")
++            result.add(user_id)
++        return result
++
+     def _get_passive_group_registry(self) -> PassiveGroupRegistry:
+         if self._passive_group_registry is None:
+             from hermes_constants import get_hermes_home
+@@ -5625,9 +5642,12 @@
+             return
+ 
+         actor_id = int(getattr(getattr(membership, "from_user", None), "id", 0) or 0)
+-        if actor_id != owner_id:
+-            # This is a personal assistant: another group member cannot enroll
+-            # it on the owner's behalf.  Persist denial before the network call
++        trusted_inviters = self._group_passive_trusted_inviter_ids()
++        if actor_id != owner_id and actor_id not in trusted_inviters:
++            # This is a personal assistant: only the owner or an explicitly
++            # configured technical inviter may start enrollment.  The owner
++            # must still approve the group in a private callback below.
++            # Persist denial before the network call
+             # so even a failed leave cannot expose group content.
+             registry.revoke(chat_id=chat_id, owner_id=owner_id)
+             if self._bot is not None:

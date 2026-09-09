@@ -33,6 +33,7 @@ PLUGIN_FILES = (
     "owner_intent.py",
     "outbound.py",
     "plugin.yaml",
+    "recall.py",
     "retrieval.py",
     "schema.sql",
     "settings.py",
@@ -308,6 +309,9 @@ def _prepare_config(config: dict[str, Any]) -> None:
     # enabled only after a concrete group has been created and reviewed.
     extra["group_passive_enabled"] = False
     extra["group_passive_chat_ids"] = []
+    # Optional operator enrollment helper. It can only start the owner-consent
+    # flow; final approval remains owner-only in Telegram DM.
+    extra["group_passive_trusted_inviter_ids"] = []
     # The prepared target provider is OpenRouter Whisper Turbo.  Keeping media
     # disabled means installation does not require or transmit the secret.
     extra["passive_media_asr_provider"] = "openrouter"

@@ -113,21 +113,15 @@ def welcome_text() -> str:
 def create_keyboard(user: dict):
     uid = int(user['id'])
     first = (user.get('first_name') or 'AI').strip()[:30]
-    request_id = int(time.time() * 1000) & 0x7fffffff
     suggested_name = f'Hermes | {first}'[:64]
     suggested_username = f'Hermes{uid}Bot'[:32]
+    name = urllib.parse.quote(suggested_name, safe='')
+    url = f'https://t.me/newbot/{BOT_USERNAME}/{suggested_username}?name={name}'
     return {
-        'keyboard': [[{
+        'inline_keyboard': [[{
             'text': '⚡ Создать моего Hermes',
-            'request_managed_bot': {
-                'request_id': request_id,
-                'suggested_name': suggested_name,
-                'suggested_username': suggested_username,
-            },
+            'url': url,
         }]],
-        'resize_keyboard': True,
-        'one_time_keyboard': True,
-        'input_field_placeholder': 'Нажми кнопку ниже',
     }
 
 
@@ -141,8 +135,10 @@ def show_create(chat_id: int, user: dict):
         return
     send(chat_id,
          '<b>Создание Hermes</b>\n\n'
-         'Нажми кнопку ниже. Telegram откроет нативное окно создания бота. '
-         'Имя и @username можно изменить перед подтверждением.\n\n'
+         'Нажми синюю кнопку под этим сообщением. Telegram сразу откроет '
+         'нативное окно создания бота.\n\n'
+         'Имя и @username меняются <b>в том окне</b>. Не отправляй @username '
+         'обычным сообщением в этот чат.\n\n'
          'Бот останется <b>твоей собственностью</b>.',
          create_keyboard(user))
 
@@ -401,7 +397,14 @@ def handle_message(msg: dict, state: dict):
              '<b>Помощь</b>\n\nСоздание: /new\nМои агенты: /my\nСтатус: /status\n'
              'Главное меню: /menu', main_menu())
     elif text:
-        send(chat_id, 'Выбери действие в меню 👇', main_menu())
+        candidate = text.lstrip('@').strip()
+        if re.fullmatch(r'[A-Za-z0-9_]{5,32}', candidate) and candidate.lower().endswith('bot'):
+            send(chat_id,
+                 'Ты отправил @username как обычное сообщение. Telegram здесь его не создаёт.\n\n'
+                 'Нажми кнопку ниже, а имя и @username введи уже в открывшемся окне Telegram 👇',
+                 create_keyboard(user))
+        else:
+            send(chat_id, 'Выбери действие в меню 👇', main_menu())
 
 
 def handle_callback(q: dict, state: dict):

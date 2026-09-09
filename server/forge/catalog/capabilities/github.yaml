@@ -1,0 +1,25 @@
+schema: hermes.capability/v1
+id: github
+name: GitHub
+version: 1.0.0
+publisher: Hermes Official
+trust_tier: official
+availability: planned
+kind: connector
+summary: Repository, issue and pull-request workflows managed through Forge.
+runtime: ">=0.21,<0.22"
+connection:
+  mode: oauth
+  secret_names: []
+  oauth_scopes: [repo, read:org]
+permissions:
+  network: external_api
+  filesystem: tenant_config
+  action_default: approval
+health:
+  operation: none
+provision:
+  install: none
+  uninstall: none
+retention: tenant_private
+metering: none

@@ -1,0 +1,30 @@
+schema: hermes.agent/v1
+id: personal-hermes
+name: Personal Hermes
+version: 1.0.0
+publisher: Hermes Official
+role: personal-assistant
+summary: Personal AI employee with memory, research and optional connected tools.
+runtime: ">=0.21,<0.22"
+models:
+  primary: platform/default-reasoning
+  fallback: platform/default-fast
+memory:
+  passive_secretary: true
+capabilities:
+  required:
+    - telegram-secretary
+    - web-search
+  optional:
+    - maton
+    - image-studio
+    - video-editor
+permissions:
+  web.search: autonomous
+  memory.recall: autonomous
+  external.write: approval
+  secret.manage: owner_only
+health:
+  suite: personal-hermes-smoke-v1
+onboarding:
+  questions: [business.context, work.preferences, communication.style]

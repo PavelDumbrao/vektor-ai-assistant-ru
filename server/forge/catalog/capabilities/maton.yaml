@@ -1,0 +1,25 @@
+schema: hermes.capability/v1
+id: maton
+name: Maton
+version: 1.0.0
+publisher: Hermes Official
+trust_tier: official
+availability: available
+kind: mcp
+summary: External business services through the managed Maton MCP connection.
+runtime: ">=0.21,<0.22"
+connection:
+  mode: personal_secret
+  secret_names: [MCP_MATON_API_KEY]
+  oauth_scopes: []
+permissions:
+  network: external_api
+  filesystem: tenant_config
+  action_default: approval
+health:
+  operation: maton-connections
+provision:
+  install: ensure-maton
+  uninstall: disable-maton
+retention: tenant_private
+metering: provider_usage

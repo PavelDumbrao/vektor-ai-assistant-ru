@@ -1,0 +1,25 @@
+schema: hermes.capability/v1
+id: image-studio
+name: Image Studio
+version: 1.0.0
+publisher: Hermes Official
+trust_tier: official
+availability: available
+kind: shared_tool
+summary: Managed image generation through the platform image provider.
+runtime: ">=0.21,<0.22"
+connection:
+  mode: platform
+  secret_names: []
+  oauth_scopes: []
+permissions:
+  network: platform
+  filesystem: tenant_workspace
+  action_default: autonomous
+health:
+  operation: image-studio-ready
+provision:
+  install: ensure-image-studio
+  uninstall: disable-image-studio
+retention: tenant_private
+metering: provider_usage

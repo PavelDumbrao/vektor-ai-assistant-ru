@@ -66,3 +66,34 @@ def test_upgrade_failure_pauses_channel(monkeypatch, tmp_path):
     assert result["failed"] == 1
     assert result["paused"] == 1
     assert bool(store.get_rollout("modern", "stable")["paused"])
+
+
+def test_pinned_release_drift_is_observe_only(monkeypatch, tmp_path):
+    store = AnalyticsStore(tmp_path / "analytics" / "db.sqlite3")
+    p = policy()
+    p["profiles"]["pavel"] = {
+        "track": "modern", "channel": "pinned", "release_id": "hermes-old",
+    }
+    profiles = [{"owner": "pavel", "release_id": "hermes-new"}]
+    monkeypatch.setattr(updater, "verified_release", lambda *_: None)
+    called = []
+    monkeypatch.setattr(updater, "run_upgrade", lambda *args: called.append(args) or ("success", ""))
+
+    result = updater.run_pinned(store, p, profiles)
+
+    assert result == {"updated": 0, "deferred": 0, "failed": 0, "pinned_drift": 1}
+    assert called == []
+    with store.connect() as db:
+        assert db.execute("SELECT COUNT(*) FROM update_attempts").fetchone()[0] == 0
+
+
+def test_pinned_matching_release_reports_no_drift(monkeypatch, tmp_path):
+    store = AnalyticsStore(tmp_path / "analytics" / "db.sqlite3")
+    p = policy()
+    p["profiles"]["pavel"] = {
+        "track": "modern", "channel": "pinned", "release_id": "hermes-same",
+    }
+    profiles = [{"owner": "pavel", "release_id": "hermes-same"}]
+    monkeypatch.setattr(updater, "verified_release", lambda *_: None)
+    result = updater.run_pinned(store, p, profiles)
+    assert result["pinned_drift"] == 0

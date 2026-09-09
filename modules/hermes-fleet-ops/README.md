@@ -25,11 +25,11 @@ Channels:
 - `canary` - explicit test cohort;
 - `preview` - internal/early users;
 - `stable` - normal clients, progressive stages `10 -> 50 -> 100` by default;
-- `pinned` - temporary compatibility hold on an exact release.
+- `pinned` - observe-only compatibility/pilot hold. The automatic updater never switches a pinned profile; an expected/current release mismatch is reported as `pinned_drift`.
 
 A stable stage advances only after its eligible cohort is current and healthy for the configured number of consecutive updater cycles. A real upgrade failure pauses that track/channel. Busy profiles are deferred and retried later, not treated as broken.
 
-Existing heterogeneous profiles are initially pinned to their current compatible release. New `h<telegram_id>` Forge tenants default to `modern/stable`. Existing profiles can be moved to modern/legacy channels after compatibility is explicitly proven.
+Existing heterogeneous profiles are initially pinned and therefore excluded from automatic switching. The release ID remains an expected/reference value for drift visibility, not an auto-enforced target. New `h<telegram_id>` Forge tenants default to `modern/stable`. Existing profiles can be moved to modern/legacy channels after compatibility is explicitly proven.
 
 Actual profile switching delegates to the existing shared-runtime `upgrade_profile.py`, preserving its idle check, immutable release validation, snapshot, readiness verification and rollback behavior.
 

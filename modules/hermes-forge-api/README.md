@@ -29,3 +29,14 @@ Secrets are write-only. Read endpoints return only presence and optional `last4`
 `restart` is bounded: it is refused while `active_agents` or persisted active-session entries are non-zero, and it succeeds only after the same profile returns active with Telegram connected.
 
 The API binds loopback only. HTTPS/reverse-proxy publication and BotFather Mini App URL configuration are separate deployment gates.
+## HTTPS edge
+
+Public TLS keeps the API loopback-only. The production path is:
+
+`127.0.0.1:8650 -> 172.18.0.1:8650 socat bridge -> nginx edge -> Traefik TLS`.
+
+`proai-hermes-forge-bridge.service` binds only the Docker gateway and forwards to localhost. The edge container publishes no host ports; it joins the existing external `n8n_default` network and is reachable only through Traefik.
+
+Default MVP hostname: `forge.srv1250550.hstgr.cloud`, which uses the existing Hostinger wildcard DNS. `install_edge.py --hostname ...` can replace the hostname later without changing the API service.
+
+The edge enforces a 64 KiB request-body ceiling, bounded request rate and TLS/HSTS via the existing Traefik certificate resolver.

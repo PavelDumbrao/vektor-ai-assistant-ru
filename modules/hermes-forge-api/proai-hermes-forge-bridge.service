@@ -1,0 +1,30 @@
+[Unit]
+Description=Hermes Forge Docker bridge to localhost API
+After=network-online.target docker.service proai-hermes-forge-api.service
+Wants=network-online.target docker.service
+Requires=proai-hermes-forge-api.service
+
+[Service]
+Type=simple
+DynamicUser=yes
+ExecStart=/usr/bin/socat TCP-LISTEN:8650,bind=172.18.0.1,fork,reuseaddr TCP:127.0.0.1:8650
+Restart=always
+RestartSec=2
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+LockPersonality=true
+RestrictNamespaces=true
+RestrictAddressFamilies=AF_INET AF_INET6
+IPAddressDeny=any
+IPAddressAllow=127.0.0.0/8
+IPAddressAllow=172.18.0.0/16
+
+[Install]
+WantedBy=multi-user.target

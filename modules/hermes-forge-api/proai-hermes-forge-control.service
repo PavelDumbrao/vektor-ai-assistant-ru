@@ -1,0 +1,31 @@
+[Unit]
+Description=Hermes Forge root control daemon
+After=network-online.target proai-hermes-manager.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Group=www-data
+WorkingDirectory=/opt/proai-hermes-forge-api
+ExecStart=/usr/bin/python3 /opt/proai-hermes-forge-api/control.py
+Restart=always
+RestartSec=2
+RuntimeDirectory=proai-hermes-forge
+RuntimeDirectoryMode=0750
+UMask=0007
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ReadWritePaths=/home /run/proai-hermes-forge
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+LockPersonality=true
+RestrictNamespaces=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target

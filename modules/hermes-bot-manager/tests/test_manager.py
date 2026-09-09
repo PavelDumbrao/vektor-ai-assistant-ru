@@ -30,14 +30,14 @@ def test_menu_sells_hiring_not_bot_creation():
 
 def test_username_rules_explain_exact_problem():
     username, problem = manager.username_problem("SalavatAI")
-    assert username == "SalavatAI"
+    assert username == "salavatai"
     assert "заканчиваться" in problem and "bot" in problem
 
     _, problem = manager.username_problem("Салават_bot")
     assert "латинские" in problem
 
     username, problem = manager.username_problem("@SalavatAI_bot")
-    assert username == "SalavatAI_bot"
+    assert username == "salavatai_bot"
     assert problem is None
 
 
@@ -65,11 +65,17 @@ def test_valid_username_builds_prefilled_final_confirmation(monkeypatch):
     assert manager.handle_hire_text(503899482, 503899482, "@SalavatAI_bot", state)
     draft = state["drafts"]["503899482"]
     assert draft["step"] == "confirm"
-    assert draft["username"] == "SalavatAI_bot"
+    assert draft["username"] == "salavatai_bot"
     text, markup = sent[-1][1], sent[-1][2]
     assert "Бот создаётся <b>в твоём Telegram-аккаунте</b>" in text
     button = markup["inline_keyboard"][0][0]
     assert button["text"] == "✅ Подтвердить найм"
     parsed = urlparse(button["url"])
-    assert parsed.path == "/newbot/ProAIHermesBot/SalavatAI_bot"
+    assert parsed.path == "/newbot/ProAIHermesBot/salavatai_bot"
     assert parse_qs(parsed.query)["name"] == ["Салават AI"]
+
+
+def test_username_is_canonicalized_to_lowercase():
+    username, problem = manager.username_problem("@MarkusHelperBot")
+    assert username == "markushelperbot"
+    assert problem is None

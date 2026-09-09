@@ -116,7 +116,7 @@ def hire_key(user_id: int) -> str:
 
 
 def username_problem(raw: str) -> tuple[str, str | None]:
-    username = (raw or '').strip().lstrip('@')
+    username = (raw or '').strip().lstrip('@').lower()
     problems = []
     if not username.lower().endswith('bot'):
         problems.append('username должен обязательно заканчиваться на <code>bot</code>')
@@ -164,10 +164,11 @@ def ask_hire_username(chat_id: int, user_id: int, state: dict) -> None:
          '<b>Шаг 2 из 2. Теперь придумай username.</b>\n\n'
          'Это адрес твоего бота в Telegram.\n\n'
          'ВАЖНО: username <b>обязательно должен заканчиваться на bot</b>.\n'
-         'Только латинские буквы, цифры и <code>_</code>. Длина 5–32 символа.\n\n'
+         'Только строчные латинские буквы <code>a-z</code>, цифры и <code>_</code>. Длина 5–32 символа.\n'
+        'Если напишешь заглавные буквы, я сам приведу их к строчным.\n\n'
          'Примеры:\n'
-         '<code>SalavatAI_bot</code>\n'
-         '<code>MarkusHelperBot</code>\n\n'
+         '<code>salavatai_bot</code>\n'
+         '<code>markushelperbot</code>\n\n'
          'Напиши username сюда. Можно с @ или без него 👇')
 
 

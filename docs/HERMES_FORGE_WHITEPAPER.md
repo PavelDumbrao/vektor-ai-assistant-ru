@@ -788,3 +788,87 @@ Hermes Forge is not a bot, prompt library or workflow builder.
 **Hermes Forge is the control plane, factory and future distribution layer for deployable AI employees.**
 
 Its job is to transform a versioned Agent Package plus authorized customer connections into a healthy, observable, upgradeable and bounded Hermes runtime that can do real work.
+
+## 32. Fleet Update Manager
+
+Hermes Forge must treat runtime delivery as a fleet capability, not a per-profile administrator task. The target user experience is similar to an operating-system update service: a verified stable release becomes the desired fleet version and eligible Hermes profiles converge to it automatically.
+
+The implementation must preserve the current immutable-release model. A release is built beside previous releases, verified, checksummed and marked ready before any profile changes. Profiles never run `pip install` or mutate the shared runtime in place.
+
+Recommended release channels:
+
+- `canary`: dedicated internal/test Hermes instances;
+- `preview`: optional early adopters and internal profiles;
+- `stable`: default for customer profiles;
+- `pinned`: explicit administrative exception for compatibility or incident response.
+
+A stable release is not pushed to the whole fleet simultaneously. Forge uses rollout rings: canary -> small cohort -> broader cohort -> fleet. Each ring must pass runtime, Telegram, model, database, memory and required-integration health gates before promotion.
+
+Per-profile update state should include current release, desired release, channel, last attempt, last success, failure reason and rollback target. Profiles update only at a safe boundary: idle immediately, otherwise when the current task ends or within a configured maintenance window.
+
+Automatic rollback is mandatory. A rollout ring must stop and revert affected profiles when post-update health fails, restart loops appear, Telegram connectivity is lost, error rate crosses a threshold or a compatibility gate fails.
+
+Database/schema changes need stricter policy than code changes. Automatic broad rollout is allowed only when the release declares migration compatibility and rollback semantics. Non-rollback-compatible migrations require an explicit migration release procedure and must never be hidden inside a routine fleet update.
+
+The Forge dashboard should expose:
+
+- fleet current version and stable target version;
+- percentage upgraded;
+- pending/busy profiles;
+- failed/rolled-back profiles;
+- version drift;
+- per-release health and error comparison;
+- one administrative `Pause rollout` control.
+
+The existing `prepare_release.py` and `upgrade_profile.py` are the foundation for this system. Forge adds release metadata, rollout orchestration, scheduling, health gates and fleet reconciliation rather than replacing the proven upgrade/rollback mechanics.
+
+## 33. Privacy-safe Telemetry and Product Analytics
+
+Hermes Forge needs centralized operational and product analytics, but raw conversations are explicitly out of scope. The analytics plane records behavior metadata and system outcomes, not message content.
+
+Hermes core already contains a privacy-bounded shared metrics subsystem under `hermes_cli/observability/shared_metrics*`. It currently records allowlisted aggregated counters for task runs, model-call families, retries, tool-call counts, duration buckets and outcomes, persists them in a private local SQLite store and retains local history for a bounded period. Forge should extend this existing contract rather than create an unrelated telemetry path.
+
+Required event classes:
+
+- `task.started` / `task.finished`;
+- `tool.called` with allowlisted `tool_name` and `toolset`, but never tool arguments/results;
+- `integration.health`;
+- `runtime.health`;
+- `model.call` with model/provider family, outcome, latency/cost buckets;
+- `release.update` / `release.rollback`;
+- `provisioning.step`;
+- `secret.operation` as action/status only, never secret value;
+- `permission.decision` such as allowed, blocked, approval requested or denied.
+
+Never collect in the analytics plane:
+
+- raw Telegram/user message text;
+- prompts or model responses;
+- tool arguments or tool results;
+- secret values, OAuth tokens or API keys;
+- uploaded document contents;
+- arbitrary exception strings before redaction;
+- personal filenames, URLs or external identifiers unless a separate reviewed metric contract explicitly requires a normalized category.
+
+Prefer structured error codes such as `telegram_auth_failed`, `tool_timeout`, `provider_rate_limited`, `database_unavailable` and `release_health_failed`. Error detail intended for central aggregation must be generated from an allowlist at the source, not by sending an arbitrary stack trace to analytics.
+
+Useful product metrics include tools used per active Hermes, tool usage frequency, tool success rate, installed-but-unused capabilities, active Hermes per day/week, tasks per Hermes, automation vs interactive tasks, update adoption, health incidents, retry rate, model/provider reliability and estimated infrastructure cost by tenant/package.
+
+Useful operational metrics include fleet uptime, p50/p95 task latency, p50/p95 tool latency, integration failure rate, restart loops, update failure/rollback rate, provisioning duration, mean time to recovery and top normalized failure reasons.
+
+## 34. Telemetry Data Governance
+
+Operational telemetry required to keep the service healthy is distinct from optional product analytics. Both must use the same data-minimization rules and explicit schemas, but product analytics should be aggregated wherever possible.
+
+Recommended storage layers:
+
+- per-Hermes local bounded metrics store for resilient collection;
+- Forge Telemetry Collector receiving validated metric/event envelopes;
+- central time-series/event store for recent operational analysis;
+- derived aggregate tables for long-term product analytics and dashboards.
+
+Telemetry transport must be asynchronous and non-blocking: analytics failure must never break the Hermes task path. Events should be batched, retried with bounds and deduplicated by event/package id.
+
+Recommended default retention policy for the first implementation: short-lived detailed operational events, longer-lived aggregated counters, and no central conversation archive. Exact retention windows should be an explicit product/security decision rather than an accidental database default.
+
+Every telemetry schema change requires tests proving forbidden fields cannot be exported. The central collector must reject unknown event versions and dimensions instead of accepting arbitrary JSON payloads.

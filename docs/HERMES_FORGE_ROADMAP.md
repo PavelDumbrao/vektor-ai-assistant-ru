@@ -409,3 +409,64 @@ Pause expansion and fix platform fundamentals if any of the following occurs:
 - per-tenant unit cost/support load is unknown before aggressive growth.
 
 The objective is not maximum feature count. The objective is a repeatable, secure, observable path from **Hire** to **Working AI employee**.
+
+## Platform foundation amendment - required before broad product rollout
+
+The following two milestones are prerequisites for scaling beyond a small pilot and should be completed before broad P10/P11/P12 rollout.
+
+### P9A - Fleet Update Manager
+
+**Goal:** make verified Hermes releases automatically converge across the fleet without manually upgrading profiles one by one.
+
+Tasks:
+
+1. Define release metadata: release id, semantic/product version, channel, compatibility, rollback target and health requirements.
+2. Add profile update policy: `canary`, `preview`, `stable`, `pinned`.
+3. Build a fleet reconciler around existing `prepare_release.py` and `upgrade_profile.py`.
+4. Add safe-boundary scheduling: upgrade idle profiles immediately, defer busy profiles until task completion/maintenance window.
+5. Add rollout rings and automatic promotion only after health gates pass.
+6. Add automatic rollback and rollout pause on failure thresholds.
+7. Expose current/desired release and rollout state through Forge API/UI.
+
+Acceptance criteria:
+
+- a new verified `stable` release can be declared once and automatically reach every eligible stable profile;
+- rollout never upgrades the entire fleet simultaneously;
+- busy profiles are not interrupted mid-task;
+- failed post-update health causes bounded rollback;
+- no tenant secrets, memory or mutable user files are overwritten during upgrade/rollback;
+- Forge can show fleet version drift and exact failed/pending profiles.
+
+### P9B - Forge Telemetry Collector and Analytics
+
+**Goal:** understand usage and failures across the fleet without centrally storing conversation content.
+
+Tasks:
+
+1. Extend the existing Hermes shared-metrics contract rather than inventing a parallel telemetry SDK.
+2. Add allowlisted tool usage metrics: `tool_name`, `toolset`, outcome and bounded latency, never args/results.
+3. Define normalized runtime, integration, provisioning and release-update event schemas.
+4. Build a Forge collector that validates schema versions/dimensions and rejects arbitrary payloads.
+5. Batch and asynchronously forward local telemetry so collector failure cannot break Hermes execution.
+6. Store recent operational events separately from long-lived aggregate counters.
+
+7. Add dashboards for tool usage, success/error rate, p95 latency, integration health, release adoption, rollback rate, provisioning failures and normalized top error codes.
+8. Add tests proving forbidden content fields cannot enter exported telemetry.
+
+Acceptance criteria:
+
+- no raw message, prompt, response, tool args/results or secret values are present in central analytics;
+- top tools and tool success rates can be queried per period/package/profile cohort;
+- current fleet error rate and top normalized failures are visible;
+- release health can be compared before/after rollout;
+- one broken provider/integration can be identified without reading user conversations;
+- telemetry outage does not interrupt normal Hermes work.
+
+### Recommended dashboard split
+
+- **Fleet:** versions, update progress, uptime, unhealthy instances, rollback incidents;
+- **Tools:** calls, active users/profiles, success %, latency, installed-but-unused tools;
+- **Models:** model/provider family usage, success %, retries, latency/cost buckets;
+- **Integrations:** connection health and normalized failures;
+- **Provisioning:** activation funnel and failed steps;
+- **Incidents:** error trends, restart loops, MTTR and affected release/package cohorts.

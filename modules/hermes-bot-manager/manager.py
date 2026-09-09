@@ -19,6 +19,7 @@ HERE = Path(__file__).resolve().parent
 if str(HERE) not in sys.path:
     sys.path.insert(0, str(HERE))
 from hermes_instance import HermesInstance, normalize_bot_username, owner_for_telegram_id
+import i18n
 
 SECRET_FILE = Path('/etc/proai-hermes-manager.env')
 ROOT = Path('/opt/proai-hermes-manager')
@@ -117,15 +118,16 @@ def api(method: str, payload: dict | None = None, timeout: int = 65):
 
 def load_state() -> dict:
     if not STATE_FILE.exists():
-        return {'offset': 0, 'managed': {}, 'imported': {}, 'drafts': {}}
+        return {'offset': 0, 'managed': {}, 'imported': {}, 'drafts': {}, 'locales': {}}
     try:
         state = json.loads(STATE_FILE.read_text(encoding='utf-8'))
         state.setdefault('managed', {})
         state.setdefault('imported', {})
         state.setdefault('drafts', {})
+        state.setdefault('locales', {})
         return state
     except Exception:
-        return {'offset': 0, 'managed': {}, 'imported': {}, 'drafts': {}}
+        return {'offset': 0, 'managed': {}, 'imported': {}, 'drafts': {}, 'locales': {}}
 
 
 def save_state(state: dict) -> None:
@@ -137,17 +139,17 @@ def save_state(state: dict) -> None:
     os.replace(name, STATE_FILE)
 
 
-def main_menu():
+def main_menu(locale: str = "ru"):
     return {
         'inline_keyboard': [
-            [{'text': '⚡ Нанять AI-ассистента', 'callback_data': 'create'}],
-            [{'text': '🤖 Мои AI-ассистенты', 'callback_data': 'my'},
-             {'text': '🧠 Как это работает', 'callback_data': 'how'}],
-            [{'text': '🔐 Безопасность', 'callback_data': 'security'},
-             {'text': '🛟 Помощь', 'callback_data': 'help'}],
+            [{'text': i18n.t(locale, 'menu_hire'), 'callback_data': 'create'}],
+            [{'text': i18n.t(locale, 'menu_my'), 'callback_data': 'my'},
+             {'text': i18n.t(locale, 'menu_how'), 'callback_data': 'how'}],
+            [{'text': i18n.t(locale, 'menu_security'), 'callback_data': 'security'},
+             {'text': i18n.t(locale, 'menu_help'), 'callback_data': 'help'}],
+            [{'text': i18n.t(locale, 'menu_language'), 'callback_data': 'language'}],
         ]
     }
-
 
 def send(chat_id: int, text: str, markup: dict | None = None):
     payload = {'chat_id': chat_id, 'text': text, 'parse_mode': 'HTML',
@@ -197,15 +199,12 @@ def reconcile_provisioning(state: dict) -> None:
             continue
         owner_id = int(item.get('owner_user_id') or 0)
         username = item.get('username') or ''
+        locale = i18n.locale_for(owner_id, state)
         try:
-            if status == 'active':
-                send(owner_id,
-                     f'✅ <b>AI-ассистент готов к работе.</b>\n\n@{username} полностью развёрнут и прошёл проверку. Можно открывать его и начинать работать.',
-                     main_menu())
-            else:
-                send(owner_id,
-                     f'⚠️ <b>@{username} создан, но настройка Hermes не завершилась.</b>\n\nТехническая ошибка уже зафиксирована. Сам бот остаётся твоим; повторное развёртывание не требует создавать его заново.',
-                     main_menu())
+            key = 'provision_active' if status == 'active' else 'provision_failed'
+            send(owner_id,
+                 i18n.t(locale, key, username=html.escape(str(username))),
+                 main_menu(locale))
             item['notified_state'] = status
             changed = True
         except Exception:
@@ -227,78 +226,52 @@ def reconcile_provisioning(state: dict) -> None:
         save_state(state)
 
 
-def welcome_text() -> str:
-    return (
-        '<b>Hermes Forge | Pro AI</b>\n\n'
-        'Найми своего персонального AI-ассистента прямо в Telegram.\n\n'
-        '<b>Самообучающийся:</b> чем больше ты с ним работаешь и поправляешь его, тем точнее он подстраивается под тебя.\n\n'
-        '<b>Постоянно развивается:</b> вместе с экосистемой Hermes он получает новые общие инструменты и навыки. Твои приватные данные при этом не смешиваются с чужими.\n\n'
-        'Нажми «Нанять AI-ассистента», и я проведу тебя по шагам прямо здесь.'
-    )
-
+def welcome_text(locale: str = "ru") -> str:
+    return i18n.t(locale, 'welcome')
 
 def hire_key(user_id: int) -> str:
     return str(int(user_id))
 
 
-def username_problem(raw: str) -> tuple[str, str | None]:
+def username_problem(raw: str, locale: str = "ru") -> tuple[str, str | None]:
     username = (raw or '').strip().lstrip('@').lower()
     problems = []
-    if not username.lower().endswith('bot'):
-        problems.append('username должен обязательно заканчиваться на <code>bot</code>')
+    if not username.endswith('bot'):
+        problems.append(i18n.t(locale, 'username_suffix'))
     if not 5 <= len(username) <= 32:
-        problems.append('длина username должна быть от 5 до 32 символов')
+        problems.append(i18n.t(locale, 'username_length'))
     if not re.fullmatch(r'[A-Za-z0-9_]+', username or ''):
-        problems.append('можно использовать только латинские буквы, цифры и знак <code>_</code>')
+        problems.append(i18n.t(locale, 'username_chars'))
     return username, ('; '.join(problems) if problems else None)
 
-
-def final_hire_keyboard(name: str, username: str):
+def final_hire_keyboard(name: str, username: str, locale: str = "ru"):
     encoded_name = urllib.parse.quote(name, safe='')
     url = f'https://t.me/newbot/{BOT_USERNAME}/{username}?name={encoded_name}'
-    return {
-        'inline_keyboard': [
-            [{'text': '✅ Подтвердить найм', 'url': url}],
-            [{'text': '✏️ Изменить имя', 'callback_data': 'hire_name'},
-             {'text': '✏️ Изменить username', 'callback_data': 'hire_username'}],
-            [{'text': '❌ Отмена', 'callback_data': 'hire_cancel'}],
-        ]
-    }
-
+    return {'inline_keyboard': [
+        [{'text': i18n.t(locale, 'confirm_hire'), 'url': url}],
+        [{'text': i18n.t(locale, 'edit_name'), 'callback_data': 'hire_name'},
+         {'text': i18n.t(locale, 'edit_username'), 'callback_data': 'hire_username'}],
+        [{'text': i18n.t(locale, 'cancel'), 'callback_data': 'hire_cancel'}],
+    ]}
 
 def ask_hire_name(chat_id: int, user_id: int, state: dict) -> None:
+    locale = i18n.locale_for(user_id, state)
     state.setdefault('drafts', {})[hire_key(user_id)] = {
         'step': 'name', 'updated_at': int(time.time())
     }
     save_state(state)
-    send(chat_id,
-         '<b>Шаг 1 из 2. Как будет называться твой AI-ассистент?</b>\n\n'
-         'Название может быть любым. Например:\n'
-         '<code>Салават AI</code>\n'
-         '<code>Маркус</code>\n'
-         '<code>Мой ассистент</code>\n\n'
-         'Просто напиши название сюда 👇',
-         {'remove_keyboard': True})
-
+    send(chat_id, i18n.t(locale, 'hire_name'), {'remove_keyboard': True})
 
 def ask_hire_username(chat_id: int, user_id: int, state: dict) -> None:
+    locale = i18n.locale_for(user_id, state)
     draft = state.setdefault('drafts', {}).setdefault(hire_key(user_id), {})
     draft['step'] = 'username'
     draft['updated_at'] = int(time.time())
     save_state(state)
-    send(chat_id,
-         '<b>Шаг 2 из 2. Теперь придумай username.</b>\n\n'
-         'Это адрес твоего бота в Telegram.\n\n'
-         'ВАЖНО: username <b>обязательно должен заканчиваться на bot</b>.\n'
-         'Только строчные латинские буквы <code>a-z</code>, цифры и <code>_</code>. Длина 5–32 символа.\n'
-        'Если напишешь заглавные буквы, я сам приведу их к строчным.\n\n'
-         'Примеры:\n'
-         '<code>salavatai_bot</code>\n'
-         '<code>markushelperbot</code>\n\n'
-         'Напиши username сюда. Можно с @ или без него 👇')
-
+    send(chat_id, i18n.t(locale, 'hire_username'))
 
 def show_hire_confirm(chat_id: int, user_id: int, state: dict) -> None:
+    locale = i18n.locale_for(user_id, state)
     draft = state.get('drafts', {}).get(hire_key(user_id)) or {}
     name = str(draft.get('name') or '').strip()
     username = str(draft.get('username') or '').strip()
@@ -309,27 +282,17 @@ def show_hire_confirm(chat_id: int, user_id: int, state: dict) -> None:
     draft['updated_at'] = int(time.time())
     save_state(state)
     send(chat_id,
-         '<b>Всё готово. Проверь:</b>\n\n'
-         f'Имя: <b>{html.escape(name)}</b>\n'
-         f'Username: <b>@{username}</b>\n\n'
-         'Что произойдёт дальше:\n'
-         '1. Нажмёшь «Подтвердить найм».\n'
-         '2. Telegram покажет одно системное подтверждение создания бота. Ничего заново вводить не нужно.\n'
-         '3. Бот создаётся <b>в твоём Telegram-аккаунте</b>, как при создании через BotFather, и принадлежит тебе.\n'
-         '4. Hermes Forge автоматически подключит его к твоему AI-ассистенту.\n\n'
-         'Если Telegram скажет, что username уже занят, просто вернись сюда и отправь новый username обычным сообщением.',
-         final_hire_keyboard(name, username))
-
+         i18n.t(locale, 'hire_confirm', name=html.escape(name), username=html.escape(username)),
+         final_hire_keyboard(name, username, locale))
 
 def show_create(chat_id: int, user: dict, state: dict):
+    user_id = int(user['id'])
+    locale = i18n.locale_for(user_id, state, user)
     me = api('getMe')
     if not me.get('can_manage_bots'):
-        send(chat_id,
-             '⚙️ <b>Сервис найма AI-ассистента временно недоступен.</b>\n\n'
-             'Попробуй немного позже.', main_menu())
+        send(chat_id, i18n.t(locale, 'service_unavailable'), main_menu(locale))
         return
-    ask_hire_name(chat_id, int(user['id']), state)
-
+    ask_hire_name(chat_id, user_id, state)
 
 def _profile_owner_telegram_id(owner: str) -> int:
     if not re.fullmatch(r'[a-z0-9_-]{2,40}', owner):
@@ -410,6 +373,7 @@ def _imported_service_active(item: dict) -> bool:
 
 
 def show_my(chat_id: int, user_id: int, state: dict):
+    locale = i18n.locale_for(user_id, state)
     rows = []
     seen_bot_ids = set()
     for bot_id, item in state.get('managed', {}).items():
@@ -417,7 +381,8 @@ def show_my(chat_id: int, user_id: int, state: dict):
             continue
         uname = item.get('username') or bot_id
         status = item.get('profile_status') or 'registered'
-        rows.append(f'• <b>@{uname}</b> — {status}')
+        label = i18n.t(locale, 'row_active') if status == 'active' else html.escape(str(status))
+        rows.append(f'• <b>@{html.escape(str(uname))}</b> — {label}')
         seen_bot_ids.add(str(item.get('bot_id') or bot_id))
     for bot_id, item in state.get('imported', {}).items():
         if int(item.get('owner_user_id', 0)) != int(user_id):
@@ -425,15 +390,11 @@ def show_my(chat_id: int, user_id: int, state: dict):
         if str(item.get('bot_id') or bot_id) in seen_bot_ids:
             continue
         uname = item.get('username') or bot_id
-        status = 'работает' if _imported_service_active(item) else 'остановлен'
-        rows.append(f'• <b>@{uname}</b> — {status} · подключён ранее')
-    if not rows:
-        text = ('<b>Мои AI-ассистенты</b>\n\nПока никого не наняли. '
-                'Нажми «Нанять AI-ассистента» в главном меню.')
-    else:
-        text = '<b>Мои AI-ассистенты</b>\n\n' + '\n'.join(rows)
-    send(chat_id, text, main_menu())
-
+        status = i18n.t(locale, 'row_active') if _imported_service_active(item) else i18n.t(locale, 'row_inactive')
+        rows.append(f'• <b>@{html.escape(str(uname))}</b> — {status} · {i18n.t(locale, "row_imported")}')
+    text = (i18n.t(locale, 'my_empty') if not rows else
+            i18n.t(locale, 'my_title') + '\n\n' + '\n'.join(rows))
+    send(chat_id, text, main_menu(locale))
 
 def is_admin(user_id: int) -> bool:
     return int(user_id) == PAVEL_ID
@@ -448,12 +409,11 @@ def is_authorized_user(user_id: int, state: dict) -> bool:
     return find_profile_for_owner(uid) is not None
 
 
-def access_denied(chat_id: int) -> None:
+def access_denied(chat_id: int, locale: str = "ru") -> None:
     try:
-        send(chat_id, '🔒 <b>Доступ закрыт.</b>\n\nHermes Forge работает только по приглашению администратора Pro AI.')
+        send(chat_id, i18n.t(locale, 'access_denied'))
     except Exception:
         pass
-
 
 def find_profile_for_owner(user_id: int):
     matches = []
@@ -542,6 +502,7 @@ def managed_event(update: dict, state: dict):
     bot_id = int(bot.get('id') or 0)
     if not owner_id or not bot_id:
         return
+    locale = i18n.remember_locale(user, state)
     if not is_authorized_user(owner_id, state):
         try:
             send(PAVEL_ID,
@@ -550,7 +511,7 @@ def managed_event(update: dict, state: dict):
                  'Пользователь не был авторизован, токен бота не запрашивался.')
         except Exception:
             pass
-        access_denied(owner_id)
+        access_denied(owner_id, locale)
         return
 
     token = api('getManagedBotToken', {'user_id': bot_id})
@@ -599,15 +560,14 @@ def managed_event(update: dict, state: dict):
     state.setdefault('drafts', {}).pop(hire_key(owner_id), None)
     save_state(state)
     if profile_status == 'active':
-        text = (f'✅ <b>AI-ассистент нанят и готов к работе.</b>\n\n@{uname} уже подключён и запущен. '
-                'Он будет запоминать твой рабочий контекст и учиться на твоих правках. Доступ для посторонних закрыт.')
+        key = 'managed_active'
     elif profile_status == 'provisioning':
-        text = (f'✅ <b>@{uname} создан.</b>\n\nТеперь Hermes Forge автоматически разворачивает персональную среду: память, runtime, базу и инструменты. '
-                'Когда health-check пройдёт, я напишу сюда, что ассистент готов.')
+        key = 'managed_provisioning'
     else:
-        text = (f'⚠️ <b>@{uname} создан, но Hermes пока не развёрнут.</b>\n\n'
-                'Ошибка зафиксирована безопасно. Бота заново создавать не нужно.')
-    send(owner_id, text, main_menu())
+        key = 'managed_failed'
+    send(owner_id,
+         i18n.t(locale, key, username=html.escape(str(uname))),
+         main_menu(locale))
     if owner_id != PAVEL_ID:
         try:
             profile_label = owner or 'не найден'
@@ -622,6 +582,7 @@ def managed_event(update: dict, state: dict):
 
 
 def handle_hire_text(chat_id: int, user_id: int, text: str, state: dict) -> bool:
+    locale = i18n.locale_for(user_id, state)
     drafts = state.setdefault('drafts', {})
     draft = drafts.get(hire_key(user_id))
     if not isinstance(draft, dict):
@@ -630,12 +591,10 @@ def handle_hire_text(chat_id: int, user_id: int, text: str, state: dict) -> bool
     if step == 'name':
         name = ' '.join((text or '').split()).strip()
         if not name:
-            send(chat_id, 'Название не может быть пустым. Напиши любое имя для ассистента 👇')
+            send(chat_id, i18n.t(locale, 'name_empty'))
             return True
         if len(name) > 64:
-            send(chat_id,
-                 f'Название слишком длинное: {len(name)} символов. Максимум 64. '
-                 'Сократи название и отправь ещё раз 👇')
+            send(chat_id, i18n.t(locale, 'name_too_long', length=len(name)))
             return True
         draft['name'] = name
         draft['updated_at'] = int(time.time())
@@ -643,14 +602,10 @@ def handle_hire_text(chat_id: int, user_id: int, text: str, state: dict) -> bool
         ask_hire_username(chat_id, user_id, state)
         return True
     if step == 'username':
-        username, problem = username_problem(text)
+        username, problem = username_problem(text, locale)
         if problem:
             details = problem.replace('; ', '\n• ')
-            send(chat_id,
-                 '<b>Нужно немного поправить username:</b>\n\n'
-                 '• ' + details + '\n\n'
-                 'Пример правильного варианта: <code>SalavatAI_bot</code>\n\n'
-                 'Отправь исправленный username сюда 👇')
+            send(chat_id, i18n.t(locale, 'username_fix', details=details))
             return True
         draft['username'] = username
         draft['updated_at'] = int(time.time())
@@ -658,12 +613,10 @@ def handle_hire_text(chat_id: int, user_id: int, text: str, state: dict) -> bool
         show_hire_confirm(chat_id, user_id, state)
         return True
     if step == 'confirm':
-        username, problem = username_problem(text)
+        username, problem = username_problem(text, locale)
         if problem:
             details = problem.replace('; ', '\n• ')
-            send(chat_id,
-                 'Если хочешь поменять username, пришли новый вариант. Нужно исправить:\n\n'
-                 '• ' + details + '\n\nПример: <code>SalavatAI_bot</code>')
+            send(chat_id, i18n.t(locale, 'username_change', details=details))
             return True
         draft['username'] = username
         draft['updated_at'] = int(time.time())
@@ -678,58 +631,57 @@ def handle_message(msg: dict, state: dict):
     chat_id = int(chat.get('id') or 0)
     user_id = int(user.get('id') or 0)
     text = (msg.get('text') or '').strip()
-    if not chat_id or not user_id:
+    if not chat_id or not user_id or chat.get('type') != 'private':
         return
-    # Forge is private-chat only. Group/channel updates are ignored.
-    if chat.get('type') != 'private':
-        return
+    locale_key = str(user_id)
+    previous_locale = state.setdefault('locales', {}).get(locale_key)
+    locale = i18n.remember_locale(user, state)
+    if previous_locale != locale:
+        save_state(state)
     if not is_authorized_user(user_id, state):
-        access_denied(chat_id)
+        access_denied(chat_id, locale)
         return
     if msg.get('managed_bot_created'):
-        send(chat_id, '⚙️ Бот создан. Завершаю подключение к Hermes…')
+        send(chat_id, i18n.t(locale, 'created_finishing'))
         return
     parts = text.split()
     command = parts[0].split('@')[0].lower() if text.startswith('/') and parts else ''
 
-    # Admin-only migration of already-running legacy Hermes profiles.
     if command == '/importprofile':
         if not is_admin(user_id):
-            access_denied(chat_id)
+            access_denied(chat_id, locale)
             return
         if len(parts) != 2:
-            send(chat_id, 'Формат: <code>/importprofile PROFILE</code>', main_menu())
+            send(chat_id, 'Формат: <code>/importprofile PROFILE</code>', main_menu(locale))
             return
         try:
             item = import_existing_profile(parts[1], state)
         except Exception as exc:
-            send(chat_id,
-                 '<b>Импорт не выполнен.</b>\n\n'
-                 f'Код: <code>{html.escape(str(exc))[:120]}</code>', main_menu())
+            send(chat_id, '<b>Импорт не выполнен.</b>\n\n' +
+                 f'Код: <code>{html.escape(str(exc))[:120]}</code>', main_menu(locale))
             return
         send(chat_id,
              '<b>✅ Существующий AI-ассистент добавлен в Forge.</b>\n\n'
              f'@{item["username"]}\nПрофиль: <code>{item["profile"]}</code>\n'
-             'Бот не пересоздавался, текущий токен остался на месте.', main_menu())
+             'Бот не пересоздавался, текущий токен остался на месте.', main_menu(locale))
         return
 
-    # Admin-only admission control for future clients.
     if command in {'/allow', '/deny', '/allowed'}:
         if not is_admin(user_id):
-            access_denied(chat_id)
+            access_denied(chat_id, locale)
             return
         if command == '/allowed':
             explicit = sorted(int(x) for x in state.get('allowed_users', {}) if str(x).isdigit())
-            body = '\n'.join(f'• <code>{uid}</code>' for uid in explicit) or '• нет дополнительных ID'
-            send(chat_id, '<b>Явно разрешённые пользователи</b>\n\n' + body +
-                 '\n\nВладельцы заранее созданных Hermes-профилей разрешаются автоматически.', main_menu())
+            body_text = '\n'.join(f'• <code>{uid}</code>' for uid in explicit) or '• нет дополнительных ID'
+            send(chat_id, '<b>Явно разрешённые пользователи</b>\n\n' + body_text +
+                 '\n\nВладельцы заранее созданных Hermes-профилей разрешаются автоматически.', main_menu(locale))
             return
         if len(parts) != 2 or not parts[1].isdigit():
-            send(chat_id, f'Формат: <code>{command} TELEGRAM_ID</code>', main_menu())
+            send(chat_id, f'Формат: <code>{command} TELEGRAM_ID</code>', main_menu(locale))
             return
         target = int(parts[1])
         if target <= 0 or target == PAVEL_ID:
-            send(chat_id, 'Некорректный Telegram ID.', main_menu())
+            send(chat_id, 'Некорректный Telegram ID.', main_menu(locale))
             return
         allowed = state.setdefault('allowed_users', {})
         if command == '/allow':
@@ -739,17 +691,19 @@ def handle_message(msg: dict, state: dict):
             allowed.pop(str(target), None)
             result = f'🔒 <code>{target}</code> удалён из явного allowlist.'
         save_state(state)
-        send(chat_id, result, main_menu())
+        send(chat_id, result, main_menu(locale))
         return
 
     if command == '/cancel':
         state.setdefault('drafts', {}).pop(hire_key(user_id), None)
         save_state(state)
-        send(chat_id, 'Ок, найм отменён. Когда будешь готов, нажми «Нанять AI-ассистента».', main_menu())
+        send(chat_id, i18n.t(locale, 'hire_cancelled_menu'), main_menu(locale))
     elif command in {'/start', '/menu'}:
         state.setdefault('drafts', {}).pop(hire_key(user_id), None)
         save_state(state)
-        send(chat_id, welcome_text(), main_menu())
+        send(chat_id, welcome_text(locale), main_menu(locale))
+    elif command in {'/language', '/lang'}:
+        send(chat_id, i18n.t(locale, 'language_title'), i18n.language_keyboard())
     elif command in {'/new', '/create', '/hire'}:
         show_create(chat_id, user, state)
     elif not command and text and handle_hire_text(chat_id, user_id, text, state):
@@ -757,25 +711,15 @@ def handle_message(msg: dict, state: dict):
     elif command in {'/my', '/bots'}:
         show_my(chat_id, user_id, state)
     elif command == '/status':
-        managed_ids = {
-            str(x.get('bot_id') or bot_id) for bot_id, x in state.get('managed', {}).items()
-            if int(x.get('owner_user_id', 0)) == user_id
-        }
-        imported_ids = {
-            str(x.get('bot_id') or bot_id) for bot_id, x in state.get('imported', {}).items()
-            if int(x.get('owner_user_id', 0)) == user_id
-        }
-        total = len(managed_ids | imported_ids)
-        send(chat_id,
-             '<b>Твои AI-ассистенты</b>\n\n'
-             f'Подключено: <b>{total}</b>', main_menu())
+        managed_ids = {str(x.get('bot_id') or bot_id) for bot_id, x in state.get('managed', {}).items()
+                       if int(x.get('owner_user_id', 0)) == user_id}
+        imported_ids = {str(x.get('bot_id') or bot_id) for bot_id, x in state.get('imported', {}).items()
+                        if int(x.get('owner_user_id', 0)) == user_id}
+        send(chat_id, i18n.t(locale, 'status_summary', count=len(managed_ids | imported_ids)), main_menu(locale))
     elif command == '/help':
-        send(chat_id,
-             '<b>Помощь</b>\n\n/hire — нанять AI-ассистента\n/my — мои ассистенты\n'
-             '/cancel — отменить текущий найм\n/menu — главное меню', main_menu())
+        send(chat_id, i18n.t(locale, 'help'), main_menu(locale))
     elif text:
-        send(chat_id, 'Нажми «⚡ Нанять AI-ассистента», и я проведу тебя по шагам.', main_menu())
-
+        send(chat_id, i18n.t(locale, 'hire_prompt'), main_menu(locale))
 
 def handle_callback(q: dict, state: dict):
     callback_id = q.get('id') or ''
@@ -786,14 +730,33 @@ def handle_callback(q: dict, state: dict):
     data = q.get('data') or ''
     chat_type = (msg.get('chat') or {}).get('type')
     if not chat_id or not user_id or chat_type != 'private':
-        answer_callback(callback_id, 'Доступ закрыт')
+        answer_callback(callback_id, 'Access denied')
         return
+    locale_key = str(user_id)
+    previous_locale = state.setdefault('locales', {}).get(locale_key)
+    locale = i18n.remember_locale(user, state)
+    if previous_locale != locale:
+        save_state(state)
     if not is_authorized_user(user_id, state):
-        answer_callback(callback_id, 'Доступ закрыт')
-        access_denied(chat_id)
+        answer_callback(callback_id, 'Access denied')
+        access_denied(chat_id, locale)
         return
     answer_callback(callback_id)
-    if data == 'create':
+
+    if data.startswith('lang:'):
+        selected = data.split(':', 1)[1]
+        if selected not in i18n.SUPPORTED:
+            return
+        i18n.set_locale(state, user_id, selected)
+        save_state(state)
+        send(chat_id,
+             i18n.t(selected, 'language_set', language=i18n.language_name(selected)),
+             main_menu(selected))
+        return
+
+    if data == 'language':
+        send(chat_id, i18n.t(locale, 'language_title'), i18n.language_keyboard())
+    elif data == 'create':
         show_create(chat_id, user, state)
     elif data == 'hire_name':
         ask_hire_name(chat_id, user_id, state)
@@ -806,28 +769,15 @@ def handle_callback(q: dict, state: dict):
     elif data == 'hire_cancel':
         state.setdefault('drafts', {}).pop(hire_key(user_id), None)
         save_state(state)
-        send(chat_id, 'Найм отменён.', main_menu())
+        send(chat_id, i18n.t(locale, 'hire_cancelled'), main_menu(locale))
     elif data == 'my':
         show_my(chat_id, user_id, state)
     elif data == 'how':
-        send(chat_id,
-             '<b>Как это работает</b>\n\n'
-             '1. Ты даёшь ассистенту имя и username прямо в этом чате.\n'
-             '2. Telegram просит одно финальное подтверждение.\n'
-             '3. Бот создаётся в твоём аккаунте, как через BotFather, и принадлежит тебе.\n'
-             '4. Мы автоматически подключаем к нему Hermes.\n'
-             '5. Ассистент запоминает твой контекст и учится на твоих правках: чем больше работаешь с ним, тем точнее он подстраивается под тебя.\n'
-             '6. По мере развития экосистемы Hermes он получает новые общие инструменты и навыки. Твои личные данные при этом не смешиваются с данными других людей.', main_menu())
+        send(chat_id, i18n.t(locale, 'how'), main_menu(locale))
     elif data == 'security':
-        send(chat_id,
-             '<b>Безопасность</b>\n\n'
-             '• владельцем созданного бота остаёшься ты\n'
-             '• по умолчанию доступ к managed Hermes ограничивается владельцем\n'
-             '• токены не показываются в интерфейсе Hermes Forge\n'
-             '• токен можно перевыпустить без пересоздания бота', main_menu())
+        send(chat_id, i18n.t(locale, 'security'), main_menu(locale))
     elif data == 'help':
-        send(chat_id, '<b>Помощь</b>\n\n/new — создать Hermes\n/my — мои Hermes\n/status — статус\n/menu — меню', main_menu())
-
+        send(chat_id, i18n.t(locale, 'help'), main_menu(locale))
 
 def process_update(update: dict, state: dict):
     if update.get('managed_bot'):

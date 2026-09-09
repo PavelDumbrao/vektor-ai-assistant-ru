@@ -39,3 +39,20 @@ metadata under `state.imported`; the existing bot token is never copied into sta
 Imported assistants appear in **Мои AI-ассистенты** with live systemd status.
 Telegram-level managed-bot privileges are not retroactively added: those are available
 only for bots originally created through Telegram's managed-bot flow.
+
+## Internationalization
+
+Forge keeps client-facing copy outside the control-plane logic in `i18n.py`.
+The initial locale set is: Russian, English, Spanish, German, French,
+Portuguese, Chinese, Arabic, Hindi, and Turkish.
+
+- On first interaction Forge reads Telegram `user.language_code`.
+- A per-user choice is stored in `state.locales` and wins over auto-detection.
+- `🌐 Language` and `/language` expose the manual selector.
+- Unknown explicit Telegram locales fall back to English.
+- Legacy users with no language code retain Russian behavior.
+- Missing translated strings fall back to English rather than breaking a flow.
+- Adding a language requires a catalog entry, not new handlers or provisioning logic.
+
+Private profile data, memories, tokens, and tenant boundaries are independent
+of UI locale; changing language changes presentation only.

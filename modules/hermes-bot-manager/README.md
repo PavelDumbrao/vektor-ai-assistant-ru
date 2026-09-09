@@ -43,8 +43,9 @@ only for bots originally created through Telegram's managed-bot flow.
 ## Internationalization
 
 Forge keeps client-facing copy outside the control-plane logic in `i18n.py`.
-The initial locale set is: Russian, English, Spanish, German, French,
-Portuguese, Chinese, Arabic, Hindi, and Turkish.
+The current locale set contains 25 languages: Russian, English, Spanish, German, French,
+Portuguese, Chinese, Arabic, Hindi, Turkish, Italian, Japanese, Korean, Indonesian,
+Vietnamese, Polish, Ukrainian, Dutch, Persian, Hebrew, Thai, Bengali, Urdu, Malay, and Filipino.
 
 - On first interaction Forge reads Telegram `user.language_code`.
 - A per-user choice is stored in `state.locales` and wins over auto-detection.

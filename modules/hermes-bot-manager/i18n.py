@@ -296,6 +296,244 @@ CATALOGS.update({
 })
 
 
+# Additional major world languages. Keep business logic locale-independent;
+# these catalogs override the core client onboarding while secondary strings
+# safely fall back to English.
+EXTRA_SUPPORTED = ("it", "ja", "ko", "id", "vi", "pl", "uk", "nl", "fa", "he", "th", "bn", "ur", "ms", "fil")
+SUPPORTED = SUPPORTED + EXTRA_SUPPORTED
+
+LANGUAGE_LABELS.update({
+    "it": "🇮🇹 Italiano", "ja": "🇯🇵 日本語", "ko": "🇰🇷 한국어",
+    "id": "🇮🇩 Bahasa Indonesia", "vi": "🇻🇳 Tiếng Việt", "pl": "🇵🇱 Polski",
+    "uk": "🇺🇦 Українська", "nl": "🇳🇱 Nederlands", "fa": "🇮🇷 فارسی",
+    "he": "🇮🇱 עברית", "th": "🇹🇭 ไทย", "bn": "🇧🇩 বাংলা",
+    "ur": "🇵🇰 اردو", "ms": "🇲🇾 Bahasa Melayu", "fil": "🇵🇭 Filipino",
+})
+
+ALIASES.update({
+    "it": "it", "ja": "ja", "ko": "ko", "id": "id", "in": "id",
+    "vi": "vi", "pl": "pl", "uk": "uk", "nl": "nl", "fa": "fa",
+    "he": "he", "iw": "he", "th": "th", "bn": "bn", "ur": "ur",
+    "ms": "ms", "fil": "fil", "tl": "fil",
+})
+
+IT = {**EN,
+    "menu_hire": "⚡ Assumi un assistente IA", "menu_my": "🤖 I miei assistenti IA",
+    "menu_how": "🧠 Come funziona", "menu_security": "🔐 Sicurezza",
+    "menu_help": "🛟 Aiuto", "menu_language": "🌐 Lingua",
+    "welcome": "<b>Hermes Forge | Pro AI</b>\n\nAssumi il tuo assistente IA personale direttamente su Telegram.\n\n<b>Autoapprendimento:</b> più ci lavori e lo correggi, più si adatta a te.\n\n<b>In continua evoluzione:</b> con l'ecosistema Hermes riceve nuovi strumenti e capacità condivise. I tuoi dati privati restano isolati.\n\nTocca «Assumi un assistente IA» e ti guiderò passo dopo passo.",
+    "hire_name": "<b>Passaggio 1 di 2. Come vuoi chiamare il tuo assistente IA?</b>\n\nIl nome visualizzato può essere qualsiasi cosa.\n\nScrivi il nome qui 👇",
+    "hire_username": "<b>Passaggio 2 di 2. Ora scegli uno username.</b>\n\nSarà l'indirizzo Telegram del tuo bot.\n\nIMPORTANTE: lo username <b>deve terminare con bot</b>. Usa solo lettere latine minuscole <code>a-z</code>, numeri e <code>_</code>, da 5 a 32 caratteri. Le maiuscole verranno convertite automaticamente.\n\nEsempio: <code>alexai_bot</code>\n\nScrivilo qui, con o senza @ 👇",
+    "hire_confirm": "<b>Tutto pronto. Controlla:</b>\n\nNome: <b>{name}</b>\nUsername: <b>@{username}</b>\n\n1. Tocca «Conferma assunzione».\n2. Telegram mostrerà una sola conferma finale.\n3. Il bot viene creato <b>nel tuo account Telegram</b>, come con BotFather, e appartiene a te.\n4. Hermes Forge lo collegherà automaticamente.\n\nSe lo username è occupato, torna qui e inviane uno nuovo.",
+    "confirm_hire": "✅ Conferma assunzione", "edit_name": "✏️ Cambia nome",
+    "edit_username": "✏️ Cambia username", "cancel": "❌ Annulla",
+    "language_title": "<b>Scegli la lingua</b>\n\nPuoi cambiarla in qualsiasi momento.",
+    "language_set": "✅ Lingua cambiata in {language}.",
+}
+
+JA = {**EN,
+    "menu_hire": "⚡ AIアシスタントを採用", "menu_my": "🤖 マイAIアシスタント",
+    "menu_how": "🧠 仕組み", "menu_security": "🔐 セキュリティ",
+    "menu_help": "🛟 ヘルプ", "menu_language": "🌐 言語",
+    "welcome": "<b>Hermes Forge | Pro AI</b>\n\nTelegram上で自分専用のAIアシスタントを採用できます。\n\n<b>自己学習:</b> 使って修正するほど、あなたに合わせて賢くなります。\n\n<b>継続的に進化:</b> Hermesエコシステムの成長とともに、新しい共通ツールや能力が追加されます。個人データは他のユーザーと混ざりません。\n\n「AIアシスタントを採用」を押すと、ここで順番に案内します。",
+    "hire_name": "<b>ステップ1/2。AIアシスタントの名前を決めてください。</b>\n\n表示名は自由です。\n\nここに名前を入力してください 👇",
+    "hire_username": "<b>ステップ2/2。次にusernameを決めてください。</b>\n\nTelegramでのボットのアドレスになります。\n\n重要: usernameは<b>必ず bot で終わる必要があります</b>。小文字の英字 <code>a-z</code>、数字、<code>_</code> のみ、5〜32文字です。大文字は自動で小文字に変換します。\n\n例: <code>alexai_bot</code>\n\n@あり・なしどちらでも入力できます 👇",
+    "hire_confirm": "<b>準備できました。確認してください:</b>\n\n名前: <b>{name}</b>\nUsername: <b>@{username}</b>\n\n1. 「採用を確認」を押します。\n2. Telegramで最後のシステム確認が1回だけ表示されます。\n3. BotFatherと同じように、ボットは<b>あなたのTelegramアカウント</b>に作成され、あなたの所有物です。\n4. Hermes Forgeが自動で接続します。\n\nusernameが使用済みなら、ここに戻って別のusernameを送ってください。",
+    "confirm_hire": "✅ 採用を確認", "edit_name": "✏️ 名前を変更",
+    "edit_username": "✏️ usernameを変更", "cancel": "❌ キャンセル",
+    "language_title": "<b>言語を選択</b>\n\nいつでも変更できます。",
+    "language_set": "✅ 言語を {language} に変更しました。",
+}
+
+KO = {**EN,
+    "menu_hire": "⚡ AI 어시스턴트 고용", "menu_my": "🤖 내 AI 어시스턴트",
+    "menu_how": "🧠 작동 방식", "menu_security": "🔐 보안",
+    "menu_help": "🛟 도움말", "menu_language": "🌐 언어",
+    "welcome": "<b>Hermes Forge | Pro AI</b>\n\nTelegram에서 바로 나만의 AI 어시스턴트를 고용하세요.\n\n<b>자기 학습:</b> 더 많이 사용하고 수정할수록 당신에게 더 잘 맞춰집니다.\n\n<b>지속적인 발전:</b> Hermes 생태계가 성장하면서 새로운 공용 도구와 능력을 받습니다. 개인 데이터는 다른 사용자와 섞이지 않습니다.\n\n«AI 어시스턴트 고용»을 누르면 단계별로 안내합니다.",
+    "hire_name": "<b>1/2단계. AI 어시스턴트의 이름을 정해주세요.</b>\n\n표시 이름은 자유롭게 정할 수 있습니다.\n\n여기에 이름을 입력하세요 👇",
+    "hire_username": "<b>2/2단계. 이제 username을 정해주세요.</b>\n\nTelegram에서 사용할 봇 주소입니다.\n\n중요: username은 <b>반드시 bot으로 끝나야 합니다</b>. 소문자 영문 <code>a-z</code>, 숫자, <code>_</code>만 사용하며 길이는 5–32자입니다. 대문자는 자동으로 소문자로 변환됩니다.\n\n예: <code>alexai_bot</code>\n\n@ 포함 여부와 관계없이 입력하세요 👇",
+    "hire_confirm": "<b>준비되었습니다. 확인하세요:</b>\n\n이름: <b>{name}</b>\nUsername: <b>@{username}</b>\n\n1. «고용 확인»을 누릅니다.\n2. Telegram에서 마지막 시스템 확인이 한 번 표시됩니다.\n3. BotFather와 마찬가지로 봇은 <b>당신의 Telegram 계정</b>에 생성되며 당신의 소유입니다.\n4. Hermes Forge가 자동으로 연결합니다.\n\nusername이 이미 사용 중이면 여기로 돌아와 새 username을 보내세요.",
+    "confirm_hire": "✅ 고용 확인", "edit_name": "✏️ 이름 변경",
+    "edit_username": "✏️ username 변경", "cancel": "❌ 취소",
+    "language_title": "<b>언어 선택</b>\n\n언제든 변경할 수 있습니다.",
+    "language_set": "✅ 언어를 {language}(으)로 변경했습니다.",
+}
+
+ID = {**EN,
+    "menu_hire": "⚡ Rekrut asisten AI", "menu_my": "🤖 Asisten AI saya",
+    "menu_how": "🧠 Cara kerja", "menu_security": "🔐 Keamanan",
+    "menu_help": "🛟 Bantuan", "menu_language": "🌐 Bahasa",
+    "welcome": "<b>Hermes Forge | Pro AI</b>\n\nRekrut asisten AI pribadi langsung di Telegram.\n\n<b>Belajar sendiri:</b> semakin sering digunakan dan dikoreksi, semakin baik ia menyesuaikan diri dengan Anda.\n\n<b>Terus berkembang:</b> seiring ekosistem Hermes berkembang, ia mendapat alat dan kemampuan bersama yang baru. Data pribadi Anda tetap terisolasi.\n\nTekan «Rekrut asisten AI» dan saya akan memandu langkah demi langkah.",
+    "hire_name": "<b>Langkah 1 dari 2. Apa nama asisten AI Anda?</b>\n\nNama tampilan boleh apa saja.\n\nKetik namanya di sini 👇",
+    "hire_username": "<b>Langkah 2 dari 2. Sekarang pilih username.</b>\n\nIni akan menjadi alamat bot Anda di Telegram.\n\nPENTING: username <b>harus diakhiri dengan bot</b>. Hanya huruf Latin kecil <code>a-z</code>, angka dan <code>_</code>, panjang 5–32 karakter. Huruf besar akan saya ubah otomatis.\n\nContoh: <code>alexai_bot</code>\n\nKetik di sini, dengan atau tanpa @ 👇",
+    "hire_confirm": "<b>Semuanya siap. Periksa:</b>\n\nNama: <b>{name}</b>\nUsername: <b>@{username}</b>\n\n1. Tekan «Konfirmasi perekrutan».\n2. Telegram akan menampilkan satu konfirmasi sistem terakhir.\n3. Bot dibuat <b>di akun Telegram Anda</b>, seperti melalui BotFather, dan menjadi milik Anda.\n4. Hermes Forge akan menghubungkannya otomatis.\n\nJika username sudah dipakai, kembali ke sini dan kirim username baru.",
+    "confirm_hire": "✅ Konfirmasi perekrutan", "edit_name": "✏️ Ubah nama",
+    "edit_username": "✏️ Ubah username", "cancel": "❌ Batal",
+    "language_title": "<b>Pilih bahasa</b>\n\nAnda dapat mengubahnya kapan saja.",
+    "language_set": "✅ Bahasa diubah ke {language}.",
+}
+
+VI = {**EN,
+    "menu_hire": "⚡ Thuê trợ lý AI", "menu_my": "🤖 Trợ lý AI của tôi",
+    "menu_how": "🧠 Cách hoạt động", "menu_security": "🔐 Bảo mật",
+    "menu_help": "🛟 Trợ giúp", "menu_language": "🌐 Ngôn ngữ",
+    "welcome": "<b>Hermes Forge | Pro AI</b>\n\nThuê trợ lý AI cá nhân ngay trong Telegram.\n\n<b>Tự học:</b> càng sử dụng và chỉnh sửa, trợ lý càng thích nghi tốt hơn với bạn.\n\n<b>Luôn phát triển:</b> khi hệ sinh thái Hermes phát triển, trợ lý nhận thêm các công cụ và khả năng dùng chung. Dữ liệu riêng tư của bạn luôn được tách biệt.\n\nNhấn «Thuê trợ lý AI» và tôi sẽ hướng dẫn từng bước.",
+    "hire_name": "<b>Bước 1/2. Bạn muốn đặt tên trợ lý AI là gì?</b>\n\nTên hiển thị có thể tùy ý.\n\nNhập tên tại đây 👇",
+    "hire_username": "<b>Bước 2/2. Bây giờ hãy chọn username.</b>\n\nĐây sẽ là địa chỉ bot trên Telegram.\n\nQUAN TRỌNG: username <b>phải kết thúc bằng bot</b>. Chỉ dùng chữ Latin thường <code>a-z</code>, số và <code>_</code>, dài 5–32 ký tự. Chữ hoa sẽ tự động chuyển thành chữ thường.\n\nVí dụ: <code>alexai_bot</code>\n\nNhập tại đây, có hoặc không có @ 👇",
+    "hire_confirm": "<b>Mọi thứ đã sẵn sàng. Hãy kiểm tra:</b>\n\nTên: <b>{name}</b>\nUsername: <b>@{username}</b>\n\n1. Nhấn «Xác nhận thuê».\n2. Telegram sẽ hiển thị một xác nhận hệ thống cuối cùng.\n3. Bot được tạo <b>trong tài khoản Telegram của bạn</b>, giống BotFather, và thuộc sở hữu của bạn.\n4. Hermes Forge sẽ tự động kết nối.\n\nNếu username đã được dùng, quay lại đây và gửi username mới.",
+    "confirm_hire": "✅ Xác nhận thuê", "edit_name": "✏️ Đổi tên",
+    "edit_username": "✏️ Đổi username", "cancel": "❌ Hủy",
+    "language_title": "<b>Chọn ngôn ngữ</b>\n\nBạn có thể thay đổi bất cứ lúc nào.",
+    "language_set": "✅ Đã đổi ngôn ngữ sang {language}.",
+}
+
+PL = {**EN,
+    "menu_hire": "⚡ Zatrudnij asystenta AI", "menu_my": "🤖 Moi asystenci AI",
+    "menu_how": "🧠 Jak to działa", "menu_security": "🔐 Bezpieczeństwo",
+    "menu_help": "🛟 Pomoc", "menu_language": "🌐 Język",
+    "welcome": "<b>Hermes Forge | Pro AI</b>\n\nZatrudnij osobistego asystenta AI bezpośrednio w Telegramie.\n\n<b>Sam się uczy:</b> im więcej z nim pracujesz i go poprawiasz, tym lepiej dopasowuje się do Ciebie.\n\n<b>Stale się rozwija:</b> wraz z ekosystemem Hermes otrzymuje nowe wspólne narzędzia i możliwości. Twoje prywatne dane pozostają odizolowane.\n\nKliknij «Zatrudnij asystenta AI», a przeprowadzę Cię krok po kroku.",
+    "hire_name": "<b>Krok 1 z 2. Jak ma nazywać się Twój asystent AI?</b>\n\nNazwa wyświetlana może być dowolna.\n\nWpisz nazwę tutaj 👇",
+    "hire_username": "<b>Krok 2 z 2. Teraz wybierz username.</b>\n\nTo będzie adres Twojego bota w Telegramie.\n\nWAŻNE: username <b>musi kończyć się na bot</b>. Tylko małe litery łacińskie <code>a-z</code>, cyfry i <code>_</code>, 5–32 znaki. Wielkie litery zostaną automatycznie zmienione na małe.\n\nPrzykład: <code>alexai_bot</code>\n\nWpisz tutaj, z @ lub bez 👇",
+    "hire_confirm": "<b>Wszystko gotowe. Sprawdź:</b>\n\nNazwa: <b>{name}</b>\nUsername: <b>@{username}</b>\n\n1. Kliknij «Potwierdź zatrudnienie».\n2. Telegram pokaże jedno końcowe potwierdzenie systemowe.\n3. Bot zostanie utworzony <b>na Twoim koncie Telegram</b>, jak w BotFather, i będzie należał do Ciebie.\n4. Hermes Forge połączy go automatycznie.\n\nJeśli username jest zajęty, wróć tutaj i wyślij nowy.",
+    "confirm_hire": "✅ Potwierdź zatrudnienie", "edit_name": "✏️ Zmień nazwę",
+    "edit_username": "✏️ Zmień username", "cancel": "❌ Anuluj",
+    "language_title": "<b>Wybierz język</b>\n\nMożesz go zmienić w dowolnej chwili.",
+    "language_set": "✅ Język zmieniono na {language}.",
+}
+
+UK = {**EN,
+    "menu_hire": "⚡ Найняти AI-асистента", "menu_my": "🤖 Мої AI-асистенти",
+    "menu_how": "🧠 Як це працює", "menu_security": "🔐 Безпека",
+    "menu_help": "🛟 Допомога", "menu_language": "🌐 Мова",
+    "welcome": "<b>Hermes Forge | Pro AI</b>\n\nНайми персонального AI-асистента прямо в Telegram.\n\n<b>Самонавчання:</b> що більше ти з ним працюєш і виправляєш його, то краще він підлаштовується під тебе.\n\n<b>Постійно розвивається:</b> разом з екосистемою Hermes він отримує нові спільні інструменти та можливості. Твої приватні дані залишаються ізольованими.\n\nНатисни «Найняти AI-асистента», і я проведу тебе крок за кроком.",
+    "hire_name": "<b>Крок 1 з 2. Як називатиметься твій AI-асистент?</b>\n\nВідображуване ім'я може бути будь-яким.\n\nНапиши ім'я тут 👇",
+    "hire_username": "<b>Крок 2 з 2. Тепер обери username.</b>\n\nЦе буде адреса бота в Telegram.\n\nВАЖЛИВО: username <b>має закінчуватися на bot</b>. Лише малі латинські літери <code>a-z</code>, цифри та <code>_</code>, довжина 5–32 символи. Великі літери автоматично перетворяться на малі.\n\nПриклад: <code>alexai_bot</code>\n\nНапиши тут, з @ або без 👇",
+    "hire_confirm": "<b>Усе готово. Перевір:</b>\n\nІм'я: <b>{name}</b>\nUsername: <b>@{username}</b>\n\n1. Натисни «Підтвердити найм».\n2. Telegram покаже одне фінальне системне підтвердження.\n3. Бот створюється <b>у твоєму Telegram-акаунті</b>, як через BotFather, і належить тобі.\n4. Hermes Forge автоматично його підключить.\n\nЯкщо username зайнятий, повернися сюди та надішли новий.",
+    "confirm_hire": "✅ Підтвердити найм", "edit_name": "✏️ Змінити ім'я",
+    "edit_username": "✏️ Змінити username", "cancel": "❌ Скасувати",
+    "language_title": "<b>Обери мову</b>\n\nЇї можна змінити будь-коли.",
+    "language_set": "✅ Мову змінено на {language}.",
+}
+
+NL = {**EN,
+    "menu_hire": "⚡ AI-assistent inhuren", "menu_my": "🤖 Mijn AI-assistenten",
+    "menu_how": "🧠 Hoe het werkt", "menu_security": "🔐 Beveiliging",
+    "menu_help": "🛟 Hulp", "menu_language": "🌐 Taal",
+    "welcome": "<b>Hermes Forge | Pro AI</b>\n\nHuur je persoonlijke AI-assistent rechtstreeks in Telegram.\n\n<b>Zelflerend:</b> hoe meer je ermee werkt en corrigeert, hoe beter hij zich aan jou aanpast.\n\n<b>Blijft zich ontwikkelen:</b> met het Hermes-ecosysteem krijgt hij nieuwe gedeelde tools en mogelijkheden. Je privégegevens blijven geïsoleerd.\n\nTik op «AI-assistent inhuren» en ik begeleid je stap voor stap.",
+    "hire_name": "<b>Stap 1 van 2. Hoe moet je AI-assistent heten?</b>\n\nDe weergavenaam mag alles zijn.\n\nTyp de naam hier 👇",
+    "hire_username": "<b>Stap 2 van 2. Kies nu een username.</b>\n\nDit wordt het Telegram-adres van je bot.\n\nBELANGRIJK: de username <b>moet eindigen op bot</b>. Alleen kleine Latijnse letters <code>a-z</code>, cijfers en <code>_</code>, 5–32 tekens. Hoofdletters worden automatisch omgezet.\n\nVoorbeeld: <code>alexai_bot</code>\n\nTyp hem hier, met of zonder @ 👇",
+    "hire_confirm": "<b>Alles is klaar. Controleer:</b>\n\nNaam: <b>{name}</b>\nUsername: <b>@{username}</b>\n\n1. Tik op «Inhuur bevestigen».\n2. Telegram toont één laatste systeembevestiging.\n3. De bot wordt <b>in jouw Telegram-account</b> aangemaakt, zoals met BotFather, en is van jou.\n4. Hermes Forge koppelt hem automatisch.\n\nAls de username bezet is, kom terug en stuur een nieuwe.",
+    "confirm_hire": "✅ Inhuur bevestigen", "edit_name": "✏️ Naam wijzigen",
+    "edit_username": "✏️ Username wijzigen", "cancel": "❌ Annuleren",
+    "language_title": "<b>Kies je taal</b>\n\nJe kunt deze altijd wijzigen.",
+    "language_set": "✅ Taal gewijzigd naar {language}.",
+}
+
+FA = {**EN,
+    "menu_hire": "⚡ استخدام دستیار هوش مصنوعی", "menu_my": "🤖 دستیارهای هوش مصنوعی من",
+    "menu_how": "🧠 نحوه کار", "menu_security": "🔐 امنیت",
+    "menu_help": "🛟 راهنما", "menu_language": "🌐 زبان",
+    "welcome": "<b>Hermes Forge | Pro AI</b>\n\nدستیار هوش مصنوعی شخصی خود را مستقیماً در Telegram استخدام کنید.\n\n<b>خودآموز:</b> هرچه بیشتر با آن کار کنید و اصلاحش کنید، بهتر با شما سازگار می‌شود.\n\n<b>همیشه در حال پیشرفت:</b> با رشد اکوسیستم Hermes، ابزارها و قابلیت‌های مشترک جدید دریافت می‌کند. داده‌های خصوصی شما از دیگران جدا می‌ماند.\n\nروی «استخدام دستیار هوش مصنوعی» بزنید تا مرحله‌به‌مرحله راهنمایی‌تان کنم.",
+    "hire_name": "<b>مرحله ۱ از ۲. نام دستیار هوش مصنوعی شما چه باشد؟</b>\n\nنام نمایشی می‌تواند هر چیزی باشد.\n\nنام را اینجا بنویسید 👇",
+    "hire_username": "<b>مرحله ۲ از ۲. حالا یک username انتخاب کنید.</b>\n\nاین آدرس ربات شما در Telegram خواهد بود.\n\nمهم: username <b>باید با bot تمام شود</b>. فقط حروف کوچک لاتین <code>a-z</code>، اعداد و <code>_</code>، با طول ۵ تا ۳۲ کاراکتر. حروف بزرگ خودکار کوچک می‌شوند.\n\nمثال: <code>alexai_bot</code>\n\nاینجا با @ یا بدون آن وارد کنید 👇",
+    "hire_confirm": "<b>همه‌چیز آماده است. بررسی کنید:</b>\n\nنام: <b>{name}</b>\nUsername: <b>@{username}</b>\n\n۱. روی «تأیید استخدام» بزنید.\n۲. Telegram فقط یک تأیید نهایی سیستمی نشان می‌دهد.\n۳. ربات <b>در حساب Telegram شما</b> مانند BotFather ساخته می‌شود و متعلق به شماست.\n۴. Hermes Forge آن را خودکار متصل می‌کند.\n\nاگر username قبلاً گرفته شده، برگردید و username جدیدی بفرستید.",
+    "confirm_hire": "✅ تأیید استخدام", "edit_name": "✏️ تغییر نام",
+    "edit_username": "✏️ تغییر username", "cancel": "❌ لغو",
+    "language_title": "<b>زبان خود را انتخاب کنید</b>\n\nهر زمان بخواهید می‌توانید آن را تغییر دهید.",
+    "language_set": "✅ زبان به {language} تغییر کرد.",
+}
+
+HE = {**EN,
+    "menu_hire": "⚡ שכירת עוזר AI", "menu_my": "🤖 עוזרי ה-AI שלי",
+    "menu_how": "🧠 איך זה עובד", "menu_security": "🔐 אבטחה",
+    "menu_help": "🛟 עזרה", "menu_language": "🌐 שפה",
+    "welcome": "<b>Hermes Forge | Pro AI</b>\n\nשכור עוזר AI אישי ישירות ב-Telegram.\n\n<b>לומד בעצמו:</b> ככל שתעבוד איתו ותתקן אותו יותר, הוא יתאים את עצמו אליך טוב יותר.\n\n<b>מתפתח כל הזמן:</b> עם התפתחות אקוסיסטם Hermes הוא מקבל כלים ויכולות משותפים חדשים. הנתונים הפרטיים שלך נשארים מבודדים.\n\nלחץ על «שכירת עוזר AI» ואדריך אותך שלב אחר שלב.",
+    "hire_name": "<b>שלב 1 מתוך 2. איך תרצה לקרוא לעוזר ה-AI שלך?</b>\n\nשם התצוגה יכול להיות כל דבר.\n\nכתוב את השם כאן 👇",
+    "hire_username": "<b>שלב 2 מתוך 2. עכשיו בחר username.</b>\n\nזו תהיה כתובת הבוט שלך ב-Telegram.\n\nחשוב: ה-username <b>חייב להסתיים ב-bot</b>. רק אותיות לטיניות קטנות <code>a-z</code>, ספרות ו-<code>_</code>, באורך 5–32 תווים. אותיות גדולות יומרו אוטומטית.\n\nדוגמה: <code>alexai_bot</code>\n\nכתוב כאן עם @ או בלעדיו 👇",
+    "hire_confirm": "<b>הכול מוכן. בדוק:</b>\n\nשם: <b>{name}</b>\nUsername: <b>@{username}</b>\n\n1. לחץ על «אישור שכירה».\n2. Telegram יציג אישור מערכת סופי אחד.\n3. הבוט נוצר <b>בחשבון ה-Telegram שלך</b>, כמו דרך BotFather, ושייך לך.\n4. Hermes Forge יחבר אותו אוטומטית.\n\nאם ה-username תפוס, חזור לכאן ושלח חדש.",
+    "confirm_hire": "✅ אישור שכירה", "edit_name": "✏️ שינוי שם",
+    "edit_username": "✏️ שינוי username", "cancel": "❌ ביטול",
+    "language_title": "<b>בחר שפה</b>\n\nאפשר לשנות אותה בכל רגע.",
+    "language_set": "✅ השפה שונתה ל-{language}.",
+}
+
+TH = {**EN,
+    "menu_hire": "⚡ จ้างผู้ช่วย AI", "menu_my": "🤖 ผู้ช่วย AI ของฉัน",
+    "menu_how": "🧠 วิธีการทำงาน", "menu_security": "🔐 ความปลอดภัย",
+    "menu_help": "🛟 ความช่วยเหลือ", "menu_language": "🌐 ภาษา",
+    "welcome": "<b>Hermes Forge | Pro AI</b>\n\nจ้างผู้ช่วย AI ส่วนตัวได้โดยตรงใน Telegram\n\n<b>เรียนรู้ด้วยตัวเอง:</b> ยิ่งคุณใช้งานและแก้ไขมากเท่าไร ผู้ช่วยก็ยิ่งปรับตัวเข้ากับคุณได้ดีขึ้น\n\n<b>พัฒนาอย่างต่อเนื่อง:</b> เมื่อระบบนิเวศ Hermes เติบโต ผู้ช่วยจะได้รับเครื่องมือและความสามารถส่วนกลางใหม่ ๆ ข้อมูลส่วนตัวของคุณยังคงแยกจากผู้อื่น\n\nกด «จ้างผู้ช่วย AI» แล้วฉันจะพาคุณทำทีละขั้นตอน",
+    "hire_name": "<b>ขั้นตอน 1 จาก 2 ตั้งชื่อผู้ช่วย AI ของคุณ</b>\n\nชื่อที่แสดงจะเป็นอะไรก็ได้\n\nพิมพ์ชื่อที่นี่ 👇",
+    "hire_username": "<b>ขั้นตอน 2 จาก 2 เลือก username</b>\n\nนี่จะเป็นที่อยู่ของบอตใน Telegram\n\nสำคัญ: username <b>ต้องลงท้ายด้วย bot</b> ใช้ได้เฉพาะอักษรละตินตัวเล็ก <code>a-z</code> ตัวเลข และ <code>_</code> ความยาว 5–32 ตัวอักษร ตัวพิมพ์ใหญ่จะถูกแปลงอัตโนมัติ\n\nตัวอย่าง: <code>alexai_bot</code>\n\nพิมพ์ที่นี่ มี @ หรือไม่มีก็ได้ 👇",
+    "hire_confirm": "<b>พร้อมแล้ว โปรดตรวจสอบ:</b>\n\nชื่อ: <b>{name}</b>\nUsername: <b>@{username}</b>\n\n1. กด «ยืนยันการจ้าง»\n2. Telegram จะแสดงการยืนยันระบบครั้งสุดท้ายเพียงครั้งเดียว\n3. บอตจะถูกสร้าง <b>ในบัญชี Telegram ของคุณ</b> เหมือน BotFather และเป็นของคุณ\n4. Hermes Forge จะเชื่อมต่อให้อัตโนมัติ\n\nหาก username ถูกใช้แล้ว ให้กลับมาที่นี่และส่ง username ใหม่",
+    "confirm_hire": "✅ ยืนยันการจ้าง", "edit_name": "✏️ เปลี่ยนชื่อ",
+    "edit_username": "✏️ เปลี่ยน username", "cancel": "❌ ยกเลิก",
+    "language_title": "<b>เลือกภาษา</b>\n\nเปลี่ยนได้ทุกเมื่อ",
+    "language_set": "✅ เปลี่ยนภาษาเป็น {language} แล้ว",
+}
+
+BN = {**EN,
+    "menu_hire": "⚡ AI সহকারী নিয়োগ করুন", "menu_my": "🤖 আমার AI সহকারীরা",
+    "menu_how": "🧠 কীভাবে কাজ করে", "menu_security": "🔐 নিরাপত্তা",
+    "menu_help": "🛟 সহায়তা", "menu_language": "🌐 ভাষা",
+    "welcome": "<b>Hermes Forge | Pro AI</b>\n\nTelegram-এর মধ্যেই আপনার ব্যক্তিগত AI সহকারী নিয়োগ করুন।\n\n<b>স্বশিক্ষণ:</b> যত বেশি ব্যবহার ও সংশোধন করবেন, তত ভালোভাবে এটি আপনার সঙ্গে মানিয়ে নেবে।\n\n<b>নিরন্তর উন্নতি:</b> Hermes ecosystem বাড়ার সঙ্গে নতুন শেয়ার করা টুল ও সক্ষমতা পায়। আপনার ব্যক্তিগত ডেটা অন্যদের থেকে আলাদা থাকে।\n\n«AI সহকারী নিয়োগ করুন» চাপুন, আমি ধাপে ধাপে গাইড করব।",
+    "hire_name": "<b>ধাপ ১/২। আপনার AI সহকারীর নাম কী হবে?</b>\n\nডিসপ্লে নাম যেকোনো হতে পারে।\n\nএখানে নাম লিখুন 👇",
+    "hire_username": "<b>ধাপ ২/২। এখন একটি username বেছে নিন।</b>\n\nএটি Telegram-এ আপনার bot-এর ঠিকানা হবে।\n\nগুরুত্বপূর্ণ: username <b>bot দিয়ে শেষ হতে হবে</b>। শুধু ছোট ল্যাটিন অক্ষর <code>a-z</code>, সংখ্যা এবং <code>_</code>, দৈর্ঘ্য ৫–৩২ অক্ষর। বড় অক্ষর স্বয়ংক্রিয়ভাবে ছোট করা হবে।\n\nউদাহরণ: <code>alexai_bot</code>\n\n@ সহ বা ছাড়া এখানে লিখুন 👇",
+    "hire_confirm": "<b>সব প্রস্তুত। যাচাই করুন:</b>\n\nনাম: <b>{name}</b>\nUsername: <b>@{username}</b>\n\n১. «নিয়োগ নিশ্চিত করুন» চাপুন।\n২. Telegram একটি চূড়ান্ত system confirmation দেখাবে।\n৩. BotFather-এর মতো botটি <b>আপনার Telegram account-এ</b> তৈরি হবে এবং আপনারই থাকবে।\n৪. Hermes Forge স্বয়ংক্রিয়ভাবে সংযুক্ত করবে।\n\nusername নেওয়া থাকলে এখানে ফিরে নতুন username পাঠান।",
+    "confirm_hire": "✅ নিয়োগ নিশ্চিত করুন", "edit_name": "✏️ নাম পরিবর্তন",
+    "edit_username": "✏️ username পরিবর্তন", "cancel": "❌ বাতিল",
+    "language_title": "<b>ভাষা বেছে নিন</b>\n\nযেকোনো সময় পরিবর্তন করতে পারেন।",
+    "language_set": "✅ ভাষা {language} করা হয়েছে।",
+}
+
+UR = {**EN,
+    "menu_hire": "⚡ AI اسسٹنٹ کی خدمات حاصل کریں", "menu_my": "🤖 میرے AI اسسٹنٹس",
+    "menu_how": "🧠 یہ کیسے کام کرتا ہے", "menu_security": "🔐 سیکیورٹی",
+    "menu_help": "🛟 مدد", "menu_language": "🌐 زبان",
+    "welcome": "<b>Hermes Forge | Pro AI</b>\n\nTelegram میں ہی اپنا ذاتی AI اسسٹنٹ حاصل کریں۔\n\n<b>خود سیکھنے والا:</b> جتنا زیادہ آپ اس کے ساتھ کام اور اصلاح کرتے ہیں، اتنا بہتر یہ آپ کے مطابق ڈھلتا ہے۔\n\n<b>مسلسل ترقی:</b> Hermes ecosystem کے ساتھ اسے نئے مشترکہ tools اور capabilities ملتے رہتے ہیں۔ آپ کا نجی data دوسروں سے الگ رہتا ہے۔\n\n«AI اسسٹنٹ کی خدمات حاصل کریں» دبائیں، میں قدم بہ قدم رہنمائی کروں گا۔",
+    "hire_name": "<b>مرحلہ 1/2۔ آپ کے AI اسسٹنٹ کا نام کیا ہو؟</b>\n\nDisplay name کچھ بھی ہو سکتا ہے۔\n\nنام یہاں لکھیں 👇",
+    "hire_username": "<b>مرحلہ 2/2۔ اب username منتخب کریں۔</b>\n\nیہ Telegram میں آپ کے bot کا address ہوگا۔\n\nاہم: username <b>bot پر ختم ہونا چاہیے</b>۔ صرف چھوٹے Latin letters <code>a-z</code>، digits اور <code>_</code>، لمبائی 5–32 characters۔ بڑے letters خودکار طور پر lowercase ہو جائیں گے۔\n\nمثال: <code>alexai_bot</code>\n\nیہاں @ کے ساتھ یا بغیر لکھیں 👇",
+    "hire_confirm": "<b>سب تیار ہے۔ چیک کریں:</b>\n\nنام: <b>{name}</b>\nUsername: <b>@{username}</b>\n\n1. «ہائر کی تصدیق» دبائیں۔\n2. Telegram صرف ایک آخری system confirmation دکھائے گا۔\n3. BotFather کی طرح bot <b>آپ کے Telegram account</b> میں بنے گا اور آپ کا ہوگا۔\n4. Hermes Forge خودکار طور پر connect کرے گا۔\n\nاگر username پہلے سے لیا گیا ہو تو واپس آ کر نیا username بھیجیں۔",
+    "confirm_hire": "✅ ہائر کی تصدیق", "edit_name": "✏️ نام تبدیل کریں",
+    "edit_username": "✏️ username تبدیل کریں", "cancel": "❌ منسوخ",
+    "language_title": "<b>اپنی زبان منتخب کریں</b>\n\nآپ اسے کسی بھی وقت بدل سکتے ہیں۔",
+    "language_set": "✅ زبان {language} کر دی گئی۔",
+}
+
+MS = {**EN,
+    "menu_hire": "⚡ Ambil pembantu AI", "menu_my": "🤖 Pembantu AI saya",
+    "menu_how": "🧠 Cara ia berfungsi", "menu_security": "🔐 Keselamatan",
+    "menu_help": "🛟 Bantuan", "menu_language": "🌐 Bahasa",
+    "welcome": "<b>Hermes Forge | Pro AI</b>\n\nAmbil pembantu AI peribadi terus di Telegram.\n\n<b>Belajar sendiri:</b> semakin banyak anda menggunakannya dan membetulkannya, semakin baik ia menyesuaikan diri dengan anda.\n\n<b>Sentiasa berkembang:</b> bersama ekosistem Hermes, ia mendapat alat dan keupayaan bersama yang baharu. Data peribadi anda kekal terasing.\n\nTekan «Ambil pembantu AI» dan saya akan membimbing anda langkah demi langkah.",
+    "hire_name": "<b>Langkah 1 daripada 2. Apakah nama pembantu AI anda?</b>\n\nNama paparan boleh apa sahaja.\n\nTaip nama di sini 👇",
+    "hire_username": "<b>Langkah 2 daripada 2. Sekarang pilih username.</b>\n\nIni akan menjadi alamat bot anda di Telegram.\n\nPENTING: username <b>mesti berakhir dengan bot</b>. Hanya huruf Latin kecil <code>a-z</code>, nombor dan <code>_</code>, panjang 5–32 aksara. Huruf besar akan ditukar secara automatik.\n\nContoh: <code>alexai_bot</code>\n\nTaip di sini, dengan atau tanpa @ 👇",
+    "hire_confirm": "<b>Semuanya sedia. Semak:</b>\n\nNama: <b>{name}</b>\nUsername: <b>@{username}</b>\n\n1. Tekan «Sahkan pengambilan».\n2. Telegram akan menunjukkan satu pengesahan sistem terakhir.\n3. Bot dibuat <b>dalam akaun Telegram anda</b>, seperti melalui BotFather, dan milik anda.\n4. Hermes Forge akan menyambungkannya secara automatik.\n\nJika username telah digunakan, kembali ke sini dan hantar username baharu.",
+    "confirm_hire": "✅ Sahkan pengambilan", "edit_name": "✏️ Tukar nama",
+    "edit_username": "✏️ Tukar username", "cancel": "❌ Batal",
+    "language_title": "<b>Pilih bahasa</b>\n\nAnda boleh menukarnya bila-bila masa.",
+    "language_set": "✅ Bahasa ditukar kepada {language}.",
+}
+
+FIL = {**EN,
+    "menu_hire": "⚡ Kumuha ng AI assistant", "menu_my": "🤖 Mga AI assistant ko",
+    "menu_how": "🧠 Paano ito gumagana", "menu_security": "🔐 Seguridad",
+    "menu_help": "🛟 Tulong", "menu_language": "🌐 Wika",
+    "welcome": "<b>Hermes Forge | Pro AI</b>\n\nKumuha ng personal na AI assistant direkta sa Telegram.\n\n<b>Self-learning:</b> habang mas ginagamit at itinatama mo ito, mas mahusay itong umaangkop sa iyo.\n\n<b>Patuloy na umuunlad:</b> habang lumalaki ang Hermes ecosystem, nakakakuha ito ng mga bagong shared tool at kakayahan. Nananatiling hiwalay ang pribado mong data.\n\nPindutin ang «Kumuha ng AI assistant» at gagabayan kita hakbang-hakbang.",
+    "hire_name": "<b>Hakbang 1 sa 2. Ano ang pangalan ng AI assistant mo?</b>\n\nPuwedeng kahit ano ang display name.\n\nI-type ang pangalan dito 👇",
+    "hire_username": "<b>Hakbang 2 sa 2. Pumili naman ng username.</b>\n\nIto ang magiging Telegram address ng bot mo.\n\nMAHALAGA: ang username ay <b>dapat magtapos sa bot</b>. Maliit na Latin letters <code>a-z</code>, numero at <code>_</code> lamang, 5–32 characters. Awtomatikong gagawing lowercase ang uppercase.\n\nHalimbawa: <code>alexai_bot</code>\n\nI-type dito, may @ man o wala 👇",
+    "hire_confirm": "<b>Handa na. Suriin:</b>\n\nPangalan: <b>{name}</b>\nUsername: <b>@{username}</b>\n\n1. Pindutin ang «Kumpirmahin ang pagkuha».\n2. Magpapakita ang Telegram ng isang huling system confirmation.\n3. Gagawin ang bot <b>sa Telegram account mo</b>, gaya ng BotFather, at pag-aari mo ito.\n4. Awtomatikong ikokonekta ito ng Hermes Forge.\n\nKung gamit na ang username, bumalik dito at magpadala ng bago.",
+    "confirm_hire": "✅ Kumpirmahin ang pagkuha", "edit_name": "✏️ Palitan ang pangalan",
+    "edit_username": "✏️ Palitan ang username", "cancel": "❌ Kanselahin",
+    "language_title": "<b>Pumili ng wika</b>\n\nMaaari mo itong baguhin anumang oras.",
+    "language_set": "✅ Binago ang wika sa {language}.",
+}
+
+CATALOGS.update({
+    "it": IT, "ja": JA, "ko": KO, "id": ID, "vi": VI,
+    "pl": PL, "uk": UK, "nl": NL, "fa": FA, "he": HE,
+    "th": TH, "bn": BN, "ur": UR, "ms": MS, "fil": FIL,
+})
+
+
 def canonical_locale(code: str | None) -> str:
     raw = (code or "").strip().lower().replace("_", "-")
     if raw in ALIASES:

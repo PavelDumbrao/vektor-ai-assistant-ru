@@ -18,13 +18,16 @@ def test_locale_canonicalization_and_fallback():
     assert i18n.canonical_locale("es-MX") == "es"
     assert i18n.canonical_locale("pt_BR") == "pt"
     assert i18n.canonical_locale("zh-Hans") == "zh"
-    assert i18n.canonical_locale("it-IT") == "en"
+    assert i18n.canonical_locale("it-IT") == "it"
+    assert i18n.canonical_locale("iw-IL") == "he"
+    assert i18n.canonical_locale("tl-PH") == "fil"
+    assert i18n.canonical_locale("in-ID") == "id"
 
 
 def test_language_keyboard_exposes_major_languages():
     markup = i18n.language_keyboard()
     buttons = [button for row in markup["inline_keyboard"] for button in row]
-    assert len(buttons) == 10
+    assert len(buttons) == 25
     assert {b["callback_data"] for b in buttons} == {f"lang:{x}" for x in i18n.SUPPORTED}
 def test_remember_locale_persists_and_preference_wins():
     state = {}
@@ -85,6 +88,8 @@ def test_language_callback_overrides_detected_locale(monkeypatch):
 def test_every_supported_locale_renders_critical_hiring_flow():
     for locale in i18n.SUPPORTED:
         assert i18n.t(locale, "menu_hire") != "menu_hire"
+        if locale != "en":
+            assert i18n.t(locale, "menu_hire") != i18n.t("en", "menu_hire")
         assert i18n.t(locale, "welcome") != "welcome"
         name_step = i18n.t(locale, "hire_name")
         username_step = i18n.t(locale, "hire_username")

@@ -257,8 +257,9 @@ def managed_event(update: dict, state: dict):
         api('setManagedBotAccessSettings', {
             'user_id': bot_id,
             'is_access_restricted': True,
+            'added_user_ids': [PAVEL_ID],
         })
-        access = 'owner_only'
+        access = 'owner_plus_tech'
     except Exception:
         access = 'default'
     owner = find_profile_for_owner(owner_id)
@@ -289,6 +290,17 @@ def managed_event(update: dict, state: dict):
         text = (f'✅ <b>@{uname} создан.</b>\n\nСтатус подключения профиля: '
                 f'<code>{profile_status}</code>.')
     send(owner_id, text, main_menu())
+    if owner_id != PAVEL_ID:
+        try:
+            profile_label = owner or 'не найден'
+            send(PAVEL_ID,
+                 '<b>🛠 Новый Managed Hermes</b>\n\n'
+                 f'Бот: <b>@{uname}</b>\n'
+                 f'Профиль: <code>{profile_label}</code>\n'
+                 f'Статус: <b>{profile_status}</b>\n'
+                 f'Доступ: <b>{access}</b>')
+        except Exception:
+            pass
 
 
 def handle_message(msg: dict, state: dict):

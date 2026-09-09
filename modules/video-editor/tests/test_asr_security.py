@@ -207,15 +207,15 @@ def test_installer_source_env_requires_root_private_file(tmp_path):
     env = tmp_path / "openrouter.env"
     env.write_text("OPENROUTER_API_KEY=" + "k" * 32 + "\n")
     env.chmod(0o600)
-    assert installer._read_key(env) == "k" * 32
+    assert installer._read_key(env, expected_uid=os.getuid()) == "k" * 32
     env.chmod(0o640)
     with pytest.raises(RuntimeError, match="permissions_unsafe"):
-        installer._read_key(env)
+        installer._read_key(env, expected_uid=os.getuid())
     env.chmod(0o600)
     link = tmp_path / "env-link"
     link.symlink_to(env)
     with pytest.raises(RuntimeError, match="unsafe"):
-        installer._read_key(link)
+        installer._read_key(link, expected_uid=os.getuid())
 
 
 def test_installer_health_wait_retries_startup_race(monkeypatch):

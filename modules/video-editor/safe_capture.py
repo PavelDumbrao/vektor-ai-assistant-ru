@@ -11,8 +11,6 @@ from urllib.parse import urlsplit
 from egress_proxy import PublicEgressProxy, validate_public_url
 
 ENGINE = Path("/opt/vektor/video-editor/engine/e8ea406bc2440ca8fc8d1b239c8758e9de112388/scripts")
-sys.path.insert(0, str(ENGINE))
-from capture import rank_js  # noqa: E402
 
 NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,48}$")
 MAX_PAGE_WIDTH = 2400
@@ -50,6 +48,13 @@ def main() -> int:
         from playwright.sync_api import sync_playwright
     except ImportError:
         print("error: playwright_missing", file=sys.stderr)
+        return 2
+    try:
+        if str(ENGINE) not in sys.path:
+            sys.path.insert(0, str(ENGINE))
+        from capture import rank_js
+    except ImportError:
+        print("error: capture_runtime_missing", file=sys.stderr)
         return 2
     outdir = Path(args.studio) / "assets" / "proof"
     outdir.mkdir(parents=True, exist_ok=True)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -25,7 +26,7 @@ def _fixture(tmp_path: Path, extra: str = "") -> tuple[Path, Path]:
 
 def test_gsap_is_localized_and_remote_script_removed(tmp_path):
     studio, runtime = _fixture(tmp_path)
-    target = enrichment._localize_gsap(studio, runtime=runtime)
+    target = enrichment._localize_gsap(studio, runtime=runtime, expected_uid=os.getuid())
     html = (studio / "composition" / "index.html").read_text(encoding="utf-8")
     assert enrichment.GSAP_CDN not in html
     assert '<script src="./gsap.min.js"></script>' in html
@@ -39,7 +40,7 @@ def test_additional_remote_script_is_fail_closed(tmp_path):
         tmp_path, '<script src="https://evil.example/app.js"></script>'
     )
     with pytest.raises(engine.VideoEditorError, match="video_remote_script_blocked"):
-        enrichment._localize_gsap(studio, runtime=runtime)
+        enrichment._localize_gsap(studio, runtime=runtime, expected_uid=os.getuid())
     assert not (studio / "composition" / "gsap.min.js").exists()
 
 
@@ -48,7 +49,7 @@ def test_gsap_runtime_symlink_is_rejected(tmp_path):
     link = tmp_path / "gsap-link.js"
     link.symlink_to(runtime)
     with pytest.raises(engine.VideoEditorError, match="video_gsap_runtime_unsafe"):
-        enrichment._localize_gsap(studio, runtime=link)
+        enrichment._localize_gsap(studio, runtime=link, expected_uid=os.getuid())
 
 
 def test_runtime_lock_pins_hyperframes_and_gsap():

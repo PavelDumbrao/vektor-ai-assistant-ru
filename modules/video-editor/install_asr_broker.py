@@ -16,14 +16,14 @@ RUNTIME = Path("/opt/vektor/video-editor")
 SERVICE_NAME = "vektor-video-asr-broker.service"
 
 
-def _read_key(path: Path) -> str:
+def _read_key(path: Path, *, expected_uid: int = 0) -> str:
     try:
         info = path.lstat()
     except OSError as exc:
         raise RuntimeError("openrouter_source_env_missing") from exc
     if path.is_symlink() or not stat.S_ISREG(info.st_mode):
         raise RuntimeError("openrouter_source_env_unsafe")
-    if info.st_uid != 0 or (info.st_mode & 0o077):
+    if info.st_uid != expected_uid or (info.st_mode & 0o077):
         raise RuntimeError("openrouter_source_env_permissions_unsafe")
     if info.st_size <= 0 or info.st_size > 64 * 1024:
         raise RuntimeError("openrouter_source_env_size_invalid")

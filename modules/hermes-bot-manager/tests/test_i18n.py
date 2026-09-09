@@ -92,3 +92,7 @@ def test_every_supported_locale_renders_critical_hiring_flow():
         assert name_step and username_step and confirm
         assert "Test AI" in confirm
         assert "testai_bot" in confirm
+
+def test_installer_bundles_i18n_module():
+    install_source = (ROOT / "install.py").read_text()
+    assert "'i18n.py'" in install_source

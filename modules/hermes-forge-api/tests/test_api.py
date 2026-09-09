@@ -26,6 +26,17 @@ def test_protected_route_requires_session():
         api.route("GET", "/v1/hermes", {}, {})
 
 
+def test_catalog_is_public_but_tenant_routes_remain_protected(monkeypatch, tmp_path):
+    catalog = tmp_path / "catalog.json"
+    catalog.write_text('{"schema":"hermes.catalog/v1","capabilities":[],"agents":[]}', encoding="utf-8")
+    monkeypatch.setattr(api, "CATALOG_PATH", catalog)
+    status, result = api.route("GET", "/v1/catalog", {}, {})
+    assert status == 200
+    assert result["schema"] == "hermes.catalog.public/v1"
+    with pytest.raises(api.ApiError, match="session_required"):
+        api.route("GET", "/v1/hermes", {}, {})
+
+
 def test_secret_route_forwards_value_to_control_but_never_logs(monkeypatch):
     seen = []
     monkeypatch.setattr(api, "call_control", lambda payload: seen.append(payload) or {"secret": {"configured": True, "last4": "7890"}})
@@ -50,7 +61,7 @@ def test_public_server_refuses_root(monkeypatch):
         api.serve()
 
 
-def test_catalog_route_is_authenticated_read_only_and_sanitized(monkeypatch, tmp_path):
+def test_catalog_route_is_public_read_only_and_sanitized(monkeypatch, tmp_path):
     catalog = tmp_path / "catalog.json"
     catalog.write_text(
         '{"schema":"hermes.catalog/v1","capabilities":[{"id":"maton","name":"Maton","summary":"External services","version":"1.0.0","publisher":"Hermes Official","trust_tier":"official","kind":"mcp","availability":"available","connection":{"mode":"personal_secret","secret_names":["MCP_MATON_API_KEY"]},"permissions":{"action_default":"approval"},"metering":"provider_usage","provision":{"install":"ensure-maton"},"health":{"operation":"maton-connections"}}],"agents":[{"id":"personal-hermes","name":"Personal Hermes","summary":"Personal employee","version":"1.0.0","publisher":"Hermes Official","role":"personal-assistant","capabilities":{"required":["web-search"],"optional":["maton"]},"permissions":{"secret.manage":"owner_only"}}]}',
@@ -58,7 +69,7 @@ def test_catalog_route_is_authenticated_read_only_and_sanitized(monkeypatch, tmp
     )
     monkeypatch.setattr(api, "CATALOG_PATH", catalog)
     monkeypatch.setattr(api, "call_control", lambda payload: (_ for _ in ()).throw(AssertionError("catalog must not use root control")))
-    status, result = api.route("GET", "/v1/catalog", {}, {"Authorization": "Bearer opaque"})
+    status, result = api.route("GET", "/v1/catalog", {}, {})
     assert status == 200
     assert result["schema"] == "hermes.catalog.public/v1"
     assert result["capabilities"][0]["id"] == "maton"
@@ -74,11 +85,11 @@ def test_catalog_rejects_invalid_or_oversized_payload(monkeypatch, tmp_path):
     catalog.write_text('{"schema":"wrong","capabilities":[],"agents":[]}', encoding="utf-8")
     monkeypatch.setattr(api, "CATALOG_PATH", catalog)
     with pytest.raises(api.ApiError, match="catalog_invalid"):
-        api.route("GET", "/v1/catalog", {}, {"Authorization": "Bearer opaque"})
+        api.route("GET", "/v1/catalog", {}, {})
     catalog.write_text("x" * 256, encoding="utf-8")
     monkeypatch.setattr(api, "MAX_CATALOG_BYTES", 128)
     with pytest.raises(api.ApiError, match="catalog_invalid"):
-        api.route("GET", "/v1/catalog", {}, {"Authorization": "Bearer opaque"})
+        api.route("GET", "/v1/catalog", {}, {})
 
 
 def test_catalog_ui_exposes_read_only_tools_and_employees_tabs():

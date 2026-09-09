@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import html
 import json
 import os
 import re
@@ -73,8 +74,8 @@ def save_state(state: dict) -> None:
 def main_menu():
     return {
         'inline_keyboard': [
-            [{'text': '⚡ Создать Hermes', 'callback_data': 'create'}],
-            [{'text': '🤖 Мои Hermes', 'callback_data': 'my'},
+            [{'text': '⚡ Нанять AI-ассистента', 'callback_data': 'create'}],
+            [{'text': '🤖 Мои AI-ассистенты', 'callback_data': 'my'},
              {'text': '🧠 Как это работает', 'callback_data': 'how'}],
             [{'text': '🔐 Безопасность', 'callback_data': 'security'},
              {'text': '🛟 Помощь', 'callback_data': 'help'}],
@@ -103,45 +104,104 @@ def answer_callback(callback_id: str, text: str = ''):
 def welcome_text() -> str:
     return (
         '<b>Hermes Forge | Pro AI</b>\n\n'
-        'Создай собственного AI-ассистента Hermes прямо в Telegram.\n\n'
-        'Telegram создаёт бота на <b>твоём аккаунте</b>, а Hermes Forge подключает '
-        'его к AI-инфраструктуре и помогает управлять доступом и токенами.\n\n'
-        'Нажми «Создать Hermes», чтобы начать.'
+        'Найми своего персонального AI-ассистента прямо в Telegram.\n\n'
+        '<b>Самообучающийся:</b> чем больше ты с ним работаешь и поправляешь его, тем точнее он подстраивается под тебя.\n\n'
+        '<b>Постоянно развивается:</b> вместе с экосистемой Hermes он получает новые общие инструменты и навыки. Твои приватные данные при этом не смешиваются с чужими.\n\n'
+        'Нажми «Нанять AI-ассистента», и я проведу тебя по шагам прямо здесь.'
     )
 
 
-def create_keyboard(user: dict):
-    uid = int(user['id'])
-    first = (user.get('first_name') or 'AI').strip()[:30]
-    suggested_name = f'Hermes | {first}'[:64]
-    suggested_username = f'Hermes{uid}Bot'[:32]
-    name = urllib.parse.quote(suggested_name, safe='')
-    url = f'https://t.me/newbot/{BOT_USERNAME}/{suggested_username}?name={name}'
+def hire_key(user_id: int) -> str:
+    return str(int(user_id))
+
+
+def username_problem(raw: str) -> tuple[str, str | None]:
+    username = (raw or '').strip().lstrip('@')
+    problems = []
+    if not username.lower().endswith('bot'):
+        problems.append('username должен обязательно заканчиваться на <code>bot</code>')
+    if not 5 <= len(username) <= 32:
+        problems.append('длина username должна быть от 5 до 32 символов')
+    if not re.fullmatch(r'[A-Za-z0-9_]+', username or ''):
+        problems.append('можно использовать только латинские буквы, цифры и знак <code>_</code>')
+    return username, ('; '.join(problems) if problems else None)
+
+
+def final_hire_keyboard(name: str, username: str):
+    encoded_name = urllib.parse.quote(name, safe='')
+    url = f'https://t.me/newbot/{BOT_USERNAME}/{username}?name={encoded_name}'
     return {
-        'inline_keyboard': [[{
-            'text': '⚡ Создать моего Hermes',
-            'url': url,
-        }]],
+        'inline_keyboard': [
+            [{'text': '✅ Подтвердить найм', 'url': url}],
+            [{'text': '✏️ Изменить имя', 'callback_data': 'hire_name'},
+             {'text': '✏️ Изменить username', 'callback_data': 'hire_username'}],
+            [{'text': '❌ Отмена', 'callback_data': 'hire_cancel'}],
+        ]
     }
 
 
-def show_create(chat_id: int, user: dict):
+def ask_hire_name(chat_id: int, user_id: int, state: dict) -> None:
+    state.setdefault('drafts', {})[hire_key(user_id)] = {
+        'step': 'name', 'updated_at': int(time.time())
+    }
+    save_state(state)
+    send(chat_id,
+         '<b>Шаг 1 из 2. Как будет называться твой AI-ассистент?</b>\n\n'
+         'Название может быть любым. Например:\n'
+         '<code>Салават AI</code>\n'
+         '<code>Маркус</code>\n'
+         '<code>Мой ассистент</code>\n\n'
+         'Просто напиши название сюда 👇',
+         {'remove_keyboard': True})
+
+
+def ask_hire_username(chat_id: int, user_id: int, state: dict) -> None:
+    draft = state.setdefault('drafts', {}).setdefault(hire_key(user_id), {})
+    draft['step'] = 'username'
+    draft['updated_at'] = int(time.time())
+    save_state(state)
+    send(chat_id,
+         '<b>Шаг 2 из 2. Теперь придумай username.</b>\n\n'
+         'Это адрес твоего бота в Telegram.\n\n'
+         'ВАЖНО: username <b>обязательно должен заканчиваться на bot</b>.\n'
+         'Только латинские буквы, цифры и <code>_</code>. Длина 5–32 символа.\n\n'
+         'Примеры:\n'
+         '<code>SalavatAI_bot</code>\n'
+         '<code>MarkusHelperBot</code>\n\n'
+         'Напиши username сюда. Можно с @ или без него 👇')
+
+
+def show_hire_confirm(chat_id: int, user_id: int, state: dict) -> None:
+    draft = state.get('drafts', {}).get(hire_key(user_id)) or {}
+    name = str(draft.get('name') or '').strip()
+    username = str(draft.get('username') or '').strip()
+    if not name or not username:
+        ask_hire_name(chat_id, user_id, state)
+        return
+    draft['step'] = 'confirm'
+    draft['updated_at'] = int(time.time())
+    save_state(state)
+    send(chat_id,
+         '<b>Всё готово. Проверь:</b>\n\n'
+         f'Имя: <b>{html.escape(name)}</b>\n'
+         f'Username: <b>@{username}</b>\n\n'
+         'Что произойдёт дальше:\n'
+         '1. Нажмёшь «Подтвердить найм».\n'
+         '2. Telegram покажет одно системное подтверждение создания бота. Ничего заново вводить не нужно.\n'
+         '3. Бот создаётся <b>в твоём Telegram-аккаунте</b>, как при создании через BotFather, и принадлежит тебе.\n'
+         '4. Hermes Forge автоматически подключит его к твоему AI-ассистенту.\n\n'
+         'Если Telegram скажет, что username уже занят, просто вернись сюда и отправь новый username обычным сообщением.',
+         final_hire_keyboard(name, username))
+
+
+def show_create(chat_id: int, user: dict, state: dict):
     me = api('getMe')
     if not me.get('can_manage_bots'):
         send(chat_id,
-             '⚙️ <b>Hermes Forge почти готов.</b>\n\n'
-             'Bot Management Mode ещё не активирован в BotFather. '
+             '⚙️ <b>Сервис найма AI-ассистента временно недоступен.</b>\n\n'
              'Попробуй немного позже.', main_menu())
         return
-    send(chat_id,
-         '<b>Создание Hermes</b>\n\n'
-         'Нажми синюю кнопку под этим сообщением. Telegram сразу откроет '
-         'нативное окно создания бота.\n\n'
-         'Имя и @username меняются <b>в том окне</b>. Не отправляй @username '
-         'обычным сообщением в этот чат.\n\n'
-         'Бот останется <b>твоей собственностью</b>.',
-         create_keyboard(user))
-
+    ask_hire_name(chat_id, int(user['id']), state)
 
 def show_my(chat_id: int, user_id: int, state: dict):
     rows = []
@@ -152,10 +212,10 @@ def show_my(chat_id: int, user_id: int, state: dict):
         status = item.get('profile_status') or 'registered'
         rows.append(f'• <b>@{uname}</b> — {status}')
     if not rows:
-        text = ('<b>Мои Hermes</b>\n\nПока нет созданных агентов. '
-                'Нажми «Создать Hermes» в главном меню.')
+        text = ('<b>Мои AI-ассистенты</b>\n\nПока никого не наняли. '
+                'Нажми «Нанять AI-ассистента» в главном меню.')
     else:
-        text = '<b>Мои Hermes</b>\n\n' + '\n'.join(rows)
+        text = '<b>Мои AI-ассистенты</b>\n\n' + '\n'.join(rows)
     send(chat_id, text, main_menu())
 
 
@@ -305,10 +365,11 @@ def managed_event(update: dict, state: dict):
         'token_path': str(token_path),
         'updated_at': int(time.time()),
     }
+    state.setdefault('drafts', {}).pop(hire_key(owner_id), None)
     save_state(state)
     if profile_status == 'active':
-        text = (f'✅ <b>Hermes готов.</b>\n\n@{uname} подключён к твоему персональному '
-                'Hermes-профилю и запущен. Доступ по умолчанию закрыт для посторонних.')
+        text = (f'✅ <b>AI-ассистент нанят и готов к работе.</b>\n\n@{uname} уже подключён и запущен. '
+                'Он будет запоминать твой рабочий контекст и учиться на твоих правках. Доступ для посторонних закрыт.')
     elif profile_status == 'awaiting_profile':
         text = (f'✅ <b>@{uname} создан.</b>\n\nБот уже зарегистрирован в Hermes Forge. '
                 'Персональный профиль будет подключён следующим шагом.')
@@ -328,6 +389,57 @@ def managed_event(update: dict, state: dict):
         except Exception:
             pass
 
+
+def handle_hire_text(chat_id: int, user_id: int, text: str, state: dict) -> bool:
+    drafts = state.setdefault('drafts', {})
+    draft = drafts.get(hire_key(user_id))
+    if not isinstance(draft, dict):
+        return False
+    step = draft.get('step')
+    if step == 'name':
+        name = ' '.join((text or '').split()).strip()
+        if not name:
+            send(chat_id, 'Название не может быть пустым. Напиши любое имя для ассистента 👇')
+            return True
+        if len(name) > 64:
+            send(chat_id,
+                 f'Название слишком длинное: {len(name)} символов. Максимум 64. '
+                 'Сократи название и отправь ещё раз 👇')
+            return True
+        draft['name'] = name
+        draft['updated_at'] = int(time.time())
+        save_state(state)
+        ask_hire_username(chat_id, user_id, state)
+        return True
+    if step == 'username':
+        username, problem = username_problem(text)
+        if problem:
+            details = problem.replace('; ', '\n• ')
+            send(chat_id,
+                 '<b>Нужно немного поправить username:</b>\n\n'
+                 '• ' + details + '\n\n'
+                 'Пример правильного варианта: <code>SalavatAI_bot</code>\n\n'
+                 'Отправь исправленный username сюда 👇')
+            return True
+        draft['username'] = username
+        draft['updated_at'] = int(time.time())
+        save_state(state)
+        show_hire_confirm(chat_id, user_id, state)
+        return True
+    if step == 'confirm':
+        username, problem = username_problem(text)
+        if problem:
+            details = problem.replace('; ', '\n• ')
+            send(chat_id,
+                 'Если хочешь поменять username, пришли новый вариант. Нужно исправить:\n\n'
+                 '• ' + details + '\n\nПример: <code>SalavatAI_bot</code>')
+            return True
+        draft['username'] = username
+        draft['updated_at'] = int(time.time())
+        save_state(state)
+        show_hire_confirm(chat_id, user_id, state)
+        return True
+    return False
 
 def handle_message(msg: dict, state: dict):
     chat = msg.get('chat') or {}
@@ -378,33 +490,32 @@ def handle_message(msg: dict, state: dict):
         send(chat_id, result, main_menu())
         return
 
-    if command in {'/start', '/menu'}:
+    if command == '/cancel':
+        state.setdefault('drafts', {}).pop(hire_key(user_id), None)
+        save_state(state)
+        send(chat_id, 'Ок, найм отменён. Когда будешь готов, нажми «Нанять AI-ассистента».', main_menu())
+    elif command in {'/start', '/menu'}:
+        state.setdefault('drafts', {}).pop(hire_key(user_id), None)
+        save_state(state)
         send(chat_id, welcome_text(), main_menu())
-    elif command in {'/new', '/create'}:
-        show_create(chat_id, user)
+    elif command in {'/new', '/create', '/hire'}:
+        show_create(chat_id, user, state)
+    elif not command and text and handle_hire_text(chat_id, user_id, text, state):
+        return
     elif command in {'/my', '/bots'}:
         show_my(chat_id, user_id, state)
     elif command == '/status':
-        me = api('getMe')
         managed = sum(1 for x in state.get('managed', {}).values()
                       if int(x.get('owner_user_id', 0)) == user_id)
         send(chat_id,
-             '<b>Статус Hermes Forge</b>\n\n'
-             f'Management Mode: <b>{"ON" if me.get("can_manage_bots") else "OFF"}</b>\n'
-             f'Твоих Hermes: <b>{managed}</b>', main_menu())
+             '<b>Твои AI-ассистенты</b>\n\n'
+             f'Нанято: <b>{managed}</b>', main_menu())
     elif command == '/help':
         send(chat_id,
-             '<b>Помощь</b>\n\nСоздание: /new\nМои агенты: /my\nСтатус: /status\n'
-             'Главное меню: /menu', main_menu())
+             '<b>Помощь</b>\n\n/hire — нанять AI-ассистента\n/my — мои ассистенты\n'
+             '/cancel — отменить текущий найм\n/menu — главное меню', main_menu())
     elif text:
-        candidate = text.lstrip('@').strip()
-        if re.fullmatch(r'[A-Za-z0-9_]{5,32}', candidate) and candidate.lower().endswith('bot'):
-            send(chat_id,
-                 'Ты отправил @username как обычное сообщение. Telegram здесь его не создаёт.\n\n'
-                 'Нажми кнопку ниже, а имя и @username введи уже в открывшемся окне Telegram 👇',
-                 create_keyboard(user))
-        else:
-            send(chat_id, 'Выбери действие в меню 👇', main_menu())
+        send(chat_id, 'Нажми «⚡ Нанять AI-ассистента», и я проведу тебя по шагам.', main_menu())
 
 
 def handle_callback(q: dict, state: dict):
@@ -424,17 +535,30 @@ def handle_callback(q: dict, state: dict):
         return
     answer_callback(callback_id)
     if data == 'create':
-        show_create(chat_id, user)
+        show_create(chat_id, user, state)
+    elif data == 'hire_name':
+        ask_hire_name(chat_id, user_id, state)
+    elif data == 'hire_username':
+        draft = state.get('drafts', {}).get(hire_key(user_id)) or {}
+        if draft.get('name'):
+            ask_hire_username(chat_id, user_id, state)
+        else:
+            ask_hire_name(chat_id, user_id, state)
+    elif data == 'hire_cancel':
+        state.setdefault('drafts', {}).pop(hire_key(user_id), None)
+        save_state(state)
+        send(chat_id, 'Найм отменён.', main_menu())
     elif data == 'my':
         show_my(chat_id, user_id, state)
     elif data == 'how':
         send(chat_id,
              '<b>Как это работает</b>\n\n'
-             '1. Ты создаёшь бота в нативном окне Telegram.\n'
-             '2. Бот принадлежит тебе, не Pro AI.\n'
-             '3. Hermes Forge получает техническое право подключить его к AI-инфраструктуре.\n'
-             '4. Токен хранится на сервере закрыто и может быть перевыпущен.\n'
-             '5. Для готового профиля запуск происходит автоматически.', main_menu())
+             '1. Ты даёшь ассистенту имя и username прямо в этом чате.\n'
+             '2. Telegram просит одно финальное подтверждение.\n'
+             '3. Бот создаётся в твоём аккаунте, как через BotFather, и принадлежит тебе.\n'
+             '4. Мы автоматически подключаем к нему Hermes.\n'
+             '5. Ассистент запоминает твой контекст и учится на твоих правках: чем больше работаешь с ним, тем точнее он подстраивается под тебя.\n'
+             '6. По мере развития экосистемы Hermes он получает новые общие инструменты и навыки. Твои личные данные при этом не смешиваются с данными других людей.', main_menu())
     elif data == 'security':
         send(chat_id,
              '<b>Безопасность</b>\n\n'

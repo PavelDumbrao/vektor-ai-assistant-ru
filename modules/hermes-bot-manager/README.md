@@ -6,16 +6,16 @@ handles technical provisioning.
 
 ## Flow
 
-1. User opens Hermes Forge and chooses **Create Hermes**.
-2. The inline button opens Telegram's official `t.me/newbot/...` managed-bot
-   deep link, so the native creation UI is visible even when reply keyboards are
-   collapsed. The user edits name/@username in that native window, not in chat.
-3. The manager receives a `managed_bot` update.
-4. It calls `getManagedBotToken` and stores the child token in a root-only file.
-5. Access is switched to restricted by default: owner + Pavel tech admin.
-6. If the creator Telegram ID matches an existing Hermes profile, the token is
-   atomically installed as `TELEGRAM_BOT_TOKEN` and its systemd service starts.
-7. Otherwise the bot is registered as `awaiting_profile`.
+1. User chooses **Hire AI assistant** (`Нанять AI-ассистента`).
+2. Forge asks for the assistant display name in ordinary chat text. The name may be any 1–64 character display name.
+3. Forge asks for the Telegram username in ordinary chat text and validates it locally: 5–32 characters, Latin letters/digits/underscore only, mandatory `bot` suffix. Invalid input gets a precise correction message.
+4. Forge shows a summary and one **Confirm hire** button. The managed-bot deep link is prefilled with the chosen name and username.
+5. Telegram shows the single native ownership confirmation required for managed-bot creation. The user does not re-enter the data there.
+6. The new bot is owned by the client exactly like a bot created through BotFather; Hermes Forge is its authorized technical manager.
+7. The manager receives the `managed_bot` update, calls `getManagedBotToken`, stores the token root-only and connects it to the prepared Hermes profile.
+8. Access is restricted by default and the profile service starts.
+
+If Telegram reports that the username is occupied, the user returns to Forge and simply sends another username in the chat. The draft keeps the chosen display name.
 
 No client bot token is committed to Git or returned in normal logs.
 
@@ -27,9 +27,9 @@ Mini App. Verify with `getMe`: `can_manage_bots` must be `true`.
 The bot itself exposes:
 
 - `/start` and `/menu` — main control surface;
-- `/new` — native managed-bot creation;
+- `/hire` — start the guided chat-based hiring flow (`/new` and `/create` remain aliases);
 - `/my` — bots owned by the current Telegram user;
-- `/status` — manager capability and user bot count;
+- `/status` — current number of hired AI assistants;
 - `/help` — concise help.
 
 Admission is deny-by-default. The bot works only in private chats. Pavel is the

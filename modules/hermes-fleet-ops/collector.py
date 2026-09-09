@@ -26,31 +26,80 @@ DURATION_BUCKETS = {"lt_1s", "1s_to_5s", "5s_to_30s", "30s_to_2m", "2m_to_10m", 
 EXECUTION_SURFACES = {"api", "batch", "cli", "desktop", "gateway", "other", "python", "scheduled_task", "tui", "unknown"}
 TASK_ENTRYPOINTS = {"api", "background", "batch", "delegated", "gateway_message", "interactive", "other", "python", "scheduled_task", "unknown"}
 MODEL_FAMILIES = {"claude", "deepseek", "gemini", "gemma", "glm", "gpt", "grok", "kimi", "llama", "minimax", "mimo", "mistral", "nemotron", "nova", "o1", "o3", "o4", "qwen", "step", "trinity", "unknown"}
-TOOL_FAMILIES = {"browser", "cron", "delegation", "files", "image_gen", "maton", "memory", "other", "passive_secretary", "terminal", "video_editor", "web_search"}
+V1_TOOL_FAMILIES = {"browser", "cron", "delegation", "files", "image_gen", "maton", "memory", "other", "passive_secretary", "terminal", "video_editor", "web_search"}
+V2_TOOL_CATEGORIES = {"browser", "code_execution", "communication", "computer_use", "delegation", "file", "home_automation", "mcp", "media", "memory", "other", "planning", "project", "scheduler", "skill", "terminal", "unknown", "web"}
+V2_TOOL_OUTCOMES = {"blocked", "cancelled", "failed", "success", "timed_out", "unknown"}
+V2_APPROVAL_OUTCOMES = {"approved", "denied", "not_required", "timed_out", "unknown"}
+V2_TOOL_LATENCY_BUCKETS = {"lt_100ms", "100ms_to_250ms", "250ms_to_500ms", "500ms_to_1s", "1s_to_2s", "2s_to_5s", "5s_to_10s", "10s_to_30s", "gte_30s", "unknown"}
+V2_TOOL_RETRY_BUCKETS = COUNT_BUCKETS | {"unknown"}
+V2_SKILL_ACTIONS = {"archived", "created", "edited", "installed", "patched", "restored", "stale"}
+V2_SKILL_PROVENANCE = {"agent_created", "external", "installed", "local", "unknown"}
+V2_SKILL_REUSE = {"first_use", "reused"}
+V2_SKILL_POST_PATCH = {"no_new_patch", "not_applicable", "reused_after_patch"}
+V2_ARCHITECTURES = {"arm", "arm64", "unknown", "x86", "x86_64"}
+V2_OS_FAMILIES = {"linux", "macos", "unknown", "windows"}
+V2_INSTALL_METHODS = {"apt", "docker", "git", "home-manager", "homebrew", "nixos", "pip", "unknown"}
+SAFE_METRIC_IDENTIFIER_RE = re.compile(r"^[a-z0-9][a-z0-9._:/@+\-]*$")
 
-METRIC_DIMENSIONS = {
-    "hermes.model_call.count": {
-        "call_role": {"primary"}, "locality": {"local", "remote", "unknown"},
-        "model_family": MODEL_FAMILIES, "outcome": {"cancelled", "failed", "success"},
-        "provider_family": {"aggregator", "custom", "direct", "local", "unknown"},
-    },
-    "hermes.task_run.started": {
-        "entrypoint": TASK_ENTRYPOINTS, "execution_surface": EXECUTION_SURFACES,
-    },
-    "hermes.task_run.finished": {
-        "duration_bucket": DURATION_BUCKETS,
-        "end_reason": {"approval_denied", "completed", "failed", "guardrail_blocked", "iteration_limit", "system_aborted", "timed_out", "unknown", "user_cancelled"},
-        "entrypoint": TASK_ENTRYPOINTS, "execution_surface": EXECUTION_SURFACES,
-        "model_call_count_bucket": COUNT_BUCKETS,
-        "outcome": {"cancelled", "failed", "success", "timed_out", "unknown"},
-        "retry_count_bucket": COUNT_BUCKETS,
-        "termination": {"none", "system_aborted", "timed_out", "unknown", "user_cancelled"},
-        "tool_call_count_bucket": COUNT_BUCKETS,
-    },
+LEGACY_MODEL_CONTRACT = {
+    "call_role": {"primary"},
+    "locality": {"local", "remote", "unknown"},
+    "model_family": MODEL_FAMILIES,
+    "outcome": {"cancelled", "failed", "success"},
+    "provider_family": {"aggregator", "custom", "direct", "local", "unknown"},
+}
+TASK_STARTED_CONTRACT = {
+    "entrypoint": TASK_ENTRYPOINTS,
+    "execution_surface": EXECUTION_SURFACES,
+}
+TASK_FINISHED_CONTRACT = {
+    "duration_bucket": DURATION_BUCKETS,
+    "end_reason": {"approval_denied", "completed", "failed", "guardrail_blocked", "iteration_limit", "system_aborted", "timed_out", "unknown", "user_cancelled"},
+    "entrypoint": TASK_ENTRYPOINTS,
+    "execution_surface": EXECUTION_SURFACES,
+    "model_call_count_bucket": COUNT_BUCKETS,
+    "outcome": {"cancelled", "failed", "success", "timed_out", "unknown"},
+    "retry_count_bucket": COUNT_BUCKETS,
+    "termination": {"none", "system_aborted", "timed_out", "unknown", "user_cancelled"},
+    "tool_call_count_bucket": COUNT_BUCKETS,
+}
+
+V1_METRIC_DIMENSIONS = {
+    "hermes.model_call.count": LEGACY_MODEL_CONTRACT,
+    "hermes.task_run.started": TASK_STARTED_CONTRACT,
+    "hermes.task_run.finished": TASK_FINISHED_CONTRACT,
     "hermes.tool_call.count": {
         "duration_bucket": DURATION_BUCKETS,
         "outcome": {"cancelled", "failed", "success"},
-        "tool_family": TOOL_FAMILIES,
+        "tool_family": V1_TOOL_FAMILIES,
+    },
+}
+
+V2_METRIC_DIMENSIONS = {
+    "hermes.client.active": {},
+    "hermes.model_call.count": LEGACY_MODEL_CONTRACT,
+    "hermes.task_run.started": TASK_STARTED_CONTRACT,
+    "hermes.task_run.finished": TASK_FINISHED_CONTRACT,
+    "hermes.tool_call.count": {
+        "approval_outcome": V2_APPROVAL_OUTCOMES,
+        "latency_bucket": V2_TOOL_LATENCY_BUCKETS,
+        "outcome": V2_TOOL_OUTCOMES,
+        "retry_count_bucket": V2_TOOL_RETRY_BUCKETS,
+        "tool_category": V2_TOOL_CATEGORIES,
+    },
+    "hermes.tool_approval.count": {
+        "attribution": {"tool_call", "unattributed"},
+        "outcome": V2_APPROVAL_OUTCOMES - {"not_required"},
+    },
+    "hermes.skill.lifecycle.count": {
+        "action": V2_SKILL_ACTIONS,
+        "provenance": V2_SKILL_PROVENANCE,
+    },
+    "hermes.skill.load.count": {
+        "post_patch_state": V2_SKILL_POST_PATCH,
+        "provenance": V2_SKILL_PROVENANCE,
+        "reuse_state": V2_SKILL_REUSE,
+        "use_count_bucket": COUNT_BUCKETS,
     },
 }
 
@@ -74,20 +123,61 @@ def load_profiles(root: Path = PROFILE_ROOT) -> list[dict[str, str]]:
     return profiles
 
 
+def _validate_resource(schema_version: str, resource: Any) -> None:
+    if not isinstance(resource, dict):
+        raise ValueError("resource_invalid")
+    if schema_version == "hermes.shared_metrics.v1":
+        if set(resource) != {"hermes_version"}:
+            raise ValueError("resource_invalid")
+    elif schema_version == "hermes.shared_metrics.v2":
+        if set(resource) != {"architecture", "hermes_version", "install_method", "os_family"}:
+            raise ValueError("resource_invalid")
+        if resource.get("architecture") not in V2_ARCHITECTURES:
+            raise ValueError("resource_architecture_invalid")
+        if resource.get("install_method") not in V2_INSTALL_METHODS:
+            raise ValueError("resource_install_method_invalid")
+        if resource.get("os_family") not in V2_OS_FAMILIES:
+            raise ValueError("resource_os_family_invalid")
+    else:
+        raise ValueError("package_schema_invalid")
+    version = resource.get("hermes_version")
+    if not isinstance(version, str) or not SAFE_VERSION_RE.fullmatch(version):
+        raise ValueError("version_invalid")
+
+
+def _validate_dimensions(schema_version: str, name: str, dimensions: Any) -> None:
+    if not isinstance(dimensions, dict):
+        raise ValueError("metric_dimensions_invalid")
+    if schema_version == "hermes.shared_metrics.v2" and name == "hermes.model_route.count":
+        if set(dimensions) != {"model", "provider"}:
+            raise ValueError("metric_dimensions_invalid")
+        model = dimensions.get("model")
+        provider = dimensions.get("provider")
+        if not isinstance(model, str) or len(model) > 256 or not SAFE_METRIC_IDENTIFIER_RE.fullmatch(model):
+            raise ValueError("metric_dimension_value_invalid")
+        if not isinstance(provider, str) or len(provider) > 64 or not SAFE_METRIC_IDENTIFIER_RE.fullmatch(provider):
+            raise ValueError("metric_dimension_value_invalid")
+        return
+    contracts = V1_METRIC_DIMENSIONS if schema_version == "hermes.shared_metrics.v1" else V2_METRIC_DIMENSIONS
+    contract = contracts.get(name)
+    if contract is None:
+        raise ValueError("metric_name_invalid")
+    if set(dimensions) != set(contract):
+        raise ValueError("metric_dimensions_invalid")
+    if any(not isinstance(value, str) or value not in contract[key] for key, value in dimensions.items()):
+        raise ValueError("metric_dimension_value_invalid")
+
+
 def validate_package(payload: Any) -> dict[str, Any]:
     required = {"schema_version", "package_id", "install_id", "period_start", "period_end", "generated_at", "resource", "metrics"}
     if not isinstance(payload, dict) or set(payload) != required:
         raise ValueError("package_shape_invalid")
-    if payload["schema_version"] != "hermes.shared_metrics.v1":
+    schema_version = payload.get("schema_version")
+    if schema_version not in {"hermes.shared_metrics.v1", "hermes.shared_metrics.v2"}:
         raise ValueError("package_schema_invalid")
     if not UUID_RE.fullmatch(str(payload["package_id"])) or not UUID_RE.fullmatch(str(payload["install_id"])):
         raise ValueError("package_id_invalid")
-    resource = payload["resource"]
-    if not isinstance(resource, dict) or set(resource) != {"hermes_version"}:
-        raise ValueError("resource_invalid")
-    version = str(resource["hermes_version"])
-    if not version or len(version) > 64:
-        raise ValueError("version_invalid")
+    _validate_resource(schema_version, payload["resource"])
     metrics = payload["metrics"]
     if not isinstance(metrics, list) or not metrics:
         raise ValueError("metrics_invalid")
@@ -95,14 +185,9 @@ def validate_package(payload: Any) -> dict[str, Any]:
         if not isinstance(metric, dict) or set(metric) != {"name", "type", "dimensions", "value"}:
             raise ValueError("metric_shape_invalid")
         name = str(metric["name"])
-        contract = METRIC_DIMENSIONS.get(name)
-        dimensions = metric["dimensions"]
-        if contract is None or metric["type"] != "counter":
+        if metric["type"] != "counter":
             raise ValueError("metric_name_invalid")
-        if not isinstance(dimensions, dict) or set(dimensions) != set(contract):
-            raise ValueError("metric_dimensions_invalid")
-        if any(not isinstance(value, str) or value not in contract[key] for key, value in dimensions.items()):
-            raise ValueError("metric_dimension_value_invalid")
+        _validate_dimensions(schema_version, name, metric["dimensions"])
         if not isinstance(metric["value"], int) or isinstance(metric["value"], bool) or metric["value"] <= 0:
             raise ValueError("metric_value_invalid")
     for field in ("period_start", "period_end", "generated_at"):

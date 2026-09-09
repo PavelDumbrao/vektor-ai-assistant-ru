@@ -20,9 +20,27 @@ def summary(store: AnalyticsStore) -> dict:
             GROUP BY dimensions_json ORDER BY n DESC
         """).fetchall()
         models = db.execute("""
+            SELECT metric_name, dimensions_json, SUM(value) AS n
+            FROM metric_counters
+            WHERE metric_name IN ('hermes.model_call.count','hermes.model_route.count')
+            GROUP BY metric_name, dimensions_json ORDER BY n DESC
+        """).fetchall()
+        approvals = db.execute("""
             SELECT dimensions_json, SUM(value) AS n
             FROM metric_counters
-            WHERE metric_name='hermes.model_call.count'
+            WHERE metric_name='hermes.tool_approval.count'
+            GROUP BY dimensions_json ORDER BY n DESC
+        """).fetchall()
+        skills = db.execute("""
+            SELECT metric_name, dimensions_json, SUM(value) AS n
+            FROM metric_counters
+            WHERE metric_name IN ('hermes.skill.lifecycle.count','hermes.skill.load.count')
+            GROUP BY metric_name, dimensions_json ORDER BY n DESC
+        """).fetchall()
+        tasks = db.execute("""
+            SELECT dimensions_json, SUM(value) AS n
+            FROM metric_counters
+            WHERE metric_name='hermes.task_run.finished'
             GROUP BY dimensions_json ORDER BY n DESC
         """).fetchall()
         updates = db.execute("""
@@ -43,16 +61,21 @@ def summary(store: AnalyticsStore) -> dict:
     for row in tools:
         dimensions = json.loads(row["dimensions_json"])
         tool_rows.append({
-            "tool_family": dimensions.get("tool_family", "other"),
+            "tool_category": dimensions.get("tool_category") or dimensions.get("tool_family", "other"),
             "outcome": dimensions.get("outcome", "unknown"),
-            "duration_bucket": dimensions.get("duration_bucket", "unknown"),
+            "latency_bucket": dimensions.get("latency_bucket") or dimensions.get("duration_bucket", "unknown"),
+            "approval_outcome": dimensions.get("approval_outcome", "unknown"),
+            "retry_count_bucket": dimensions.get("retry_count_bucket", "unknown"),
             "count": int(row["n"]),
         })
     return {
         "fleet": {"profiles": len(health), "healthy": healthy, "degraded": degraded},
         "versions": [{"release_id": row["release_id"], "profiles": int(row["n"])} for row in versions],
         "tool_usage": tool_rows,
-        "model_usage": [{**json.loads(row["dimensions_json"]), "count": int(row["n"])} for row in models],
+        "model_usage": [{"metric": row["metric_name"], **json.loads(row["dimensions_json"]), "count": int(row["n"])} for row in models],
+        "tool_approvals": [{**json.loads(row["dimensions_json"]), "count": int(row["n"])} for row in approvals],
+        "skill_activity": [{"metric": row["metric_name"], **json.loads(row["dimensions_json"]), "count": int(row["n"])} for row in skills],
+        "task_outcomes": [{**json.loads(row["dimensions_json"]), "count": int(row["n"])} for row in tasks],
         "updates": [{"outcome": row["outcome"], "count": int(row["n"])} for row in updates],
         "health_issues_7d": [dict(row) for row in issues],
         "rollouts": [dict(row) for row in rollouts],

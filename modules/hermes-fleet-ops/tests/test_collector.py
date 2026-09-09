@@ -100,3 +100,85 @@ def test_health_history_records_only_state_changes(tmp_path):
     })
     with store.connect() as db:
         assert db.execute("SELECT COUNT(*) FROM health_events").fetchone()[0] == 2
+
+
+def package_v2(metric=None, package_id="223e4567-e89b-12d3-a456-426614174000"):
+    return {
+        "schema_version": "hermes.shared_metrics.v2",
+        "package_id": package_id,
+        "install_id": "223e4567-e89b-12d3-a456-426614174001",
+        "period_start": "2026-09-09T00:00:00Z",
+        "period_end": "2026-09-10T00:00:00Z",
+        "generated_at": "2026-09-09T12:00:00Z",
+        "resource": {
+            "architecture": "x86_64",
+            "hermes_version": "0.21.0",
+            "install_method": "git",
+            "os_family": "linux",
+        },
+        "metrics": [metric or {
+            "name": "hermes.tool_call.count",
+            "type": "counter",
+            "dimensions": {
+                "approval_outcome": "not_required",
+                "latency_bucket": "250ms_to_500ms",
+                "outcome": "success",
+                "retry_count_bucket": "0",
+                "tool_category": "mcp",
+            },
+            "value": 4,
+        }],
+    }
+
+
+def test_v2_package_accepts_live_bounded_tool_contract():
+    good = collector.validate_package(package_v2())
+    dimensions = good["metrics"][0]["dimensions"]
+    assert dimensions["tool_category"] == "mcp"
+    assert dimensions["approval_outcome"] == "not_required"
+
+
+def test_v2_package_rejects_unknown_tool_category():
+    bad = package_v2()
+    bad["metrics"][0]["dimensions"]["tool_category"] = "customer_private_tool"
+    try:
+        collector.validate_package(bad)
+    except ValueError as exc:
+        assert str(exc) == "metric_dimension_value_invalid"
+    else:
+        raise AssertionError("unknown v2 tool category must fail")
+
+
+def test_v2_model_route_accepts_bounded_ids_and_rejects_text():
+    good = package_v2({
+        "name": "hermes.model_route.count",
+        "type": "counter",
+        "dimensions": {"model": "gpt-5.6-sol", "provider": "openrouter"},
+        "value": 2,
+    })
+    collector.validate_package(good)
+    bad = package_v2({
+        "name": "hermes.model_route.count",
+        "type": "counter",
+        "dimensions": {"model": "user said secret thing", "provider": "openrouter"},
+        "value": 1,
+    })
+    try:
+        collector.validate_package(bad)
+    except ValueError as exc:
+        assert str(exc) == "metric_dimension_value_invalid"
+    else:
+        raise AssertionError("unbounded model text must fail")
+
+
+def test_v2_store_discards_install_identity_and_resource_details(tmp_path):
+    store = AnalyticsStore(tmp_path / "analytics" / "db.sqlite3")
+    payload = collector.validate_package(package_v2())
+    assert store.ingest_package("pavel", payload, "2026-09-09T12:01:00Z")
+    with store.connect() as db:
+        package_row = dict(db.execute("SELECT * FROM metric_packages").fetchone())
+        serialized = json.dumps(package_row, sort_keys=True)
+    assert "install_id" not in package_row
+    assert "x86_64" not in serialized
+    assert "linux" not in serialized
+    assert "git" not in serialized

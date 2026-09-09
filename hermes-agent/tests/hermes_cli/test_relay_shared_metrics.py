@@ -33,9 +33,6 @@ from hermes_cli.observability.shared_metrics_contract import (
     TASK_ENTRYPOINTS,
     TASK_OUTCOMES,
     TASK_TERMINATIONS,
-    TOOL_CALL_METRIC,
-    TOOL_FAMILIES,
-    TOOL_OUTCOMES,
     count_bucket,
     duration_bucket,
     execution_surface,
@@ -48,9 +45,6 @@ from hermes_cli.observability.shared_metrics_contract import (
     task_start_fields,
     task_terminal_fields,
     task_terminal_state,
-    tool_call_dimensions,
-    tool_call_outcome,
-    tool_family,
 )
 
 
@@ -362,55 +356,3 @@ def test_store_and_export_are_owner_only(tmp_path):
     assert stat.S_IMODE(outbox_directory.stat().st_mode) == 0o700
     assert stat.S_IMODE(database_path.stat().st_mode) == 0o600
     assert stat.S_IMODE(package_path.stat().st_mode) == 0o600
-
-
-def test_tool_call_dimensions_are_bounded_and_privacy_safe():
-    assert tool_family({"tool_name": "mcp__maton__run_action"}) == "maton"
-    assert tool_family({"tool_name": "video_editor_render"}) == "video_editor"
-    assert tool_family({"tool_name": "web_search"}) == "web_search"
-    assert tool_family({"tool_name": "customer_private_tool_123"}) == "other"
-    assert tool_call_outcome({"status": "ok"}) == "success"
-    assert tool_call_outcome({"status": "cancelled"}) == "cancelled"
-    assert tool_call_outcome({"status": "error", "error_message": "secret"}) == "failed"
-    dimensions = tool_call_dimensions({
-        "tool_name": "mcp__maton__run_action",
-        "status": "ok",
-        "duration_ms": 4200,
-        "args": {"private": "do-not-export"},
-        "result": "do-not-export",
-    })
-    assert dimensions == {
-        "duration_bucket": "1s_to_5s",
-        "outcome": "success",
-        "tool_family": "maton",
-    }
-    assert set(dimensions["tool_family"] for _ in range(1)) <= TOOL_FAMILIES
-    assert dimensions["outcome"] in TOOL_OUTCOMES
-
-
-def test_store_exports_tool_counter_without_raw_payload(tmp_path):
-    store = SharedMetricsStore(tmp_path / "metrics.sqlite3", tmp_path / "outbox")
-    dimensions = tool_call_dimensions({
-        "tool_name": "terminal",
-        "status": "error",
-        "duration_ms": 10,
-        "args": {"command": "sensitive-command"},
-        "result": "sensitive-result",
-    })
-    store.record_counter(TOOL_CALL_METRIC, dimensions, "test-version")
-    [path] = store.create_and_export_package()
-    package = json.loads(path.read_text(encoding="utf-8"))
-    _schema_validator().validate(package)
-    serialized = json.dumps(package)
-    assert "sensitive-command" not in serialized
-    assert "sensitive-result" not in serialized
-    assert package["metrics"] == [{
-        "name": "hermes.tool_call.count",
-        "type": "counter",
-        "dimensions": {
-            "duration_bucket": "lt_1s",
-            "outcome": "failed",
-            "tool_family": "terminal",
-        },
-        "value": 1,
-    }]

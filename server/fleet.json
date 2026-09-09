@@ -1,5 +1,5 @@
 {
-  "snapshot_date": "2026-09-08",
+  "snapshot_date": "2026-09-09",
   "code_release": "../modules/shared-runtime/releases/v0.21.0/vektor3.json",
   "profiles": [
     {
@@ -43,7 +43,7 @@
       "owner_label": "bebov",
       "hermes_home": "/home/bebov/.hermes",
       "service": "bebov-hermes.service",
-      "release_id": "hermes-0.21.0-29112bef-vektor3-vyacheslav",
+      "release_id": "hermes-0.21.0-29112bef-vektor4-modern",
       "variant": "modern",
       "config_template": "profiles/bebov/config.yaml.example",
       "plugins": [

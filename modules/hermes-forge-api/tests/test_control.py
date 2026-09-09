@@ -367,3 +367,38 @@ def test_control_unit_has_private_persistent_action_state_directory():
     unit = (MODULE.parent / "proai-hermes-forge-control.service").read_text()
     assert "StateDirectory=proai-hermes-forge" in unit
     assert "StateDirectoryMode=0700" in unit
+
+
+def test_narrow_toolset_patch_preserves_every_other_yaml_byte():
+    original = (
+        'model:\n  default: "gpt-test" # keep this comment\n'
+        'agent:\n  max_turns: 60\n  disabled_toolsets:\n'
+        '  - browser-cdp\n  - terminal\n  verbose: false\n'
+        "custom:\n  quoted: 'Keep Me'\n"
+    )
+    disabled, changed = control._patch_disabled_toolset_text(original, "web", False)
+    assert changed is True
+    assert disabled == original.replace("  verbose: false\n", "  - web\n  verbose: false\n")
+    enabled, changed_back = control._patch_disabled_toolset_text(disabled, "web", True)
+    assert changed_back is True
+    assert enabled == original
+
+
+def test_narrow_toolset_patch_supports_canonical_empty_inline_list():
+    original = "agent:\n  disabled_toolsets: [] # keep\n  verbose: false\n"
+    disabled, changed = control._patch_disabled_toolset_text(original, "web", False)
+    assert changed is True
+    assert disabled == "agent:\n  disabled_toolsets: # keep\n  - web\n  verbose: false\n"
+    assert yaml.safe_load(disabled)["agent"]["disabled_toolsets"] == ["web"]
+    restored, restored_changed = control._patch_disabled_toolset_text(disabled, "web", True)
+    assert restored_changed is True
+    assert restored == original
+
+
+def test_narrow_toolset_patch_rejects_inline_or_ambiguous_yaml():
+    inline = "agent:\n  disabled_toolsets: [web, terminal]\n"
+    with pytest.raises(control.ControlError, match="config_format_unsupported"):
+        control._patch_disabled_toolset_text(inline, "web", True)
+    duplicate = "agent:\n  disabled_toolsets:\n  - web\n  disabled_toolsets:\n  - terminal\n"
+    with pytest.raises(control.ControlError, match="config_format_unsupported"):
+        control._patch_disabled_toolset_text(duplicate, "web", True)

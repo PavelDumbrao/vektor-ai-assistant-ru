@@ -18,7 +18,7 @@ description: Full transcript-first talking-head editing: cut selection, seam ver
 ## Enrichment
 
 6. `video_editor_captions`: получи черновые титры. Прочитай каждый chunk.
-7. `video_editor_caption_approve`: исправь ASR, имена, продуктовые термины и акценты. Нельзя идти в master с `proofread=false`.
+7. `video_editor_caption_approve`: исправь ASR, имена, продуктовые термины и акценты. Не объединяй соседние caption chunks и держи каждую correction-фразу максимум в 4 словах, чтобы не ломать тайминг. Нельзя идти в master с `proofread=false`.
 8. `video_editor_cards`: расставь смысловые cards так, чтобы кадр регулярно менялся. Card объясняет, но не доказывает реальный факт.
 9. Если речь называет реальный сайт/репозиторий/продукт, используй `video_editor_capture`, затем `video_editor_proof`. Показывай реальную страницу, а не мокап.
 10. `video_editor_look`: сначала preview lighting/colour correction, проверь before/after, затем apply. Исходный cut остаётся нетронутым.

@@ -14,7 +14,7 @@ CAPTIONS_SCHEMA = {
 
 CAPTION_APPROVE_SCHEMA = {
     "name": "video_editor_caption_approve",
-    "description": "Apply explicit caption corrections and mark the captions proofread. Call only after reading every caption chunk.",
+    "description": "Apply explicit caption corrections and mark the captions proofread. Keep every correction at 4 words or fewer and never merge neighboring chunks; timing belongs to the existing chunk. Call only after reading every caption chunk.",
     "parameters": {
         "type": "object",
         "properties": {

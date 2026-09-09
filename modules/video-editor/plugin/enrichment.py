@@ -18,6 +18,7 @@ SAFE_CAPTURE = engine.RUNTIME_ROOT / "capture" / "safe_capture.py"
 PLAYWRIGHT_BROWSERS = engine.RUNTIME_ROOT / "playwright-browsers"
 HYPERFRAMES_BROWSER = engine.RUNTIME_ROOT / "hyperframes-home" / ".cache" / "hyperframes" / "chrome" / "chrome-headless-shell" / "linux-152.0.7977.30" / "chrome-headless-shell-linux64" / "chrome-headless-shell"
 AUDIO_EXTS = {".mp3", ".wav", ".m4a", ".aac", ".ogg", ".flac"}
+MAX_CAPTION_WORDS = 4
 ASSET_RE = re.compile(r"^[a-zA-Z0-9_-]{1,48}$")
 HEX_RE = re.compile(r"^#[0-9A-Fa-f]{6}$")
 HYPERFRAMES_VERSION = "0.8.30"
@@ -182,6 +183,10 @@ def caption_approve(job_id: str, corrections: list[dict[str, Any]] | None = None
         if not text or len(text) > 220:
             raise engine.VideoEditorError("video_caption_text_invalid")
         tokens = text.split()
+        if len(tokens) > MAX_CAPTION_WORDS:
+            raise engine.VideoEditorError(
+                f"video_caption_text_too_dense:index={index}:max_words={MAX_CAPTION_WORDS}:do_not_merge_chunks"
+            )
         emphasis = item.get("emphasis") or []
         emphasis_ids = set()
         for raw in emphasis:
@@ -196,6 +201,15 @@ def caption_approve(job_id: str, corrections: list[dict[str, Any]] | None = None
             {"text": token, "emphasis": pos in emphasis_ids}
             for pos, token in enumerate(tokens)
         ]
+    dense_indices = [
+        index for index, chunk in enumerate(chunks)
+        if len(str(chunk.get("text") or "").split()) > MAX_CAPTION_WORDS
+    ]
+    if dense_indices:
+        sample = ",".join(str(index) for index in dense_indices[:12])
+        raise engine.VideoEditorError(
+            f"video_caption_chunks_still_dense:indices={sample}:max_words={MAX_CAPTION_WORDS}:correct_each_chunk_separately"
+        )
     data["proofread"] = True
     data["proofread_by"] = "hermes"
     data["proofread_at"] = int(time.time())

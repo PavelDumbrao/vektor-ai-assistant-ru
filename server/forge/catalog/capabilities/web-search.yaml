@@ -1,0 +1,25 @@
+schema: hermes.capability/v1
+id: web-search
+name: Web Search
+version: 1.0.0
+publisher: Hermes Official
+trust_tier: official
+availability: available
+kind: builtin
+summary: Internet research through the platform-managed search provider.
+runtime: ">=0.21,<0.22"
+connection:
+  mode: platform
+  secret_names: []
+  oauth_scopes: []
+permissions:
+  network: platform
+  filesystem: none
+  action_default: autonomous
+health:
+  operation: web-search-ready
+provision:
+  install: noop
+  uninstall: none
+retention: none
+metering: platform_usage

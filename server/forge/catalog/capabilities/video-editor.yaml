@@ -1,0 +1,25 @@
+schema: hermes.capability/v1
+id: video-editor
+name: Video Editor
+version: 1.0.0
+publisher: Hermes Official
+trust_tier: official
+availability: available
+kind: shared_tool
+summary: Transcript-aware video editing through the shared Hermes video runtime.
+runtime: ">=0.21,<0.22"
+connection:
+  mode: none
+  secret_names: []
+  oauth_scopes: []
+permissions:
+  network: platform
+  filesystem: tenant_workspace
+  action_default: autonomous
+health:
+  operation: video-editor-ready
+provision:
+  install: ensure-video-editor
+  uninstall: disable-video-editor
+retention: tenant_private
+metering: platform_usage

@@ -1,0 +1,74 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:hermes-forge:schema:agent-package:v1",
+  "title": "Hermes Forge Agent Package v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema", "id", "name", "version", "publisher", "role", "summary",
+    "runtime", "models", "memory", "capabilities", "permissions",
+    "health", "onboarding"
+  ],
+  "properties": {
+    "schema": {"const": "hermes.agent/v1"},
+    "id": {"type": "string", "pattern": "^[a-z][a-z0-9-]{1,63}$"},
+    "name": {"type": "string", "minLength": 1, "maxLength": 80},
+    "version": {"type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"},
+    "publisher": {"type": "string", "minLength": 1, "maxLength": 80},
+    "role": {"type": "string", "pattern": "^[a-z][a-z0-9-]{1,63}$"},
+    "summary": {"type": "string", "minLength": 1, "maxLength": 240},
+    "runtime": {"type": "string", "pattern": "^>=0\\.[0-9]+,<0\\.[0-9]+$"},
+    "models": {
+      "type": "object", "additionalProperties": false,
+      "required": ["primary", "fallback"],
+      "properties": {
+        "primary": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._/-]{1,79}$"},
+        "fallback": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._/-]{1,79}$"}
+      }
+    },
+    "memory": {
+      "type": "object", "additionalProperties": false,
+      "required": ["passive_secretary"],
+      "properties": {"passive_secretary": {"type": "boolean"}}
+    },
+    "capabilities": {
+      "type": "object", "additionalProperties": false,
+      "required": ["required", "optional"],
+      "properties": {
+        "required": {
+          "type": "array", "maxItems": 32, "uniqueItems": true,
+          "items": {"type": "string", "pattern": "^[a-z][a-z0-9-]{1,63}$"}
+        },
+        "optional": {
+          "type": "array", "maxItems": 32, "uniqueItems": true,
+          "items": {"type": "string", "pattern": "^[a-z][a-z0-9-]{1,63}$"}
+        }
+      }
+    },
+    "permissions": {
+      "type": "object",
+      "maxProperties": 64,
+      "propertyNames": {"pattern": "^[a-z][a-z0-9_.-]{1,79}$"},
+      "additionalProperties": {
+        "enum": ["observe", "approval", "autonomous", "owner_only", "disabled"]
+      }
+    },
+    "health": {
+      "type": "object", "additionalProperties": false,
+      "required": ["suite"],
+      "properties": {
+        "suite": {"enum": ["personal-hermes-smoke-v1"]}
+      }
+    },
+    "onboarding": {
+      "type": "object", "additionalProperties": false,
+      "required": ["questions"],
+      "properties": {
+        "questions": {
+          "type": "array", "maxItems": 20, "uniqueItems": true,
+          "items": {"type": "string", "pattern": "^[a-z][a-z0-9_.-]{1,79}$"}
+        }
+      }
+    }
+  }
+}

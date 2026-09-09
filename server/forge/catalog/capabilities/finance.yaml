@@ -1,0 +1,25 @@
+schema: hermes.capability/v1
+id: finance
+name: Finance
+version: 1.0.0
+publisher: Hermes Official
+trust_tier: official
+availability: planned
+kind: connector
+summary: Personal and business financial data through approved account connectors.
+runtime: ">=0.21,<0.22"
+connection:
+  mode: oauth
+  secret_names: []
+  oauth_scopes: [accounts.read, transactions.read]
+permissions:
+  network: external_api
+  filesystem: tenant_config
+  action_default: observe
+health:
+  operation: none
+provision:
+  install: none
+  uninstall: none
+retention: tenant_private
+metering: none

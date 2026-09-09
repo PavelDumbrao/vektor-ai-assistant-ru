@@ -1,0 +1,85 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:hermes-forge:schema:capability:v1",
+  "title": "Hermes Forge Capability v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema", "id", "name", "version", "publisher", "trust_tier",
+    "availability", "kind", "summary", "runtime", "connection",
+    "permissions", "health", "provision", "retention", "metering"
+  ],
+  "properties": {
+    "schema": {"const": "hermes.capability/v1"},
+    "id": {"type": "string", "pattern": "^[a-z][a-z0-9-]{1,63}$"},
+    "name": {"type": "string", "minLength": 1, "maxLength": 80},
+    "version": {"type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"},
+    "publisher": {"type": "string", "minLength": 1, "maxLength": 80},
+    "trust_tier": {"enum": ["official", "verified", "community"]},
+    "availability": {"enum": ["available", "planned", "deprecated"]},
+    "kind": {"enum": ["builtin", "connector", "mcp", "plugin", "shared_tool"]},
+    "summary": {"type": "string", "minLength": 1, "maxLength": 240},
+    "runtime": {"type": "string", "pattern": "^>=0\\.[0-9]+,<0\\.[0-9]+$"},
+    "connection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode", "secret_names", "oauth_scopes"],
+      "properties": {
+        "mode": {"enum": ["none", "personal_secret", "platform", "oauth", "telegram"]},
+        "secret_names": {
+          "type": "array", "maxItems": 8, "uniqueItems": true,
+          "items": {"type": "string", "pattern": "^[A-Z][A-Z0-9_]{2,79}$"}
+        },
+        "oauth_scopes": {
+          "type": "array", "maxItems": 24, "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1, "maxLength": 120}
+        }
+      }
+    },
+    "permissions": {
+      "type": "object", "additionalProperties": false,
+      "required": ["network", "filesystem", "action_default"],
+      "properties": {
+        "network": {"enum": ["none", "platform", "external_api"]},
+        "filesystem": {"enum": ["none", "tenant_config", "tenant_workspace", "shared_runtime"]},
+        "action_default": {"enum": ["observe", "approval", "autonomous", "owner_only", "disabled"]}
+      }
+    },
+    "health": {
+      "type": "object", "additionalProperties": false,
+      "required": ["operation"],
+      "properties": {
+        "operation": {
+          "enum": [
+            "none", "maton-connections", "telegram-secretary-ready",
+            "web-search-ready", "image-studio-ready", "video-editor-ready"
+          ]
+        }
+      }
+    },
+    "provision": {
+      "type": "object", "additionalProperties": false,
+      "required": ["install", "uninstall"],
+      "properties": {
+        "install": {
+          "enum": [
+            "none", "ensure-maton", "ensure-telegram-secretary", "noop",
+            "ensure-image-studio", "ensure-video-editor"
+          ]
+        },
+        "uninstall": {
+          "enum": [
+            "none", "disable-maton", "disable-telegram-secretary",
+            "disable-image-studio", "disable-video-editor"
+          ]
+        }
+      }
+    },
+    "retention": {
+      "enum": ["none", "tenant_private", "platform_aggregate"]
+    },
+    "metering": {
+      "enum": ["none", "provider_usage", "platform_usage"]
+    }
+  }
+}

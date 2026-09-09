@@ -23,15 +23,16 @@ GitHub хранит только воспроизводимый код и saniti
 3. Выбрать pinned release из GitHub и подключить immutable shared runtime.
 4. Развернуть sanitized profile template, затем локально подставить owner/admin IDs и env secrets.
 5. Установить стандартные plugins из GitHub, включая Passive Secretary recall и безопасный shared `video-editor` toolset; тяжёлый video runtime остаётся root-owned и общий для профилей. Для `video-editor` обязательны оба profile-step: `python3 modules/video-editor/install.py --owner <owner>` и `python3 modules/video-editor/configure_asr_client.py --owner <owner>`. Второй шаг создаёт отдельный broker token; OpenRouter secret в client home не копируется.
-6. Проверить от имени клиента `runtime_ready=true` и authenticated `broker_available=true`; `auto` должен использовать shared OpenRouter broker, а local whisper.cpp остаётся fallback.
-7. Создать персональные SOUL/USER только из подтверждённых данных клиента.
-8. Для клиентского Telegram-бота включить в BotFather `Secretary Mode`; до owner consent профиль остаётся `blocked`.
-9. После подключения владельцем перевести Business capture только в receive-only: `business_updates_mode: passive`, `passive_media_enabled: true`, `business_reply_enabled: false`, а toolset `passive_secretary_outbound` должен оставаться disabled.
-10. Владелец сам выбирает scope Telegram Business: все приватные чаты с исключениями или только выбранные. Это нельзя подменять серверной настройкой.
-11. Подключать Telegram-группы через owner consent; trusted technical inviter может только инициировать enrollment.
-12. Старую историю импортировать отдельным `history_backfill`, сохраняя provenance.
-13. Прогнать E2E: Telegram DM, Business receive-only capture, group capture, history recall, voice ASR, fallback LLM и video-editor smoke на profile-owned source path.
-14. Зафиксировать sanitized snapshot/изменение отдельным PR и дождаться CI.
+6. Если профиль должен принимать Telegram-файлы больше public Bot API limit, установить host package `acl`, проверить existing local `telegram-bot-api --local` и выполнить `python3 modules/telegram-large-file/install.py --owner <owner> --apply`. Installer выдаёт только tenant-local ACL + read-only bind mount; Linux user нельзя добавлять в общую `telegram-transcriber` group, а bot token нельзя переносить в unit/template.
+7. Проверить от имени клиента `runtime_ready=true` и authenticated `broker_available=true`; `auto` должен использовать shared OpenRouter broker, а local whisper.cpp остаётся fallback.
+8. Создать персональные SOUL/USER только из подтверждённых данных клиента.
+9. Для клиентского Telegram-бота включить в BotFather `Secretary Mode`; до owner consent профиль остаётся `blocked`.
+10. После подключения владельцем перевести Business capture только в receive-only: `business_updates_mode: passive`, `passive_media_enabled: true`, `business_reply_enabled: false`, а toolset `passive_secretary_outbound` должен оставаться disabled.
+11. Владелец сам выбирает scope Telegram Business: все приватные чаты с исключениями или только выбранные. Это нельзя подменять серверной настройкой.
+12. Подключать Telegram-группы через owner consent; trusted technical inviter может только инициировать enrollment.
+13. Старую историю импортировать отдельным `history_backfill`, сохраняя provenance.
+14. Прогнать E2E: Telegram DM, Business receive-only capture, group capture, history recall, voice ASR, fallback LLM, Telegram video >20 MiB через profile-isolated local ingress и `video_editor_prepare` на полученном cache path.
+15. Зафиксировать sanitized snapshot/изменение отдельным PR и дождаться CI.
 
 Никаких изменений общей продуктовой логики только в `/home/<client>/.hermes`: сначала или сразу вслед за пилотом они должны стать модулем/патчем в GitHub.
 ## Memory/retrieval product layers

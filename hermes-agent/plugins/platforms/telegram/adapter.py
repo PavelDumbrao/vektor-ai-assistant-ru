@@ -17,6 +17,8 @@ import logging
 import os
 import html as _html
 import re
+import stat
+import tempfile
 import threading
 import time
 from contextvars import ContextVar
@@ -316,12 +318,18 @@ from gateway.platforms.base import (
     cache_audio_from_bytes,
     cache_video_from_bytes,
     cache_document_from_bytes,
+    cache_media_file,
     resolve_proxy_url,
     SUPPORTED_VIDEO_TYPES,
     SUPPORTED_DOCUMENT_TYPES,
     SUPPORTED_IMAGE_DOCUMENT_TYPES,
     _TEXT_INJECT_EXTENSIONS,
     utf16_len,
+)
+from plugins.platforms.telegram.local_file_ingress import (
+    LocalTelegramPathError,
+    copy_from_private_mount,
+    tenant_relative_path,
 )
 from plugins.platforms.telegram.telegram_ids import (
     normalize_telegram_chat_id,
@@ -1035,13 +1043,23 @@ class TelegramAdapter(BasePlatformAdapter):
         self._dm_topic_chat_ids: Set[str] = {
             str(e["chat_id"]) for e in self._dm_topics_config if "chat_id" in e
         }
-        # Document size cap. Telegram's public Bot API caps getFile at 20MB; a
-        # locally-hosted telegram-bot-api server (configured via extra.base_url)
-        # raises that to 2GB, so the presence of base_url is the opt-in.
-        self._max_doc_bytes: int = (
-            2 * 1024 * 1024 * 1024
-            if self.config.extra.get("base_url")
-            else 20 * 1024 * 1024
+        # Public getFile stays at 20 MiB. Large-file ingress is enabled only
+        # for a local Bot API in PTB local mode, where media comes from disk.
+        public_limit = 20 * 1024 * 1024
+        local_default = 1024 * 1024 * 1024
+        local_hard_limit = 2 * 1024 * 1024 * 1024
+        local_large_files = bool(
+            self.config.extra.get("base_url") and self.config.extra.get("local_mode")
+        )
+        requested_limit = self.config.extra.get("max_file_bytes", local_default)
+        try:
+            requested_limit = int(requested_limit)
+        except (TypeError, ValueError):
+            requested_limit = local_default
+        if requested_limit <= 0:
+            requested_limit = local_default
+        self._max_doc_bytes = (
+            min(requested_limit, local_hard_limit) if local_large_files else public_limit
         )
         # Interactive model picker state per chat
         self._model_picker_state: Dict[str, dict] = {}
@@ -10274,6 +10292,132 @@ class TelegramAdapter(BasePlatformAdapter):
             return MessageType.VOICE
         return MessageType.DOCUMENT
 
+    @staticmethod
+    def _positive_telegram_size(value: Any) -> int:
+        if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+            return value
+        try:
+            parsed = int(value or 0)
+        except (TypeError, ValueError):
+            return 0
+        return parsed if parsed > 0 else 0
+
+    def _telegram_local_ingress_settings(self) -> Optional[tuple[_Path, str, str]]:
+        """Return root-owned local-ingress settings, or None for normal PTB IO."""
+        if not self.config.extra.get("local_mode"):
+            return None
+        mount_raw = (os.getenv("HERMES_TELEGRAM_LOCAL_MOUNT") or "").strip()
+        tenant_hash = (os.getenv("HERMES_TELEGRAM_TENANT_SHA256") or "").strip().lower()
+        if not mount_raw and not tenant_hash:
+            return None
+        if not mount_raw or len(tenant_hash) != 64:
+            raise LocalTelegramPathError("incomplete Telegram local ingress isolation")
+        mount_root = _Path(mount_raw)
+        if not mount_root.is_absolute():
+            raise LocalTelegramPathError("Telegram local ingress mount must be absolute")
+        server_root = (
+            os.getenv("HERMES_TELEGRAM_LOCAL_SERVER_ROOT")
+            or "/var/lib/telegram-bot-api"
+        ).strip()
+        return mount_root, tenant_hash, server_root
+
+    def _telegram_staging_directory(self) -> _Path:
+        """Return a private profile-owned staging dir independent of host /tmp."""
+        hermes_home = _Path(os.getenv("HERMES_HOME") or (_Path.home() / ".hermes")).expanduser().resolve()
+        configured = (os.getenv("HERMES_TELEGRAM_STAGING_DIR") or "").strip()
+        staging = _Path(configured).expanduser() if configured else hermes_home / "cache" / "telegram-ingress"
+        if not staging.is_absolute():
+            raise LocalTelegramPathError("Telegram staging directory must be absolute")
+        staging.mkdir(parents=True, exist_ok=True, mode=0o700)
+        info = os.lstat(staging)
+        if (stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode)
+                or info.st_uid != os.geteuid() or info.st_mode & 0o077):
+            raise LocalTelegramPathError("Telegram staging directory is unsafe")
+        resolved = staging.resolve()
+        if not resolved.is_relative_to(hermes_home):
+            raise LocalTelegramPathError("Telegram staging directory must stay inside HERMES_HOME")
+        try:
+            staging.chmod(0o700)
+        except OSError:
+            pass
+        return staging
+
+    async def _download_telegram_media_file(
+        self,
+        source: Any,
+        *,
+        filename: str = "",
+        mime_type: str = "",
+        default_kind: Optional[str] = None,
+    ):
+        """Download/copy Telegram media into profile cache without full RAM buffering."""
+        filename = filename if isinstance(filename, str) else ""
+        mime_type = mime_type.lower() if isinstance(mime_type, str) else ""
+        default_kind = default_kind if isinstance(default_kind, str) else None
+        source_size = self._positive_telegram_size(getattr(source, "file_size", None))
+        if source_size and source_size > self._max_doc_bytes:
+            raise ValueError("Telegram media exceeds configured size limit")
+        file_obj = await source.get_file()
+        file_size = self._positive_telegram_size(getattr(file_obj, "file_size", None))
+        expected_size = file_size or source_size
+        suffix = _Path(filename).suffix if filename else ""
+        temp_root = self._telegram_staging_directory()
+        fd, temp_name = tempfile.mkstemp(prefix=".telegram-in-", suffix=suffix, dir=temp_root)
+        temp_path = _Path(temp_name)
+        os.fchmod(fd, 0o600)
+        os.close(fd)
+        try:
+            ingress = self._telegram_local_ingress_settings()
+            raw_file_path = str(getattr(file_obj, "file_path", "") or "")
+            if ingress is not None:
+                if not raw_file_path:
+                    raise LocalTelegramPathError("Telegram local file path is missing")
+                mount_root, tenant_hash, server_root = ingress
+                relative = tenant_relative_path(
+                    raw_file_path,
+                    expected_tenant_sha256=tenant_hash,
+                    server_root=server_root,
+                )
+                await asyncio.to_thread(
+                    copy_from_private_mount,
+                    mount_root,
+                    relative,
+                    temp_path,
+                    max_bytes=self._max_doc_bytes,
+                    expected_bytes=expected_size,
+                )
+            else:
+                await file_obj.download_to_drive(
+                    custom_path=temp_path,
+                    read_timeout=120.0,
+                    write_timeout=120.0,
+                    connect_timeout=10.0,
+                    pool_timeout=10.0,
+                )
+            info = os.lstat(temp_path)
+            if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
+                raise LocalTelegramPathError("Telegram staging file is unsafe")
+            if not 0 < info.st_size <= self._max_doc_bytes:
+                raise ValueError("Telegram media failed size validation")
+            if expected_size and info.st_size != expected_size:
+                raise LocalTelegramPathError("Telegram media size mismatch")
+            cached = cache_media_file(
+                temp_path,
+                filename=filename,
+                mime_type=mime_type,
+                default_kind=default_kind,
+                max_bytes=self._max_doc_bytes,
+                consume_source=True,
+            )
+            if cached is None:
+                raise ValueError("Telegram media failed content validation")
+            return cached
+        finally:
+            try:
+                temp_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+
     async def _cache_observed_media(self, msg: Message, event: MessageEvent) -> None:
         """Cache an unmentioned group attachment and annotate the observed text.
 
@@ -10281,8 +10425,6 @@ class TelegramAdapter(BasePlatformAdapter):
         ``_max_doc_bytes`` limit as the addressed document path. Oversized or
         unsupported attachments are noted in the transcript without downloading.
         """
-        from gateway.platforms.base import cache_media_bytes
-
         source, filename, mime, kind = self._observed_media_source(msg)
         if source is None:
             return
@@ -10303,11 +10445,12 @@ class TelegramAdapter(BasePlatformAdapter):
             return
 
         try:
-            file_obj = await source.get_file()
-            data = bytes(await file_obj.download_as_bytearray())
-            if not filename:
-                filename = os.path.basename(getattr(file_obj, "file_path", "") or "")
-            cached = cache_media_bytes(data, filename=filename, mime_type=mime, default_kind=kind)
+            cached = await self._download_telegram_media_file(
+                source,
+                filename=filename,
+                mime_type=mime,
+                default_kind=kind,
+            )
         except Exception as exc:
             logger.warning("[Telegram] Failed to cache observed group media: %s", _redact_telegram_error_text(exc), exc_info=True)
             return
@@ -10334,8 +10477,6 @@ class TelegramAdapter(BasePlatformAdapter):
 
     async def _cache_replied_media(self, msg: Any, event: MessageEvent) -> None:
         """Cache media from the message this turn replies to, if any."""
-        from gateway.platforms.base import cache_media_bytes
-
         reply_msg = getattr(msg, "reply_to_message", None)
         if reply_msg is None:
             return
@@ -10353,11 +10494,12 @@ class TelegramAdapter(BasePlatformAdapter):
             return
 
         try:
-            file_obj = await source.get_file()
-            data = bytes(await file_obj.download_as_bytearray())
-            if not filename:
-                filename = os.path.basename(getattr(file_obj, "file_path", "") or "")
-            cached = cache_media_bytes(data, filename=filename, mime_type=mime, default_kind=kind)
+            cached = await self._download_telegram_media_file(
+                source,
+                filename=filename,
+                mime_type=mime,
+                default_kind=kind,
+            )
         except Exception as exc:
             logger.warning("[Telegram] Failed to cache replied-to media: %s", _redact_telegram_error_text(exc), exc_info=True)
             return
@@ -10984,12 +11126,12 @@ class TelegramAdapter(BasePlatformAdapter):
                     logger.info("[Telegram] Skipped oversized user voice (size=%s)", getattr(msg.voice, "file_size", None))
                     await self.handle_message(event)
                     return
-                file_obj = await msg.voice.get_file()
-                audio_bytes = await file_obj.download_as_bytearray()
-                cached_path = cache_audio_from_bytes(bytes(audio_bytes), ext=".ogg")
-                event.media_urls = [cached_path]
-                event.media_types = ["audio/ogg"]
-                logger.info("[Telegram] Cached user voice at %s", cached_path)
+                cached = await self._download_telegram_media_file(
+                    msg.voice, filename="voice.ogg", mime_type="audio/ogg", default_kind="audio"
+                )
+                event.media_urls = [cached.path]
+                event.media_types = [cached.media_type]
+                logger.info("[Telegram] Cached user voice at %s", cached.path)
             except Exception as e:
                 logger.warning("[Telegram] Failed to cache voice: %s", _redact_telegram_error_text(e), exc_info=True)
                 await self._surface_media_cache_failure(msg, event, "voice message", e)
@@ -11001,12 +11143,15 @@ class TelegramAdapter(BasePlatformAdapter):
                     logger.info("[Telegram] Skipped oversized user audio (size=%s)", getattr(msg.audio, "file_size", None))
                     await self.handle_message(event)
                     return
-                file_obj = await msg.audio.get_file()
-                audio_bytes = await file_obj.download_as_bytearray()
-                cached_path = cache_audio_from_bytes(bytes(audio_bytes), ext=".mp3")
-                event.media_urls = [cached_path]
-                event.media_types = ["audio/mp3"]
-                logger.info("[Telegram] Cached user audio at %s", cached_path)
+                cached = await self._download_telegram_media_file(
+                    msg.audio,
+                    filename=getattr(msg.audio, "file_name", "") or "audio.mp3",
+                    mime_type=(getattr(msg.audio, "mime_type", "") or "audio/mpeg").lower(),
+                    default_kind="audio",
+                )
+                event.media_urls = [cached.path]
+                event.media_types = [cached.media_type]
+                logger.info("[Telegram] Cached user audio at %s", cached.path)
             except Exception as e:
                 logger.warning("[Telegram] Failed to cache audio: %s", _redact_telegram_error_text(e), exc_info=True)
                 await self._surface_media_cache_failure(msg, event, "audio file", e)
@@ -11019,18 +11164,15 @@ class TelegramAdapter(BasePlatformAdapter):
                     logger.info("[Telegram] Skipped oversized user video (size=%s)", getattr(msg.video, "file_size", None))
                     await self.handle_message(event)
                     return
-                file_obj = await msg.video.get_file()
-                video_bytes = await file_obj.download_as_bytearray()
-                ext = ".mp4"
-                if getattr(file_obj, "file_path", None):
-                    for candidate in SUPPORTED_VIDEO_TYPES:
-                        if file_obj.file_path.lower().endswith(candidate):
-                            ext = candidate
-                            break
-                cached_path = cache_video_from_bytes(bytes(video_bytes), ext=ext)
-                event.media_urls = [cached_path]
-                event.media_types = [SUPPORTED_VIDEO_TYPES.get(ext, "video/mp4")]
-                logger.info("[Telegram] Cached user video at %s", cached_path)
+                cached = await self._download_telegram_media_file(
+                    msg.video,
+                    filename=getattr(msg.video, "file_name", "") or "video.mp4",
+                    mime_type=(getattr(msg.video, "mime_type", "") or "video/mp4").lower(),
+                    default_kind="video",
+                )
+                event.media_urls = [cached.path]
+                event.media_types = [cached.media_type]
+                logger.info("[Telegram] Cached user video at %s", cached.path)
             except Exception as e:
                 logger.warning("[Telegram] Failed to cache video: %s", _redact_telegram_error_text(e), exc_info=True)
                 await self._surface_media_cache_failure(msg, event, "video file", e)
@@ -11073,11 +11215,14 @@ class TelegramAdapter(BasePlatformAdapter):
                 # payload is actually an image, route it through the image cache
                 # and batching path instead of rejecting it as a document.
                 if ext in _TELEGRAM_IMAGE_EXTENSIONS or doc_mime.startswith("image/"):
-                    file_obj = await doc.get_file()
-                    image_bytes = await file_obj.download_as_bytearray()
                     image_ext = ext if ext in _TELEGRAM_IMAGE_EXTENSIONS else _TELEGRAM_IMAGE_MIME_TO_EXT.get(doc_mime, ".jpg")
                     try:
-                        cached_path = cache_image_from_bytes(bytes(image_bytes), ext=image_ext)
+                        cached = await self._download_telegram_media_file(
+                            doc,
+                            filename=original_filename or f"image{image_ext}",
+                            mime_type=doc_mime or _TELEGRAM_IMAGE_EXT_TO_MIME.get(image_ext, "image/jpeg"),
+                            default_kind="image",
+                        )
                     except ValueError as e:
                         logger.warning("[Telegram] Failed to cache image document: %s", _redact_telegram_error_text(e), exc_info=True)
                         event.text = (
@@ -11088,9 +11233,9 @@ class TelegramAdapter(BasePlatformAdapter):
                         return
 
                     event.message_type = MessageType.PHOTO
-                    event.media_urls = [cached_path]
-                    event.media_types = [doc_mime if doc_mime.startswith("image/") else _TELEGRAM_IMAGE_EXT_TO_MIME.get(image_ext, "image/jpeg")]
-                    logger.info("[Telegram] Cached user image-document at %s", cached_path)
+                    event.media_urls = [cached.path]
+                    event.media_types = [cached.media_type]
+                    logger.info("[Telegram] Cached user image-document at %s", cached.path)
 
                     media_group_id = getattr(msg, "media_group_id", None)
                     if media_group_id:
@@ -11113,13 +11258,16 @@ class TelegramAdapter(BasePlatformAdapter):
                     ext = image_mime_to_ext.get(doc.mime_type, "")
 
                 if ext in SUPPORTED_VIDEO_TYPES:
-                    file_obj = await doc.get_file()
-                    video_bytes = await file_obj.download_as_bytearray()
-                    cached_path = cache_video_from_bytes(bytes(video_bytes), ext=ext)
-                    event.media_urls = [cached_path]
-                    event.media_types = [SUPPORTED_VIDEO_TYPES[ext]]
+                    cached = await self._download_telegram_media_file(
+                        doc,
+                        filename=original_filename or f"video{ext}",
+                        mime_type=doc_mime or SUPPORTED_VIDEO_TYPES[ext],
+                        default_kind="video",
+                    )
+                    event.media_urls = [cached.path]
+                    event.media_types = [cached.media_type]
                     event.message_type = MessageType.VIDEO
-                    logger.info("[Telegram] Cached user video document at %s", cached_path)
+                    logger.info("[Telegram] Cached user video document at %s", cached.path)
                     await self.handle_message(event)
                     return
 
@@ -11133,13 +11281,8 @@ class TelegramAdapter(BasePlatformAdapter):
                 # to message the agent is the gate, not the file extension.
                 # Known types keep their precise MIME; unknown types are tagged
                 # application/octet-stream so the agent reaches for terminal tools.
-                file_obj = await doc.get_file()
-                doc_bytes = await file_obj.download_as_bytearray()
-                raw_bytes = bytes(doc_bytes)
-                from gateway.platforms.base import cache_media_bytes
-
-                cached = cache_media_bytes(
-                    raw_bytes,
+                cached = await self._download_telegram_media_file(
+                    doc,
                     filename=original_filename or f"document{ext or '.bin'}",
                     mime_type=doc_mime,
                 )
@@ -11168,20 +11311,23 @@ class TelegramAdapter(BasePlatformAdapter):
                 # path only (run.py emits a path-pointing context note).
                 MAX_TEXT_INJECT_BYTES = 100 * 1024
                 _is_text = ext in _TEXT_INJECT_EXTENSIONS or (doc_mime or "").startswith("text/")
-                if _is_text and len(raw_bytes) <= MAX_TEXT_INJECT_BYTES:
-                    try:
-                        text_content = raw_bytes.decode("utf-8")
-                        display_name = original_filename or f"document{ext or '.txt'}"
-                        display_name = re.sub(r'[^\w.\- ]', '_', display_name)
-                        injection = f"[Content of {display_name}]:\n{text_content}"
-                        if event.text:
-                            event.text = f"{injection}\n\n{event.text}"
-                        else:
-                            event.text = injection
-                    except UnicodeDecodeError:
-                        # Binary file — agent has the cached path and can use
-                        # terminal/read_file against it. No inline injection.
-                        pass
+                if _is_text:
+                    from tools.credential_files import from_agent_visible_cache_path
+                    host_cached = _Path(from_agent_visible_cache_path(cached.path))
+                    info = os.lstat(host_cached)
+                    if stat.S_ISREG(info.st_mode) and info.st_size <= MAX_TEXT_INJECT_BYTES:
+                        try:
+                            raw_bytes = host_cached.read_bytes()
+                            text_content = raw_bytes.decode("utf-8")
+                            display_name = original_filename or f"document{ext or '.txt'}"
+                            display_name = re.sub(r'[^\w.\- ]', '_', display_name)
+                            injection = f"[Content of {display_name}]:\n{text_content}"
+                            if event.text:
+                                event.text = f"{injection}\n\n{event.text}"
+                            else:
+                                event.text = injection
+                        except UnicodeDecodeError:
+                            pass
 
             except Exception as e:
                 logger.warning("[Telegram] Failed to cache document: %s", _redact_telegram_error_text(e), exc_info=True)

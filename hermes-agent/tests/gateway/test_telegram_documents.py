@@ -11,6 +11,7 @@ We mock the telegram module at import time to avoid collection errors.
 import asyncio
 import os
 import sys
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -59,10 +60,18 @@ from plugins.platforms.telegram.adapter import TelegramAdapter  # noqa: E402
 # ---------------------------------------------------------------------------
 
 def _make_file_obj(data: bytes = b"hello"):
-    """Create a mock Telegram File with download_as_bytearray."""
+    """Create a mock Telegram File supporting both memory and drive downloads."""
     f = AsyncMock()
     f.download_as_bytearray = AsyncMock(return_value=bytearray(data))
+
+    async def _download_to_drive(custom_path=None, **_kwargs):
+        path = Path(custom_path)
+        path.write_bytes(data)
+        return path
+
+    f.download_to_drive = AsyncMock(side_effect=_download_to_drive)
     f.file_path = "documents/file.pdf"
+    f.file_size = len(data)
     return f
 
 

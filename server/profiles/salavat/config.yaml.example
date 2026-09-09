@@ -1,5 +1,5 @@
 # Sanitized Salavat profile template; replace OWNER_TELEGRAM_USER_ID and TECH_ADMIN_TELEGRAM_USER_ID before use.
-# Client-specific persona, Telegram ID, bot token and business data stay private and are not committed.
+# Image generation uses a profile-local GRSAI backend; GRSAI_API_KEY stays only in private .env.
 model:
   provider: custom
   base_url: https://lingsuan.top/v1
@@ -12,8 +12,8 @@ fallback_providers:
   base_url: https://gengruihuan.cn/v1
   key_env: FALLBACK_LLM_API_KEY
 image_gen:
-  provider: openrouter
-  model: google/gemini-3.1-flash-image
+  provider: grsai
+  model: gpt-image-2.5
 max_concurrent_sessions: 2
 max_live_sessions: 4
 agent:
@@ -190,6 +190,7 @@ plugins:
   enabled:
   - maton-onboarding
   - passive-secretary
+  - image_gen/grsai
   disabled: []
 goals:
   max_turns: 5

@@ -10,6 +10,9 @@ fallback_providers:
   model: gpt-5.6-sol
   base_url: https://gengruihuan.cn/v1
   key_env: FALLBACK_LLM_API_KEY
+image_gen:
+  provider: grsai
+  model: gpt-image-2.5
 max_concurrent_sessions: 2
 max_live_sessions: 4
 agent:
@@ -27,7 +30,6 @@ agent:
   - feishu_doc
   - feishu_drive
   - homeassistant
-  - image_gen
   - project
   - terminal
   - video
@@ -189,6 +191,7 @@ plugins:
   enabled:
   - maton-onboarding
   - passive-secretary
+  - image_gen/grsai
   disabled: []
 goals:
   max_turns: 5

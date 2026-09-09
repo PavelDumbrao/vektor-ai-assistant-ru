@@ -21,6 +21,8 @@ AUDIO_EXTS = {".mp3", ".wav", ".m4a", ".aac", ".ogg", ".flac"}
 ASSET_RE = re.compile(r"^[a-zA-Z0-9_-]{1,48}$")
 HEX_RE = re.compile(r"^#[0-9A-Fa-f]{6}$")
 HYPERFRAMES_VERSION = "0.8.30"
+HYPERFRAMES_PACKAGE = engine.RUNTIME_ROOT / "hyperframes" / "node_modules" / "hyperframes" / "package.json"
+HYPERFRAMES_BIN = engine.RUNTIME_ROOT / "hyperframes" / "node_modules" / "hyperframes" / "bin" / "hyperframes.mjs"
 GSAP_VERSION = "3.14.2"
 GSAP_RUNTIME = engine.RUNTIME_ROOT / "hyperframes" / "node_modules" / "gsap" / "dist" / "gsap.min.js"
 GSAP_CDN = f"https://cdn.jsdelivr.net/npm/gsap@{GSAP_VERSION}/dist/gsap.min.js"
@@ -69,30 +71,59 @@ def _localize_gsap(studio: Path, runtime: Path = GSAP_RUNTIME, expected_uid: int
     return target
 
 
+def _pinned_hyperframes_binary(
+    binary: Path = HYPERFRAMES_BIN,
+    package: Path = HYPERFRAMES_PACKAGE,
+    *,
+    expected_uid: int = 0,
+) -> Path:
+    for path in (binary, package):
+        try:
+            info = path.lstat()
+        except OSError as exc:
+            raise engine.VideoEditorError("video_hyperframes_runtime_missing") from exc
+        if path.is_symlink() or not path.is_file() or info.st_uid != expected_uid or (info.st_mode & 0o022):
+            raise engine.VideoEditorError("video_hyperframes_runtime_unsafe")
+    try:
+        version = str(json.loads(package.read_text(encoding="utf-8")).get("version") or "")
+    except (OSError, ValueError, TypeError) as exc:
+        raise engine.VideoEditorError("video_hyperframes_runtime_invalid") from exc
+    if version != HYPERFRAMES_VERSION:
+        raise engine.VideoEditorError("video_hyperframes_version_mismatch")
+    return binary
+
+
 def _compose_self_contained(studio: Path, py: str, npm_env: dict[str, str]) -> subprocess.CompletedProcess[str]:
+    private_tmp = studio / ".hyperframes-tmp"
+    if private_tmp.exists() and (private_tmp.is_symlink() or not private_tmp.is_dir()):
+        raise engine.VideoEditorError("video_hyperframes_tmp_unsafe")
+    private_tmp.mkdir(mode=0o700, exist_ok=True)
+    private_tmp.chmod(0o700)
+    runtime_env = dict(npm_env)
+    runtime_env["TMPDIR"] = str(private_tmp)
     generate = engine._run(
         [py, str(engine.ENGINE_ROOT / "scripts" / "compose.py"), "--studio", str(studio)],
         cwd=engine.ENGINE_ROOT,
         timeout=900,
-        extra_env=npm_env,
+        extra_env=runtime_env,
     )
     _localize_gsap(studio)
     composition = studio / "composition"
-    pin = f"hyperframes@{HYPERFRAMES_VERSION}"
+    hyperframes = _pinned_hyperframes_binary()
     engine._run(
-        ["npx", "--yes", pin, "check"],
+        [str(hyperframes), "check"],
         cwd=composition,
         timeout=300,
-        extra_env=npm_env,
+        extra_env=runtime_env,
     )
     out = studio / "out"
     out.mkdir(parents=True, exist_ok=True)
     master = out / "master.mp4"
     render = engine._run(
-        ["npx", "--yes", pin, "render", ".", "-o", str(master.resolve())],
+        [str(hyperframes), "render", ".", "-o", str(master.resolve())],
         cwd=composition,
         timeout=1800,
-        extra_env=npm_env,
+        extra_env=runtime_env,
     )
     render.stdout = (generate.stdout or "") + "\n" + (render.stdout or "")
     return render

@@ -138,5 +138,5 @@ def register(ctx: Any) -> None:
                       description="Preview or apply lighting and colour correction.", emoji="💡")
     ctx.register_tool(name="video_editor_master", toolset="video_editor", schema=MASTER_SCHEMA,
                       handler=lambda args, **_: _guard(enrichment.master, args), check_fn=engine.runtime_ready,
-                      description="Render the final enriched video package.", emoji="🎞️")
+                      description="Render the final enriched video package.", emoji="🎞️", timeout_seconds=1200)
     logger.info("Shared video editor registered (runtime_ready=%s)", engine.runtime_ready())

@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <title>Hermes Forge</title>
+  <link rel="stylesheet" href="/styles.css">
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <main class="shell">
+    <header class="hero">
+      <div class="eyebrow">HERMES FORGE</div>
+      <h1>Мой AI-сотрудник</h1>
+      <p id="auth-state">Подключаю безопасную панель…</p>
+    </header>
+
+    <section id="empty-state" class="card hidden">
+      <h2>Hermes пока не найден</h2>
+      <p>Создай или подключи ассистента через @ProAIHermesBot.</p>
+    </section>
+
+    <section id="app" class="hidden">
+      <nav class="tabs" aria-label="Разделы">
+        <button class="tab active" data-tab="hermes">Мой Hermes</button>
+        <button class="tab" data-tab="connections">Подключения</button>
+        <button class="tab" data-tab="secrets">Секреты</button>
+      </nav>
+
+      <section class="panel" data-panel="hermes">
+        <div class="card identity">
+          <div>
+            <div class="muted">AI-сотрудник</div>
+            <h2 id="bot-name">Hermes</h2>
+            <div id="bot-username" class="mono"></div>
+          </div>
+          <span id="status-pill" class="pill">Проверяю</span>
+        </div>
+        <div class="grid">
+          <div class="card metric"><span>Runtime</span><strong id="runtime-version">—</strong></div>
+          <div class="card metric"><span>Telegram</span><strong id="telegram-state">—</strong></div>
+          <div class="card metric"><span>Telemetry</span><strong id="telemetry-state">—</strong></div>
+          <div class="card metric"><span>Активных задач</span><strong id="active-agents">0</strong></div>
+        </div>
+        <div class="actions">
+          <button id="health-button" class="secondary">Проверить Hermes</button>
+          <button id="restart-button" class="danger-soft">Перезапустить</button>
+        </div>
+        <p id="hermes-result" class="result"></p>
+      </section>
+
+      <section class="panel hidden" data-panel="connections">
+        <div id="connections-list" class="stack"></div>
+        <p id="connection-result" class="result"></p>
+      </section>
+
+      <section class="panel hidden" data-panel="secrets">
+        <div class="card">
+          <div class="row-between">
+            <div>
+              <div class="muted">Maton</div>
+              <h2>MCP_MATON_API_KEY</h2>
+            </div>
+            <span id="maton-secret-state" class="pill">Не подключён</span>
+          </div>
+          <p class="muted">Ключ отправляется по HTTPS и никогда не возвращается из Forge.</p>
+          <input id="maton-key" type="password" autocomplete="off" spellcheck="false" placeholder="Вставь API key Maton">
+          <div class="actions">
+            <button id="save-maton">Подключить / заменить</button>
+            <button id="test-maton" class="secondary">Проверить</button>
+            <button id="delete-maton" class="danger-soft">Удалить</button>
+          </div>
+          <p id="secret-result" class="result"></p>
+        </div>
+      </section>
+    </section>
+  </main>
+</body>
+</html>

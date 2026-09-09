@@ -1,0 +1,24 @@
+[Unit]
+Description=Pro AI Hermes Managed Bot Control Plane
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/opt/proai-hermes-manager
+ExecStart=/usr/bin/python3 /opt/proai-hermes-manager/manager.py
+Restart=always
+RestartSec=3
+Environment=PYTHONUNBUFFERED=1
+UMask=0077
+PrivateTmp=true
+ProtectSystem=full
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target

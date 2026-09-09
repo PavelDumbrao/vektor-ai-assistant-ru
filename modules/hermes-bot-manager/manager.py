@@ -163,6 +163,26 @@ def show_my(chat_id: int, user_id: int, state: dict):
     send(chat_id, text, main_menu())
 
 
+def is_admin(user_id: int) -> bool:
+    return int(user_id) == PAVEL_ID
+
+
+def is_authorized_user(user_id: int, state: dict) -> bool:
+    uid = int(user_id)
+    if is_admin(uid):
+        return True
+    if str(uid) in state.get('allowed_users', {}):
+        return True
+    return find_profile_for_owner(uid) is not None
+
+
+def access_denied(chat_id: int) -> None:
+    try:
+        send(chat_id, '🔒 <b>Доступ закрыт.</b>\n\nHermes Forge работает только по приглашению администратора Pro AI.')
+    except Exception:
+        pass
+
+
 def find_profile_for_owner(user_id: int):
     matches = []
     for registry in PROFILE_DIR.glob('*.json'):
@@ -250,6 +270,16 @@ def managed_event(update: dict, state: dict):
     bot_id = int(bot.get('id') or 0)
     if not owner_id or not bot_id:
         return
+    if not is_authorized_user(owner_id, state):
+        try:
+            send(PAVEL_ID,
+                 '<b>🚫 Заблокирована попытка Managed Hermes</b>\n\n'
+                 f'Telegram ID: <code>{owner_id}</code>\n'
+                 'Пользователь не был авторизован, токен бота не запрашивался.')
+        except Exception:
+            pass
+        access_denied(owner_id)
+        return
 
     token = api('getManagedBotToken', {'user_id': bot_id})
     token_path = store_managed_token(bot_id, token)
@@ -311,10 +341,47 @@ def handle_message(msg: dict, state: dict):
     text = (msg.get('text') or '').strip()
     if not chat_id or not user_id:
         return
+    # Forge is private-chat only. Group/channel updates are ignored.
+    if chat.get('type') != 'private':
+        return
+    if not is_authorized_user(user_id, state):
+        access_denied(chat_id)
+        return
     if msg.get('managed_bot_created'):
         send(chat_id, '⚙️ Бот создан. Завершаю подключение к Hermes…')
         return
-    command = text.split()[0].split('@')[0].lower() if text.startswith('/') else ''
+    parts = text.split()
+    command = parts[0].split('@')[0].lower() if text.startswith('/') and parts else ''
+
+    # Admin-only admission control for future clients.
+    if command in {'/allow', '/deny', '/allowed'}:
+        if not is_admin(user_id):
+            access_denied(chat_id)
+            return
+        if command == '/allowed':
+            explicit = sorted(int(x) for x in state.get('allowed_users', {}) if str(x).isdigit())
+            body = '\n'.join(f'• <code>{uid}</code>' for uid in explicit) or '• нет дополнительных ID'
+            send(chat_id, '<b>Явно разрешённые пользователи</b>\n\n' + body +
+                 '\n\nВладельцы заранее созданных Hermes-профилей разрешаются автоматически.', main_menu())
+            return
+        if len(parts) != 2 or not parts[1].isdigit():
+            send(chat_id, f'Формат: <code>{command} TELEGRAM_ID</code>', main_menu())
+            return
+        target = int(parts[1])
+        if target <= 0 or target == PAVEL_ID:
+            send(chat_id, 'Некорректный Telegram ID.', main_menu())
+            return
+        allowed = state.setdefault('allowed_users', {})
+        if command == '/allow':
+            allowed[str(target)] = {'added_by': PAVEL_ID, 'added_at': int(time.time())}
+            result = f'✅ <code>{target}</code> разрешён.'
+        else:
+            allowed.pop(str(target), None)
+            result = f'🔒 <code>{target}</code> удалён из явного allowlist.'
+        save_state(state)
+        send(chat_id, result, main_menu())
+        return
+
     if command in {'/start', '/menu'}:
         send(chat_id, welcome_text(), main_menu())
     elif command in {'/new', '/create'}:
@@ -344,6 +411,14 @@ def handle_callback(q: dict, state: dict):
     chat_id = int((msg.get('chat') or {}).get('id') or user.get('id') or 0)
     user_id = int(user.get('id') or 0)
     data = q.get('data') or ''
+    chat_type = (msg.get('chat') or {}).get('type')
+    if not chat_id or not user_id or chat_type != 'private':
+        answer_callback(callback_id, 'Доступ закрыт')
+        return
+    if not is_authorized_user(user_id, state):
+        answer_callback(callback_id, 'Доступ закрыт')
+        access_denied(chat_id)
+        return
     answer_callback(callback_id)
     if data == 'create':
         show_create(chat_id, user)

@@ -10,7 +10,7 @@ handles technical provisioning.
 2. Telegram shows the native `request_managed_bot` creation UI.
 3. The manager receives a `managed_bot` update.
 4. It calls `getManagedBotToken` and stores the child token in a root-only file.
-5. Access is switched to restricted / owner-only by default.
+5. Access is switched to restricted by default: owner + Pavel tech admin.
 6. If the creator Telegram ID matches an existing Hermes profile, the token is
    atomically installed as `TELEGRAM_BOT_TOKEN` and its systemd service starts.
 7. Otherwise the bot is registered as `awaiting_profile`.
@@ -30,6 +30,11 @@ The bot itself exposes:
 - `/status` — manager capability and user bot count;
 - `/help` — concise help.
 
+Admission is deny-by-default. The bot works only in private chats. Pavel is the
+admin; existing provisioned Hermes profile owners are trusted automatically.
+Additional users can be admitted only by Pavel with `/allow <telegram_id>` and
+removed with `/deny <telegram_id>`. `/allowed` lists explicit additions.
+
 ## Runtime
 
 - application: `/opt/proai-hermes-manager/manager.py`;
@@ -45,7 +50,12 @@ The bot itself exposes:
 - Profile matching is Telegram-ID based and must resolve to exactly one profile.
 - Child bot tokens are never stored inside `state.json`.
 - The manager service is the only component allowed to read the manager token.
-- Managed bots default to restricted access; the owner always retains access.
+- Managed bots default to restricted access: owner + Pavel tech admin.
+- Hermes Forge itself is private-chat only and deny-by-default. Unknown users
+  never receive the menu or managed-bot creation button.
+- Every callback and `managed_bot` event is re-authorized server-side, so an
+  old cached button cannot bypass admission control.
+- Admin-only admission commands are `/allow`, `/deny`, and `/allowed`.
 - All profile names used in systemd operations are validated before execution.
 
 ## Verification

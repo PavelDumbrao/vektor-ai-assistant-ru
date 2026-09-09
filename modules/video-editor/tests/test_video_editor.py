@@ -149,6 +149,8 @@ def test_plugin_registers_only_video_editor_tools(monkeypatch):
         "video_editor_proof", "video_editor_sound", "video_editor_look", "video_editor_master",
     }
     assert {x["toolset"] for x in seen} == {"video_editor"}
+    master = next(x for x in seen if x["name"] == "video_editor_master")
+    assert master["timeout_seconds"] == 1200
 
 
 def test_prepare_schema_exposes_asr_provider_modes():

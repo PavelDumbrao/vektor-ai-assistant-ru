@@ -1,0 +1,7 @@
+name: grsai
+version: 1.0.0
+description: "GRSAI GPT Image 2.5 backend for text and image editing."
+author: Pavel Dumbrao
+kind: backend
+requires_env:
+  - GRSAI_API_KEY

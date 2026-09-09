@@ -2,6 +2,7 @@
   const tg = window.Telegram && window.Telegram.WebApp;
   let session = "";
   let current = null;
+  let catalog = null;
 
   const $ = (id) => document.getElementById(id);
   const text = (id, value) => { $(id).textContent = value == null ? "—" : String(value); };
@@ -23,11 +24,18 @@
     const auth = await request("/v1/auth/telegram", {method:"POST", body:JSON.stringify({init_data:tg.initData})});
     session = auth.session;
     text("auth-state", "Безопасная сессия подключена");
-    const data = await request("/v1/hermes");
-    const items = data.items || [];
-    if (!items.length) { $("empty-state").classList.remove("hidden"); return; }
-    current = items[0];
+    const [catalogData, hermesData] = await Promise.all([request("/v1/catalog"), request("/v1/hermes")]);
+    catalog = catalogData;
+    renderCatalog(catalog);
     $("app").classList.remove("hidden");
+    const items = hermesData.items || [];
+    if (!items.length) {
+      $("empty-state").classList.remove("hidden");
+      document.querySelectorAll("[data-requires-hermes]").forEach(x=>x.classList.add("hidden"));
+      selectTab("employees");
+      return;
+    }
+    current = items[0];
     renderHermes(current);
     await Promise.all([loadConnections(), loadSecrets()]);
   }
@@ -41,6 +49,55 @@
     text("telegram-state", h.telegram);
     text("telemetry-state", h.telemetry_enabled ? "Включена" : "Выключена");
     text("active-agents", h.active_agents ?? 0);
+  }
+
+  function selectTab(name) {
+    document.querySelectorAll(".tab").forEach(x=>x.classList.toggle("active",x.dataset.tab===name));
+    document.querySelectorAll("[data-panel]").forEach(x=>x.classList.toggle("hidden",x.dataset.panel!==name));
+  }
+
+  function catalogCard(item, statusLabel, statusKind) {
+    const card=document.createElement("div"); card.className="card catalog-card";
+    const top=document.createElement("div"); top.className="catalog-top";
+    const titleWrap=document.createElement("div");
+    const title=document.createElement("h2"); title.textContent=item.name||item.id;
+    const publisher=document.createElement("div"); publisher.className="muted"; publisher.textContent=item.publisher||"Hermes";
+    titleWrap.append(title,publisher);
+    const state=document.createElement("span"); pill(state,statusLabel,statusKind);
+    top.append(titleWrap,state);
+    const summary=document.createElement("p"); summary.className="catalog-summary"; summary.textContent=item.summary||"";
+    const meta=document.createElement("div"); meta.className="catalog-meta";
+    for (const value of [item.kind||item.role, item.version ? "v"+item.version : "", item.connection_mode||""]) {
+      if (!value) continue; const span=document.createElement("span"); span.textContent=value; meta.append(span);
+    }
+    card.append(top,summary,meta);
+    return card;
+  }
+
+  function renderCatalog(data) {
+    const capabilities=(data&&data.capabilities)||[];
+    const agents=(data&&data.agents)||[];
+    text("tools-count", capabilities.length);
+    text("employees-count", agents.length);
+    const toolsRoot=$("tools-list"); toolsRoot.textContent="";
+    const sorted=[...capabilities].sort((a,b)=>Number(b.availability==="available")-Number(a.availability==="available") || String(a.name).localeCompare(String(b.name)));
+    for (const item of sorted) {
+      const available=item.availability==="available";
+      const card=catalogCard(item,available?"Доступен":"Скоро",available?"ok":"warn");
+      const meta=document.createElement("div"); meta.className="catalog-capabilities";
+      const action=document.createElement("span"); action.className="chip"; action.textContent="Режим: "+(item.action_default||"observe"); meta.append(action);
+      if (item.metering && item.metering!=="none") { const metering=document.createElement("span"); metering.className="chip"; metering.textContent="Usage metering"; meta.append(metering); }
+      card.append(meta); toolsRoot.append(card);
+    }
+    const employeesRoot=$("employees-list"); employeesRoot.textContent="";
+    const nameById=new Map(capabilities.map(x=>[x.id,x.name||x.id]));
+    for (const item of agents) {
+      const card=catalogCard(item,"Official","ok");
+      const chips=document.createElement("div"); chips.className="catalog-capabilities";
+      for (const id of item.required_capabilities||[]) { const chip=document.createElement("span"); chip.className="chip"; chip.textContent="✓ "+(nameById.get(id)||id); chips.append(chip); }
+      for (const id of item.optional_capabilities||[]) { const chip=document.createElement("span"); chip.className="chip"; chip.textContent="+ "+(nameById.get(id)||id); chips.append(chip); }
+      card.append(chips); employeesRoot.append(card);
+    }
   }
 
   async function loadConnections() {
@@ -74,11 +131,7 @@
 
   document.addEventListener("click", async (event) => {
     const tab=event.target.closest(".tab");
-    if (tab) {
-      document.querySelectorAll(".tab").forEach(x=>x.classList.toggle("active",x===tab));
-      document.querySelectorAll("[data-panel]").forEach(x=>x.classList.toggle("hidden",x.dataset.panel!==tab.dataset.tab));
-      return;
-    }
+    if (tab) { selectTab(tab.dataset.tab); return; }
     if (!current) return;
     const button=event.target.closest("button"); if (!button) return;
     button.disabled=true;

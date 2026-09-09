@@ -48,3 +48,49 @@ def test_public_server_refuses_root(monkeypatch):
     monkeypatch.setattr(api.os, "geteuid", lambda: 0)
     with pytest.raises(SystemExit, match="refusing"):
         api.serve()
+
+
+def test_catalog_route_is_authenticated_read_only_and_sanitized(monkeypatch, tmp_path):
+    catalog = tmp_path / "catalog.json"
+    catalog.write_text(
+        '{"schema":"hermes.catalog/v1","capabilities":[{"id":"maton","name":"Maton","summary":"External services","version":"1.0.0","publisher":"Hermes Official","trust_tier":"official","kind":"mcp","availability":"available","connection":{"mode":"personal_secret","secret_names":["MCP_MATON_API_KEY"]},"permissions":{"action_default":"approval"},"metering":"provider_usage","provision":{"install":"ensure-maton"},"health":{"operation":"maton-connections"}}],"agents":[{"id":"personal-hermes","name":"Personal Hermes","summary":"Personal employee","version":"1.0.0","publisher":"Hermes Official","role":"personal-assistant","capabilities":{"required":["web-search"],"optional":["maton"]},"permissions":{"secret.manage":"owner_only"}}]}',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(api, "CATALOG_PATH", catalog)
+    monkeypatch.setattr(api, "call_control", lambda payload: (_ for _ in ()).throw(AssertionError("catalog must not use root control")))
+    status, result = api.route("GET", "/v1/catalog", {}, {"Authorization": "Bearer opaque"})
+    assert status == 200
+    assert result["schema"] == "hermes.catalog.public/v1"
+    assert result["capabilities"][0]["id"] == "maton"
+    assert result["capabilities"][0]["connection_mode"] == "personal_secret"
+    assert result["agents"][0]["required_capabilities"] == ["web-search"]
+    serialized = __import__("json").dumps(result)
+    for forbidden in ("secret_names", "MCP_MATON_API_KEY", "provision", "ensure-maton", "health", "secret.manage"):
+        assert forbidden not in serialized
+
+
+def test_catalog_rejects_invalid_or_oversized_payload(monkeypatch, tmp_path):
+    catalog = tmp_path / "catalog.json"
+    catalog.write_text('{"schema":"wrong","capabilities":[],"agents":[]}', encoding="utf-8")
+    monkeypatch.setattr(api, "CATALOG_PATH", catalog)
+    with pytest.raises(api.ApiError, match="catalog_invalid"):
+        api.route("GET", "/v1/catalog", {}, {"Authorization": "Bearer opaque"})
+    catalog.write_text("x" * 256, encoding="utf-8")
+    monkeypatch.setattr(api, "MAX_CATALOG_BYTES", 128)
+    with pytest.raises(api.ApiError, match="catalog_invalid"):
+        api.route("GET", "/v1/catalog", {}, {"Authorization": "Bearer opaque"})
+
+
+def test_catalog_ui_exposes_read_only_tools_and_employees_tabs():
+    root = MODULE.parent
+    html = (root / "static" / "index.html").read_text(encoding="utf-8")
+    js = (root / "static" / "app.js").read_text(encoding="utf-8")
+    assert 'data-tab="tools"' in html
+    assert 'data-tab="employees"' in html
+    assert 'id="tools-list"' in html
+    assert 'id="employees-list"' in html
+    assert 'request("/v1/catalog")' in js
+    assert '/v1/catalog/install' not in js
+    assert '/v1/catalog/enable' not in js
+    assert 'install-capability' not in html
+    assert 'enable-capability' not in html

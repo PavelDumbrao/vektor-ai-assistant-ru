@@ -23,12 +23,14 @@
 
     <section id="app" class="hidden">
       <nav class="tabs" aria-label="Разделы">
-        <button class="tab active" data-tab="hermes">Мой Hermes</button>
-        <button class="tab" data-tab="connections">Подключения</button>
-        <button class="tab" data-tab="secrets">Секреты</button>
+        <button class="tab active" data-tab="hermes" data-requires-hermes>Мой Hermes</button>
+        <button class="tab" data-tab="connections" data-requires-hermes>Подключения</button>
+        <button class="tab" data-tab="secrets" data-requires-hermes>Секреты</button>
+        <button class="tab" data-tab="tools">Инструменты</button>
+        <button class="tab" data-tab="employees">AI-сотрудники</button>
       </nav>
 
-      <section class="panel" data-panel="hermes">
+      <section class="panel" data-panel="hermes" data-requires-hermes>
         <div class="card identity">
           <div>
             <div class="muted">AI-сотрудник</div>
@@ -50,12 +52,12 @@
         <p id="hermes-result" class="result"></p>
       </section>
 
-      <section class="panel hidden" data-panel="connections">
+      <section class="panel hidden" data-panel="connections" data-requires-hermes>
         <div id="connections-list" class="stack"></div>
         <p id="connection-result" class="result"></p>
       </section>
 
-      <section class="panel hidden" data-panel="secrets">
+      <section class="panel hidden" data-panel="secrets" data-requires-hermes>
         <div class="card">
           <div class="row-between">
             <div>
@@ -73,6 +75,30 @@
           </div>
           <p id="secret-result" class="result"></p>
         </div>
+      </section>
+
+      <section class="panel hidden" data-panel="tools">
+        <div class="section-head">
+          <div>
+            <div class="muted">Каталог Hermes</div>
+            <h2>Инструменты и подключения</h2>
+          </div>
+          <span id="tools-count" class="pill">0</span>
+        </div>
+        <p class="muted">Только просмотр. Установка и включение будут добавлены отдельным безопасным этапом.</p>
+        <div id="tools-list" class="stack catalog-list"></div>
+      </section>
+
+      <section class="panel hidden" data-panel="employees">
+        <div class="section-head">
+          <div>
+            <div class="muted">Agent Packages</div>
+            <h2>Готовые AI-сотрудники</h2>
+          </div>
+          <span id="employees-count" class="pill">0</span>
+        </div>
+        <p class="muted">Роли состоят из управляемого Hermes Runtime, памяти, прав и набора проверенных capabilities.</p>
+        <div id="employees-list" class="stack catalog-list"></div>
       </section>
     </section>
   </main>

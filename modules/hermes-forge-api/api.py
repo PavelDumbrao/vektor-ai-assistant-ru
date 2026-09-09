@@ -16,6 +16,8 @@ STATIC_ROOT = Path(__file__).resolve().parent / "static"
 LISTEN_HOST = os.environ.get("FORGE_API_HOST", "127.0.0.1")
 LISTEN_PORT = int(os.environ.get("FORGE_API_PORT", "8650"))
 MAX_BODY = 64 * 1024
+CATALOG_PATH = Path(os.environ.get("FORGE_CATALOG_PATH", "/opt/proai-hermes-forge-catalog/current/catalog.json"))
+MAX_CATALOG_BYTES = 512 * 1024
 PROFILE_RE = re.compile(r"^[a-z0-9_-]{2,40}$")
 SECRET_RE = re.compile(r"^[A-Z][A-Z0-9_]{2,80}$")
 
@@ -73,12 +75,77 @@ def _session(headers: Any) -> str:
     return token
 
 
+def _public_catalog(path: Path | None = None) -> dict[str, Any]:
+    path = CATALOG_PATH if path is None else path
+    if path.is_symlink() or not path.is_file():
+        raise ApiError("catalog_unavailable", 503)
+    size = path.stat().st_size
+    if size <= 0 or size > MAX_CATALOG_BYTES:
+        raise ApiError("catalog_invalid", 503)
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        raise ApiError("catalog_invalid", 503) from None
+    if not isinstance(payload, dict) or payload.get("schema") != "hermes.catalog/v1":
+        raise ApiError("catalog_invalid", 503)
+    capabilities = payload.get("capabilities")
+    agents = payload.get("agents")
+    if not isinstance(capabilities, list) or not isinstance(agents, list):
+        raise ApiError("catalog_invalid", 503)
+
+    public_capabilities = []
+    for item in capabilities:
+        if not isinstance(item, dict):
+            raise ApiError("catalog_invalid", 503)
+        connection = item.get("connection") or {}
+        permissions = item.get("permissions") or {}
+        if not isinstance(connection, dict) or not isinstance(permissions, dict):
+            raise ApiError("catalog_invalid", 503)
+        public_capabilities.append({
+            "id": str(item.get("id") or "")[:64],
+            "name": str(item.get("name") or "")[:100],
+            "summary": str(item.get("summary") or "")[:500],
+            "version": str(item.get("version") or "")[:40],
+            "publisher": str(item.get("publisher") or "")[:100],
+            "trust_tier": str(item.get("trust_tier") or "")[:32],
+            "kind": str(item.get("kind") or "")[:32],
+            "availability": str(item.get("availability") or "")[:32],
+            "connection_mode": str(connection.get("mode") or "")[:32],
+            "action_default": str(permissions.get("action_default") or "")[:32],
+            "metering": str(item.get("metering") or "")[:32],
+        })
+    public_agents = []
+    for item in agents:
+        if not isinstance(item, dict):
+            raise ApiError("catalog_invalid", 503)
+        capabilities_value = item.get("capabilities") or {}
+        if not isinstance(capabilities_value, dict):
+            raise ApiError("catalog_invalid", 503)
+        required = capabilities_value.get("required", [])
+        optional = capabilities_value.get("optional", [])
+        if not isinstance(required, list) or not isinstance(optional, list):
+            raise ApiError("catalog_invalid", 503)
+        public_agents.append({
+            "id": str(item.get("id") or "")[:64],
+            "name": str(item.get("name") or "")[:100],
+            "summary": str(item.get("summary") or "")[:500],
+            "version": str(item.get("version") or "")[:40],
+            "publisher": str(item.get("publisher") or "")[:100],
+            "role": str(item.get("role") or "")[:64],
+            "required_capabilities": [str(x)[:64] for x in required if isinstance(x, str)][:32],
+            "optional_capabilities": [str(x)[:64] for x in optional if isinstance(x, str)][:32],
+        })
+    return {"schema": "hermes.catalog.public/v1", "capabilities": public_capabilities, "agents": public_agents}
+
+
 def route(method: str, path: str, body: dict[str, Any], headers: Any) -> tuple[int, dict[str, Any]]:
     if method == "GET" and path == "/healthz":
         return 200, {"ok": True}
     if method == "POST" and path == "/v1/auth/telegram":
         return 200, call_control({"op": "authenticate", "init_data": str(body.get("init_data") or "")})
     session = _session(headers)
+    if method == "GET" and path == "/v1/catalog":
+        return 200, _public_catalog()
     if method == "GET" and path == "/v1/hermes":
         return 200, call_control({"op": "list_hermes", "session": session})
     match = re.fullmatch(r"/v1/hermes/([a-z0-9_-]{2,40})(?:/(.*))?", path)

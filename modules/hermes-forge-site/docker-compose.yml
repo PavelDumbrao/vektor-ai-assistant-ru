@@ -1,0 +1,30 @@
+name: hermes-forge-site
+
+services:
+  web:
+    image: nginx:1.27-alpine
+    container_name: hermes-forge-site
+    restart: unless-stopped
+    volumes:
+      - ./static:/usr/share/nginx/html:ro
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    networks:
+      - n8n_default
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=n8n_default"
+      - "traefik.http.routers.hermes-forge-site.rule=Host(`${HERMES_FORGE_SITE_HOSTNAME:-hermesforge.srv1250550.hstgr.cloud}`)"
+      - "traefik.http.routers.hermes-forge-site.entrypoints=websecure"
+      - "traefik.http.routers.hermes-forge-site.tls=true"
+      - "traefik.http.routers.hermes-forge-site.tls.certresolver=mytlschallenge"
+      - "traefik.http.routers.hermes-forge-site.middlewares=hermes-forge-site-secure@docker"
+      - "traefik.http.services.hermes-forge-site.loadbalancer.server.port=8080"
+      - "traefik.http.middlewares.hermes-forge-site-secure.headers.stsSeconds=31536000"
+      - "traefik.http.middlewares.hermes-forge-site-secure.headers.stsIncludeSubdomains=true"
+      - "traefik.http.middlewares.hermes-forge-site-secure.headers.stsPreload=true"
+      - "traefik.http.middlewares.hermes-forge-site-secure.headers.contentTypeNosniff=true"
+      - "traefik.http.middlewares.hermes-forge-site-secure.headers.referrerPolicy=strict-origin-when-cross-origin"
+
+networks:
+  n8n_default:
+    external: true

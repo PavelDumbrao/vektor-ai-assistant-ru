@@ -3,7 +3,9 @@ from __future__ import annotations
 import logging
 from typing import Any, Callable
 
-from . import engine
+from . import engine, enrichment
+from .phase2_schemas import (CAPTIONS_SCHEMA, CAPTION_APPROVE_SCHEMA, CARDS_SCHEMA, CAPTURE_SCHEMA, PROOF_SCHEMA, SOUND_SCHEMA, MASTER_SCHEMA)
+from .look_schema import LOOK_SCHEMA
 
 logger = logging.getLogger(__name__)
 
@@ -18,6 +20,7 @@ PREPARE_SCHEMA = {
             "pacing": {"type": "string", "enum": ["punchy", "balanced", "restrained"], "default": "punchy"},
             "aspect": {"type": "string", "enum": ["9:16", "1:1", "16:9"], "default": "9:16"},
             "transcription_quality": {"type": "string", "enum": ["fast", "quality"], "default": "fast", "description": "fast uses pinned Whisper small; quality uses pinned Whisper medium and is much slower on CPU."},
+            "asr_provider": {"type": "string", "enum": ["auto", "openrouter", "local"], "default": "auto", "description": "auto prefers the shared OpenRouter Whisper Turbo broker and falls back to local whisper.cpp; openrouter requires broker success; local is offline-only."},
         },
         "required": ["sources"],
     },
@@ -109,4 +112,28 @@ def register(ctx: Any) -> None:
     ctx.register_tool(name="video_editor_feedback", toolset="video_editor", schema=FEEDBACK_SCHEMA,
                       handler=lambda args, **_: _guard(engine.feedback, args), check_fn=engine.runtime_ready,
                       description="Persist explicit editing feedback for future videos.", emoji="🧠")
+    ctx.register_tool(name="video_editor_captions", toolset="video_editor", schema=CAPTIONS_SCHEMA,
+                      handler=lambda args, **_: _guard(enrichment.captions, args), check_fn=engine.runtime_ready,
+                      description="Generate output-timeline caption drafts.", emoji="🔤")
+    ctx.register_tool(name="video_editor_caption_approve", toolset="video_editor", schema=CAPTION_APPROVE_SCHEMA,
+                      handler=lambda args, **_: _guard(enrichment.caption_approve, args), check_fn=engine.runtime_ready,
+                      description="Correct and approve captions before final rendering.", emoji="✅")
+    ctx.register_tool(name="video_editor_cards", toolset="video_editor", schema=CARDS_SCHEMA,
+                      handler=lambda args, **_: _guard(enrichment.cards, args), check_fn=engine.runtime_ready,
+                      description="Add timed editorial cards.", emoji="🃏")
+    ctx.register_tool(name="video_editor_capture", toolset="video_editor", schema=CAPTURE_SCHEMA,
+                      handler=lambda args, **_: _guard(enrichment.capture_page, args), check_fn=engine.runtime_ready,
+                      description="Capture a real public page as safe proof B-roll.", emoji="🌐")
+    ctx.register_tool(name="video_editor_proof", toolset="video_editor", schema=PROOF_SCHEMA,
+                      handler=lambda args, **_: _guard(enrichment.proof, args), check_fn=engine.runtime_ready,
+                      description="Place real-page proof B-roll on the timeline.", emoji="🔎")
+    ctx.register_tool(name="video_editor_sound", toolset="video_editor", schema=SOUND_SCHEMA,
+                      handler=lambda args, **_: _guard(enrichment.sound, args), check_fn=engine.runtime_ready,
+                      description="Plan and tune sound effects.", emoji="🔊")
+    ctx.register_tool(name="video_editor_look", toolset="video_editor", schema=LOOK_SCHEMA,
+                      handler=lambda args, **_: _guard(enrichment.look, args), check_fn=engine.runtime_ready,
+                      description="Preview or apply lighting and colour correction.", emoji="💡")
+    ctx.register_tool(name="video_editor_master", toolset="video_editor", schema=MASTER_SCHEMA,
+                      handler=lambda args, **_: _guard(enrichment.master, args), check_fn=engine.runtime_ready,
+                      description="Render the final enriched video package.", emoji="🎞️")
     logger.info("Shared video editor registered (runtime_ready=%s)", engine.runtime_ready())

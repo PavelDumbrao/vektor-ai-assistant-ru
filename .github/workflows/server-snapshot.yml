@@ -26,6 +26,10 @@ jobs:
         env:
           PYTHONPATH: hermes-agent
         run: python -m pytest modules/focus-assistant/tests modules/profile-tools/tests -q
+      - name: Shared video editor
+        run: |
+          python -m pytest modules/video-editor/tests -q
+          python -m compileall -q modules/video-editor
       - name: AI Fixer
         env:
           PYTHONPATH: modules/ai-fixer-social/src

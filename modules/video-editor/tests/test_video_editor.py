@@ -183,6 +183,43 @@ def test_safe_capture_rejects_local_and_non_http_schemes(monkeypatch):
         mod.validate_url("https://127.0.0.1")
 
 
+
+
+def test_caption_approve_rejects_chunk_merging(monkeypatch, tmp_path):
+    from plugin import enrichment
+    studio = tmp_path / "studio"
+    studio.mkdir()
+    captions = studio / "captions.json"
+    captions.write_text(
+        '{"proofread":false,"chunks":[{"start":0.0,"end":0.6,"duration":0.6,"text":"короткий текст","words":[{"text":"короткий","emphasis":false},{"text":"текст","emphasis":false}]}]}',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(enrichment, "_ctx", lambda job_id: (tmp_path, {"state": "verified"}, studio))
+    with pytest.raises(engine.VideoEditorError, match="video_caption_text_too_dense:index=0:max_words=4:do_not_merge_chunks"):
+        enrichment.caption_approve(
+            "012345abcdef",
+            [{"index": 0, "text": "это уже слишком длинная фраза"}],
+        )
+    data = __import__("json").loads(captions.read_text(encoding="utf-8"))
+    assert data["proofread"] is False
+    assert data["chunks"][0]["text"] == "короткий текст"
+
+def test_caption_approve_rejects_unfixed_dense_chunks(monkeypatch, tmp_path):
+    from plugin import enrichment
+    studio = tmp_path / "studio"
+    studio.mkdir()
+    captions = studio / "captions.json"
+    captions.write_text(
+        '{"proofread":false,"chunks":[{"start":0.0,"end":1.0,"duration":1.0,"text":"раз два три четыре пять","words":[]}]}',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(enrichment, "_ctx", lambda job_id: (tmp_path, {"state": "verified"}, studio))
+    with pytest.raises(engine.VideoEditorError, match="video_caption_chunks_still_dense:indices=0:max_words=4:correct_each_chunk_separately"):
+        enrichment.caption_approve("012345abcdef", [])
+    data = __import__("json").loads(captions.read_text(encoding="utf-8"))
+    assert data["proofread"] is False
+
+
 def test_cards_reject_out_of_timeline(monkeypatch, tmp_path):
     from plugin import enrichment
     studio = tmp_path / "studio"; studio.mkdir()

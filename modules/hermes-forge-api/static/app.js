@@ -3,6 +3,7 @@
   let session = "";
   let current = null;
   let catalog = null;
+  let capabilityStates = new Map();
 
   const $ = (id) => document.getElementById(id);
   const text = (id, value) => { $(id).textContent = value == null ? "—" : String(value); };
@@ -37,7 +38,7 @@
     }
     current = items[0];
     renderHermes(current);
-    await Promise.all([loadConnections(), loadSecrets()]);
+    await Promise.all([loadConnections(), loadSecrets(), loadCapabilityStates()]);
   }
 
   function renderHermes(item) {
@@ -74,6 +75,30 @@
     return card;
   }
 
+  function capabilityPresentation(item) {
+    if (item.availability !== "available") return {label:"Скоро", kind:"warn"};
+    const state=capabilityStates.get(item.id);
+    if (!state) return {label:"Доступен", kind:"ok"};
+    if (!state.installed) return {label:"Не установлен", kind:"warn"};
+    if (!state.enabled || state.health === "disabled") return {label:"Выключен", kind:"warn"};
+    if (state.health === "healthy") return {label:"Работает", kind:"ok"};
+    if (state.health === "degraded") return {label:"Проблема", kind:"bad"};
+    return {label:"Нужна проверка", kind:"warn"};
+  }
+
+  function capabilityReason(reason) {
+    return ({
+      ready:"Локальная проверка: OK",
+      disabled:"Выключен в настройках",
+      not_installed:"Компонент не установлен",
+      config_mismatch:"Конфигурация требует внимания",
+      runtime_unavailable:"Hermes сейчас не запущен",
+      shared_dependency_unavailable:"Общий сервис недоступен",
+      external_check_required:"Внешнее подключение проверяется отдельно",
+      planned:"Скоро",
+    })[reason] || "";
+  }
+
   function renderCatalog(data) {
     const capabilities=(data&&data.capabilities)||[];
     const agents=(data&&data.agents)||[];
@@ -82,10 +107,16 @@
     const toolsRoot=$("tools-list"); toolsRoot.textContent="";
     const sorted=[...capabilities].sort((a,b)=>Number(b.availability==="available")-Number(a.availability==="available") || String(a.name).localeCompare(String(b.name)));
     for (const item of sorted) {
-      const available=item.availability==="available";
-      const card=catalogCard(item,available?"Доступен":"Скоро",available?"ok":"warn");
+      const presentation=capabilityPresentation(item);
+      const card=catalogCard(item,presentation.label,presentation.kind);
       const meta=document.createElement("div"); meta.className="catalog-capabilities";
       const action=document.createElement("span"); action.className="chip"; action.textContent="Режим: "+(item.action_default||"observe"); meta.append(action);
+      const live=capabilityStates.get(item.id);
+      if (live) {
+        const installed=document.createElement("span"); installed.className="chip"; installed.textContent=live.installed?"Установлен":"Не установлен"; meta.append(installed);
+        const enabled=document.createElement("span"); enabled.className="chip"; enabled.textContent=live.enabled?"Включён":"Выключен"; meta.append(enabled);
+        const reason=capabilityReason(live.reason); if (reason) { const detail=document.createElement("span"); detail.className="chip"; detail.textContent=reason; meta.append(detail); }
+      }
       if (item.metering && item.metering!=="none") { const metering=document.createElement("span"); metering.className="chip"; metering.textContent="Usage metering"; meta.append(metering); }
       card.append(meta); toolsRoot.append(card);
     }
@@ -97,6 +128,18 @@
       for (const id of item.required_capabilities||[]) { const chip=document.createElement("span"); chip.className="chip"; chip.textContent="✓ "+(nameById.get(id)||id); chips.append(chip); }
       for (const id of item.optional_capabilities||[]) { const chip=document.createElement("span"); chip.className="chip"; chip.textContent="+ "+(nameById.get(id)||id); chips.append(chip); }
       card.append(chips); employeesRoot.append(card);
+    }
+  }
+
+  async function loadCapabilityStates() {
+    if (!current) return;
+    try {
+      const data=await request(`/v1/hermes/${current.profile}/capabilities`);
+      capabilityStates=new Map((data.items||[]).map(item=>[item.id,item]));
+      renderCatalog(catalog);
+    } catch (_err) {
+      capabilityStates=new Map();
+      renderCatalog(catalog);
     }
   }
 
@@ -139,22 +182,22 @@
       if (button.id==="health-button") {
         result("hermes-result","Проверяю…");
         const h=await request(`/v1/hermes/${current.profile}/health-check`,{method:"POST",body:"{}"});
-        result("hermes-result",h.healthy?"Все базовые проверки пройдены":"Есть компонент, требующий внимания",!h.healthy); await refreshHermes();
+        result("hermes-result",h.healthy?"Все базовые проверки пройдены":"Есть компонент, требующий внимания",!h.healthy); await refreshHermes(); await loadCapabilityStates();
       } else if (button.id==="restart-button") {
         result("hermes-result","Перезапускаю только idle Hermes…");
-        await request(`/v1/hermes/${current.profile}/restart`,{method:"POST",body:"{}"}); result("hermes-result","Hermes снова онлайн"); await refreshHermes();
+        await request(`/v1/hermes/${current.profile}/restart`,{method:"POST",body:"{}"}); result("hermes-result","Hermes снова онлайн"); await refreshHermes(); await loadCapabilityStates();
       } else if (button.id==="save-maton") {
         const value=$("maton-key").value.trim(); if(!value) throw new Error("Вставь Maton API key");
         result("secret-result","Проверяю ключ Maton…");
         await request(`/v1/hermes/${current.profile}/secrets/MCP_MATON_API_KEY`,{method:"PUT",body:JSON.stringify({value})});
-        $("maton-key").value=""; result("secret-result","Ключ проверен и сохранён. Перезапусти Hermes для применения."); await Promise.all([loadSecrets(),loadConnections()]);
+        $("maton-key").value=""; result("secret-result","Ключ проверен и сохранён. Перезапусти Hermes для применения."); await Promise.all([loadSecrets(),loadConnections(),loadCapabilityStates()]);
       } else if (button.id==="test-maton") {
         result("secret-result","Проверяю Maton…");
         const data=await request(`/v1/hermes/${current.profile}/connections/maton/test`,{method:"POST",body:"{}"});
-        result("secret-result",data.check==="valid"?"Maton отвечает, ключ валиден":`Статус Maton: ${data.check}`,data.check!=="valid");
+        result("secret-result",data.check==="valid"?"Maton отвечает, ключ валиден":`Статус Maton: ${data.check}`,data.check!=="valid"); await loadCapabilityStates();
       } else if (button.id==="delete-maton") {
         await request(`/v1/hermes/${current.profile}/secrets/MCP_MATON_API_KEY`,{method:"DELETE",body:"{}"});
-        result("secret-result","Ключ удалён. Перезапусти Hermes для применения."); await Promise.all([loadSecrets(),loadConnections()]);
+        result("secret-result","Ключ удалён. Перезапусти Hermes для применения."); await Promise.all([loadSecrets(),loadConnections(),loadCapabilityStates()]);
       }
     } catch (err) {
       const message=String(err && err.message || err); const target=button.id.includes("maton")?"secret-result":"hermes-result"; result(target,message,true);

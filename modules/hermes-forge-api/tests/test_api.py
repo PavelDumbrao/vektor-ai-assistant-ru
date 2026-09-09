@@ -105,3 +105,25 @@ def test_catalog_ui_exposes_read_only_tools_and_employees_tabs():
     assert '/v1/catalog/enable' not in js
     assert 'install-capability' not in html
     assert 'enable-capability' not in html
+
+
+def test_capabilities_route_is_authenticated_and_forwards_owner_scope(monkeypatch):
+    seen = []
+    monkeypatch.setattr(api, "call_control", lambda payload: seen.append(payload) or {"schema": "hermes.capability-state/v1", "items": []})
+    headers = {"Authorization": "Bearer opaque-session"}
+    status, result = api.route("GET", "/v1/hermes/pavel/capabilities", {}, headers)
+    assert status == 200
+    assert result["schema"] == "hermes.capability-state/v1"
+    assert seen == [{"op": "list_capabilities", "session": "opaque-session", "profile": "pavel"}]
+    with pytest.raises(api.ApiError, match="session_required"):
+        api.route("GET", "/v1/hermes/pavel/capabilities", {}, {})
+
+
+def test_tools_ui_reads_capability_state_without_capability_mutations():
+    app = (MODULE.parent / "static/app.js").read_text(encoding="utf-8")
+    assert "loadCapabilityStates" in app
+    assert "/capabilities`" in app
+    assert "capabilityPresentation" in app
+    assert "capabilities/install" not in app
+    assert "capabilities/enable" not in app
+    assert "capabilities/disable" not in app

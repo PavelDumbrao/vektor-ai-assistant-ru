@@ -140,3 +140,95 @@ def test_maton_invalid_key_is_not_stored(monkeypatch, tmp_path):
     with pytest.raises(control.ControlError, match="maton_key_invalid"):
         control.dispatch({"op": "set_secret", "session": session, "profile": "pavel", "name": "MCP_MATON_API_KEY", "value": "maton-test-secret-1234567890"})
     assert "MCP_MATON_API_KEY" not in control._read_env(env)
+
+
+def _install_capability_markers(entry):
+    hermes = Path(entry.pw_dir) / ".hermes"
+    for relative in (
+        "plugins/image_gen/grsai/plugin.yaml",
+        "plugins/passive-secretary/plugin.yaml",
+        "plugins/passive-secretary/settings.json",
+        "plugins/video-editor/plugin.yaml",
+        "skills/video-editor/SKILL.md",
+        "hermes-agent/agent/web_search_registry.py",
+        "hermes-agent/plugins/web/tavily/plugin.yaml",
+    ):
+        path = hermes / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("{}\n" if path.suffix == ".json" else "marker\n", encoding="utf-8")
+
+
+def test_capability_states_report_bounded_live_readiness(monkeypatch, tmp_path):
+    entry, env, config = fake_profile(tmp_path)
+    _install_capability_markers(entry)
+    env.write_text("SAFE_EXISTING=1\nMCP_MATON_API_KEY=maton-test-secret-1234567890\n", encoding="utf-8")
+    config.write_text(yaml.safe_dump({
+        "agent": {"disabled_toolsets": []},
+        "plugins": {"enabled": ["image_gen/grsai", "passive-secretary", "video-editor"]},
+        "mcp_servers": {"maton": {"enabled": True}},
+        "image_gen": {"provider": "grsai", "model": "gpt-image-2.5"},
+        "search": {"provider": "tavily"},
+    }, sort_keys=False), encoding="utf-8")
+    monkeypatch.setattr(control, "_profile_paths", lambda _profile: (entry, env, config))
+    monkeypatch.setattr(control, "_service_state", lambda _profile: "active")
+    monkeypatch.setattr(control, "_unit_active", lambda _unit: True)
+    monkeypatch.setattr(control, "_unit_enabled", lambda _unit: True)
+
+    result = control._capability_states("pavel")
+    rows = {item["id"]: item for item in result["items"]}
+    assert result["schema"] == "hermes.capability-state/v1"
+    assert rows["image-studio"] == {"id": "image-studio", "installed": True, "enabled": True, "health": "healthy", "reason": "ready"}
+    assert rows["telegram-secretary"]["health"] == "healthy"
+    assert rows["video-editor"]["health"] == "healthy"
+    assert rows["web-search"]["health"] == "healthy"
+    assert rows["maton"]["health"] == "unknown"
+    assert rows["maton"]["reason"] == "external_check_required"
+    assert rows["finance"]["health"] == "planned"
+    serialized = json.dumps(result)
+    assert "maton-test-secret" not in serialized
+    assert str(tmp_path) not in serialized
+
+
+def test_capability_states_surface_config_drift_without_probing_secrets(monkeypatch, tmp_path):
+    entry, env, config = fake_profile(tmp_path)
+    _install_capability_markers(entry)
+    config.write_text(yaml.safe_dump({
+        "agent": {"disabled_toolsets": ["passive_secretary"]},
+        "plugins": {"enabled": ["image_gen/grsai", "passive-secretary", "video-editor"]},
+        "mcp_servers": {"maton": {"enabled": True}},
+        "image_gen": {"provider": "grsai"},
+        "search": {"provider": "tavily"},
+    }, sort_keys=False), encoding="utf-8")
+    monkeypatch.setattr(control, "_profile_paths", lambda _profile: (entry, env, config))
+    monkeypatch.setattr(control, "_service_state", lambda _profile: "active")
+    monkeypatch.setattr(control, "_unit_active", lambda _unit: False)
+    monkeypatch.setattr(control, "_unit_enabled", lambda _unit: True)
+
+    rows = {item["id"]: item for item in control._capability_states("pavel")["items"]}
+    assert rows["maton"]["health"] == "degraded"
+    assert rows["maton"]["reason"] == "config_mismatch"
+    assert rows["telegram-secretary"]["enabled"] is False
+    assert rows["telegram-secretary"]["health"] == "disabled"
+    assert rows["video-editor"]["health"] == "degraded"
+    assert rows["video-editor"]["reason"] == "shared_dependency_unavailable"
+
+
+def test_list_capabilities_dispatch_remains_owner_scoped(monkeypatch):
+    control.SESSIONS = control.SessionStore(ttl=1000)
+    session, _ = control.SESSIONS.create(42)
+    seen = []
+    monkeypatch.setattr(control, "_owned_item", lambda user_id, profile: seen.append((user_id, profile)) or {"profile": profile})
+    monkeypatch.setattr(control, "_capability_states", lambda profile: {"schema": "hermes.capability-state/v1", "items": []})
+    result = control.dispatch({"op": "list_capabilities", "session": session, "profile": "pavel"})
+    assert result["schema"] == "hermes.capability-state/v1"
+    assert seen == [(42, "pavel")]
+
+
+def test_capability_state_ids_match_catalog_v1_manifests():
+    repo = MODULE.parents[2]
+    catalog_dir = repo / "server/forge/catalog/capabilities"
+    manifest_ids = set()
+    for path in catalog_dir.glob("*.yaml"):
+        payload = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        manifest_ids.add(str(payload.get("id") or ""))
+    assert manifest_ids == set(control.CAPABILITY_IDS)

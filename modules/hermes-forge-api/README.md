@@ -20,6 +20,7 @@ The Mini App sends Telegram `WebApp.initData` once to `/v1/auth/telegram`. Only 
 - `POST /v1/hermes/{profile}/health-check`
 - `POST /v1/hermes/{profile}/restart`
 - `GET /v1/hermes/{profile}/connections`
+- `GET /v1/hermes/{profile}/capabilities` — read-only installed/enabled/health state for catalog capabilities
 - `GET /v1/hermes/{profile}/secrets`
 - `PUT|DELETE /v1/hermes/{profile}/secrets/MCP_MATON_API_KEY`
 - `POST /v1/hermes/{profile}/connections/maton/test`

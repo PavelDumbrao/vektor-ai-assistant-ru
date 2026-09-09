@@ -13,6 +13,7 @@ from pathlib import Path
 
 from .controller import (
     EXACT_DATE_TOOL_SCHEMA,
+    RECALL_TOOL_SCHEMA,
     REPLY_TOOL_SCHEMA,
     SOURCES_TOOL_SCHEMA,
     PassiveSecretaryController,
@@ -45,6 +46,10 @@ def register(ctx) -> None:
         assert _controller is not None
         return _controller.handle_sources(args, **kwargs)
 
+    def recall(args, **kwargs):
+        assert _controller is not None
+        return _controller.handle_recall(args, **kwargs)
+
     def pre_tool_call(**kwargs):
         assert _controller is not None
         return _controller.on_pre_tool_call(**kwargs)
@@ -64,6 +69,15 @@ def register(ctx) -> None:
         check_fn=_controller.tool_available,
         description="Exact-date search in the owner's passive Telegram archive.",
         emoji="🗄️",
+    )
+    ctx.register_tool(
+        name="passive_secretary_recall",
+        toolset="passive_secretary",
+        schema=RECALL_TOOL_SCHEMA,
+        handler=recall,
+        check_fn=_controller.tool_available,
+        description="Hybrid full-history recall across the owner Telegram archive.",
+        emoji="🧠",
     )
     ctx.register_tool(
         name="passive_secretary_sources",

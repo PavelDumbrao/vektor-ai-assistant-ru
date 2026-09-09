@@ -98,3 +98,11 @@ backup-архивом. При независимом изменении unit/с�
 - Новый gateway рекомендует для текущих drain-настроек `TimeoutStopSec >= 70`.
   Допустимо установить отдельный drop-in `TimeoutStopSec=120` и выполнить
   `systemctl daemon-reload` без перезапуска и изменения остального unit.
+
+## Дополнение: trusted group inviter
+
+`trusted-group-inviter.patch` добавляет опциональный список `group_passive_trusted_inviter_ids`. Это эксплуатационная возможность для managed-профилей: технический администратор может пригласить бота в рабочую группу, но не может одобрить passive capture.
+
+Owner-only callback gate не меняется: окончательное согласие даёт только единственный `business_owner_id` в private Telegram DM. Если actor не owner и не входит в trusted inviter list, сохраняется прежний fail-closed revoke + leave.
+
+Патч включён в обе reconstructable variants (`modern` и `legacy`) и учитывается в source manifest SHA-256.

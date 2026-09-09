@@ -51,6 +51,9 @@ def canonical_modern_client(config, owner):
         extra['allow_admin_from']=['OWNER_TELEGRAM_USER_ID'] if 'OWNER_TELEGRAM_USER_ID' in admins else []
         extra.pop('group_passive_enabled',None)
         extra.pop('group_passive_chat_ids',None)
+        # Enrollment helpers are deliberately profile-specific; they can only
+        # start owner consent and therefore do not define the modern runtime baseline.
+        extra.pop('group_passive_trusted_inviter_ids',None)
     maton=value.get('mcp_servers',{}).get('maton')
     if isinstance(maton,dict):
         maton.pop('enabled',None)

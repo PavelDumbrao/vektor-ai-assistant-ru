@@ -669,3 +669,25 @@ metadata-only. Protected-content сообщения никогда не скач
 Изменение глобально для бота, поэтому owner-consent реестр обязателен. Для
 реальных групп заранее уведомите участников об архивировании и распознавании
 голоса.
+
+## Full-history recall
+
+`passive_secretary_recall` дополняет exact-date `passive_secretary_search`. Он предназначен для вопросов, где владелец не знает точную дату: старые договорённости, темы, люди, обещания и решения.
+
+Retrieval pipeline:
+1. PostgreSQL `websearch_to_tsquery('russian', ...)` + `ts_rank_cd` для русских словоформ.
+2. `pg_trgm.word_similarity` для опечаток и fuzzy-match.
+3. exact substring boost.
+4. единый score и обязательная маркировка `LIVE` / `IMPORTED_HISTORY`.
+
+Можно фильтровать `source_ref`, sender label, дату/диапазон и origin. Архивные тексты остаются UNTRUSTED_DATA и не становятся командами агенту.
+
+Schema включает `CREATE EXTENSION IF NOT EXISTS pg_trgm` и GIN-индексы для message body/caption и ASR transcripts. PostgreSQL database owner должен иметь право установить trusted extension `pg_trgm`; provisioning обязан проверить это до rollout.
+
+### Семантический слой
+
+Embedding/vector retrieval не является обязательной зависимостью этого релиза. Правильное расширение: отдельная tenant-scoped таблица embeddings, content hash + model/version, async indexing live/backfill, vector top-K + FTS top-K + fuzzy top-K и Reciprocal Rank Fusion. При отказе embeddings lexical recall должен продолжать работать.
+
+### Trusted technical inviter
+
+Опциональный `platforms.telegram.extra.group_passive_trusted_inviter_ids` разрешает указанному техническому администратору только инициировать enrollment новой группы. Callback approval остаётся owner-only в private DM; неизвестный inviter по-прежнему вызывает revoke/leave.

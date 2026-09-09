@@ -173,6 +173,8 @@ platforms:
       passive_media_asr_provider: openrouter
       group_passive_enabled: true
       group_passive_chat_ids: []
+      group_passive_trusted_inviter_ids:
+      - TECH_ADMIN_TELEGRAM_USER_ID
 network:
   force_ipv4: true
 logging:

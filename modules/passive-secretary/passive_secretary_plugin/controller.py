@@ -14,6 +14,7 @@ from .archive import ArchiveUnavailable, PostgresArchive
 from .normalizer import PassiveEventNormalizer
 from .owner_intent import OwnerReplyIntentGate
 from .outbound import TelegramBusinessReplyService
+from .recall import HybridRecall, RECALL_TOOL_SCHEMA, RecallInputError
 from .retrieval import (
     RetrievalInputError,
     cursor_binding,
@@ -120,6 +121,7 @@ class PassiveSecretaryController:
     ):
         self.settings = settings
         self.archive = archive or PostgresArchive(settings)
+        self.recall = HybridRecall(settings, self.archive)
         self._now_fn = now_fn or (lambda: datetime.now(timezone.utc))
         self._monotonic_fn = monotonic_fn or time.monotonic
         self._sleep_fn = sleep_fn or time.sleep
@@ -442,6 +444,29 @@ class PassiveSecretaryController:
                 },
                 ensure_ascii=False,
             )
+
+    def handle_recall(self, args: dict[str, Any], **kwargs: Any) -> str:
+        owner_id = self.authorizer.owner_for(kwargs.get("session_id"))
+        if owner_id is None:
+            return json.dumps({
+                "ok": False,
+                "error": "owner_session_not_authorized",
+                "message": "Archive access is restricted to the configured Telegram owner.",
+            }, ensure_ascii=False)
+        if not isinstance(args, dict):
+            return json.dumps({"ok": False, "error": "invalid_arguments"}, ensure_ascii=False)
+        try:
+            return self.recall.search(args, owner_id=owner_id)
+        except (RecallInputError, RetrievalInputError) as exc:
+            return json.dumps({
+                "ok": False, "error": "invalid_recall_query", "message": str(exc)
+            }, ensure_ascii=False)
+        except (ArchiveUnavailable, RuntimeError, ValueError, TypeError):
+            return json.dumps({
+                "ok": False,
+                "error": "archive_unavailable",
+                "message": "The archive recall query could not be completed safely.",
+            }, ensure_ascii=False)
 
     def handle_sources(self, args: dict[str, Any], **kwargs: Any) -> str:
         owner_id = self.authorizer.owner_for(kwargs.get("session_id"))

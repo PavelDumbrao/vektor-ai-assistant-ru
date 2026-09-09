@@ -14,16 +14,18 @@
     "hermes-021-telegram-waiting-status.patch": "ed92b48ec66cb1e12cabe4b550e6d89f01202013e3de01f82b722c6f54ba0ce5",
     "hermes-021-telegram-progress-polish.patch": "6a79326b1407519adc6151b08bd12729080db52f526a556aa86d89708847d640",
     "normalizer-modern.patch": "8afb3a2963e098db9ada5849719cb722247ae5eb7f891f4e1391c207e60920ca",
-    "normalizer-legacy.patch": "8cd5594c4792a050125b80f321c07fa669368893cbc7c31a0567264fb5d31ac3"
+    "normalizer-legacy.patch": "8cd5594c4792a050125b80f321c07fa669368893cbc7c31a0567264fb5d31ac3",
+    "trusted-group-inviter.patch": "d9c3222e232ff139052adac23bb02bb1a35fee78106577d2350564ac392f7f6c"
   },
   "variants": {
     "modern": {
       "patches": [
         "vektor.patch",
         "hermes-021-telegram-waiting-status.patch",
-        "hermes-021-telegram-progress-polish.patch"
+        "hermes-021-telegram-progress-polish.patch",
+        "trusted-group-inviter.patch"
       ],
-      "code_sha256": "30cf4141ea4e9bdde54babea4c6abd8f108dce6399f1b3cae342a30d46376b49",
+      "code_sha256": "0a728932a36423efce9d8d9ef10d654f99d094fd386650b0cb9a3f68b13faf46",
       "source_files": 10927,
       "normalizer_patch": "normalizer-modern.patch",
       "normalizer_sha256": "6bc222c9934d66c5c3dd8ad8908b782d533510618abc8a035bed57ffe0e789d5"
@@ -33,9 +35,10 @@
         "vektor.patch",
         "legacy-capture-policy.patch",
         "hermes-021-telegram-waiting-status.patch",
-        "hermes-021-telegram-progress-polish.patch"
+        "hermes-021-telegram-progress-polish.patch",
+        "trusted-group-inviter.patch"
       ],
-      "code_sha256": "91a139bb01dfe907a1999cc9d959465d5e361c2810c4f95215182b28ef3bd8e1",
+      "code_sha256": "6102cb430f3b4ae3e334f58472c83bc698c2a1439b3a7b5f34d8c314b7a405d4",
       "source_files": 10927,
       "normalizer_patch": "normalizer-legacy.patch",
       "normalizer_sha256": "279b5a3622ea960e8d0e9a3ba1d5738f0c989a6da98650e53b4650c0e4318d03"

@@ -11,5 +11,6 @@ provides_hooks:
   - pre_tool_call
 provides_tools:
   - passive_secretary_search
+  - passive_secretary_recall
   - passive_secretary_sources
   - passive_secretary_reply

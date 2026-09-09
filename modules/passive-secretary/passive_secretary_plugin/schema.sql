@@ -1,3 +1,5 @@
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
+
 CREATE SCHEMA IF NOT EXISTS passive_secretary;
 
 CREATE TABLE IF NOT EXISTS passive_secretary.business_connections (
@@ -238,3 +240,21 @@ CREATE TABLE IF NOT EXISTS passive_secretary.archive_events (
 CREATE INDEX IF NOT EXISTS archive_events_scope_received_idx
     ON passive_secretary.archive_events
     (tenant_id, tenant_owner_id, source_id, test_run_id, received_at DESC);
+
+-- Bebov full-history recall indexes. pg_trgm is installed at DB-ops level.
+CREATE INDEX IF NOT EXISTS messages_search_fts_idx
+    ON passive_secretary.messages USING GIN (
+        to_tsvector('russian'::regconfig, COALESCE(body, '') || ' ' || COALESCE(caption, ''))
+    );
+CREATE INDEX IF NOT EXISTS messages_search_trgm_idx
+    ON passive_secretary.messages USING GIN (
+        (COALESCE(body, '') || ' ' || COALESCE(caption, '')) gin_trgm_ops
+    );
+CREATE INDEX IF NOT EXISTS messages_sender_label_trgm_idx
+    ON passive_secretary.messages USING GIN (sender_label gin_trgm_ops);
+CREATE INDEX IF NOT EXISTS media_transcript_fts_idx
+    ON passive_secretary.media_enrichments USING GIN (
+        to_tsvector('russian'::regconfig, COALESCE(transcript, ''))
+    );
+CREATE INDEX IF NOT EXISTS media_transcript_trgm_idx
+    ON passive_secretary.media_enrichments USING GIN (transcript gin_trgm_ops);

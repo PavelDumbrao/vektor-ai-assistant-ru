@@ -2,6 +2,7 @@
 """Root-only bounded control daemon for Hermes Forge Mini App/API."""
 from __future__ import annotations
 
+import copy
 import hashlib
 import hmac
 import http.client
@@ -829,6 +830,113 @@ def _restore_capability_config(profile: str, backup: Path) -> None:
     _atomic_text(config_path, source.read_text(encoding="utf-8"), entry)
 
 
+def _patch_disabled_toolset_text(raw: str, toolset: str, enabled: bool) -> tuple[str, bool]:
+    if toolset not in set(CAPABILITY_TOGGLE_TOOLSETS.values()):
+        raise ControlError("capability_action_not_supported", 409)
+    lines = raw.splitlines(keepends=True)
+    if not lines:
+        raise ControlError("config_format_unsupported", 409)
+    newline = "\r\n" if "\r\n" in raw else "\n"
+
+    agent_indexes = []
+    for index, line in enumerate(lines):
+        body = line.rstrip("\r\n")
+        if re.fullmatch(r"agent:\s*(?:#.*)?", body):
+            agent_indexes.append(index)
+    if len(agent_indexes) != 1:
+        raise ControlError("config_format_unsupported", 409)
+    agent_index = agent_indexes[0]
+
+    section_end = len(lines)
+    for index in range(agent_index + 1, len(lines)):
+        body = lines[index].rstrip("\r\n")
+        if not body.strip() or body.lstrip().startswith("#"):
+            continue
+        if len(body) - len(body.lstrip(" ")) == 0:
+            section_end = index
+            break
+
+    key_indexes = []
+    for index in range(agent_index + 1, section_end):
+        body = lines[index].rstrip("\r\n")
+        match = re.fullmatch(r"( +)disabled_toolsets:\s*(#.*)?", body)
+        empty_inline = re.fullmatch(r"( +)disabled_toolsets:\s*\[\]\s*(#.*)?", body)
+        if match:
+            key_indexes.append((index, len(match.group(1)), "block", match.group(2) or ""))
+        elif empty_inline:
+            key_indexes.append((index, len(empty_inline.group(1)), "empty_inline", empty_inline.group(2) or ""))
+        elif re.match(r"\s+disabled_toolsets:", body):
+            raise ControlError("config_format_unsupported", 409)
+    if len(key_indexes) > 1:
+        raise ControlError("config_format_unsupported", 409)
+
+    if not key_indexes:
+        if enabled:
+            return raw, False
+        child_indent = 2
+        for index in range(agent_index + 1, section_end):
+            body = lines[index].rstrip("\r\n")
+            if not body.strip() or body.lstrip().startswith("#"):
+                continue
+            child_indent = len(body) - len(body.lstrip(" "))
+            if child_indent <= 0:
+                child_indent = 2
+            break
+        prefix = " " * child_indent
+        insert = [f"{prefix}disabled_toolsets:{newline}", f"{prefix}- {toolset}{newline}"]
+        lines[agent_index + 1:agent_index + 1] = insert
+        return "".join(lines), True
+
+    key_index, key_indent, key_mode, key_comment = key_indexes[0]
+    if key_mode == "empty_inline":
+        if enabled:
+            return raw, False
+        line_ending = "\r\n" if lines[key_index].endswith("\r\n") else ("\n" if lines[key_index].endswith("\n") else newline)
+        suffix = (" " + key_comment) if key_comment else ""
+        lines[key_index] = f"{' ' * key_indent}disabled_toolsets:{suffix}{line_ending}"
+        lines.insert(key_index + 1, f"{' ' * key_indent}- {toolset}{line_ending}")
+        return "".join(lines), True
+
+    item_indexes: list[tuple[int, str]] = []
+    insertion_index = key_index + 1
+    sequence_indent = key_indent
+    for index in range(key_index + 1, section_end):
+        body = lines[index].rstrip("\r\n")
+        if not body.strip() or body.lstrip().startswith("#"):
+            insertion_index = index + 1
+            continue
+        match = re.fullmatch(r"( *)-\s*([A-Za-z0-9_.-]+)\s*(?:#.*)?", body)
+        if match and len(match.group(1)) >= key_indent:
+            if not item_indexes:
+                sequence_indent = len(match.group(1))
+            elif len(match.group(1)) != sequence_indent:
+                raise ControlError("config_format_unsupported", 409)
+            item_indexes.append((index, match.group(2)))
+            insertion_index = index + 1
+            continue
+        indent = len(body) - len(body.lstrip(" "))
+        if indent <= key_indent:
+            break
+        raise ControlError("config_format_unsupported", 409)
+
+    targets = [index for index, value in item_indexes if value == toolset]
+    if enabled:
+        if not targets:
+            return raw, False
+        remove_all = len(targets) == len(item_indexes)
+        for index in reversed(targets):
+            del lines[index]
+        if remove_all:
+            line_ending = "\r\n" if lines[key_index].endswith("\r\n") else ("\n" if lines[key_index].endswith("\n") else newline)
+            suffix = (" " + key_comment) if key_comment else ""
+            lines[key_index] = f"{' ' * key_indent}disabled_toolsets: []{suffix}{line_ending}"
+        return "".join(lines), True
+    if targets:
+        return raw, False
+    lines.insert(insertion_index, f"{' ' * sequence_indent}- {toolset}{newline}")
+    return "".join(lines), True
+
+
 def _set_capability_toolset(profile: str, capability_id: str, enabled: bool) -> bool:
     toolset = CAPABILITY_TOGGLE_TOOLSETS.get(capability_id)
     if not toolset:
@@ -836,28 +944,41 @@ def _set_capability_toolset(profile: str, capability_id: str, enabled: bool) -> 
     entry, _, config_path = _profile_paths(profile)
     if config_path.is_symlink() or not config_path.is_file():
         raise ControlError("config_missing", 409)
+    original_text = config_path.read_text(encoding="utf-8")
     try:
-        config = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+        config = yaml.safe_load(original_text) or {}
     except Exception:
         raise ControlError("config_invalid", 409) from None
     if not isinstance(config, dict):
         raise ControlError("config_invalid", 409)
-    agent = config.setdefault("agent", {})
+    agent = config.get("agent")
     if not isinstance(agent, dict):
         raise ControlError("config_invalid", 409)
-    raw = agent.setdefault("disabled_toolsets", [])
-    if not isinstance(raw, list) or any(not isinstance(item, str) for item in raw):
+    raw_disabled = agent.get("disabled_toolsets", [])
+    if not isinstance(raw_disabled, list) or any(not isinstance(item, str) for item in raw_disabled):
         raise ControlError("config_invalid", 409)
-    disabled = list(raw)
-    before = list(disabled)
+
+    expected = copy.deepcopy(config)
+    expected_agent = expected["agent"]
+    expected_disabled = list(raw_disabled)
     if enabled:
-        disabled = [item for item in disabled if item != toolset]
-    elif toolset not in disabled:
-        disabled.append(toolset)
-    if disabled == before:
+        expected_disabled = [item for item in expected_disabled if item != toolset]
+    elif toolset not in expected_disabled:
+        expected_disabled.append(toolset)
+    expected_agent["disabled_toolsets"] = expected_disabled
+
+    updated_text, changed = _patch_disabled_toolset_text(original_text, toolset, enabled)
+    if not changed:
+        if expected != config:
+            raise ControlError("config_patch_invalid", 500)
         return False
-    agent["disabled_toolsets"] = disabled
-    _atomic_text(config_path, yaml.safe_dump(config, allow_unicode=True, sort_keys=False), entry)
+    try:
+        updated = yaml.safe_load(updated_text) or {}
+    except Exception:
+        raise ControlError("config_patch_invalid", 500) from None
+    if updated != expected:
+        raise ControlError("config_patch_invalid", 500)
+    _atomic_text(config_path, updated_text, entry)
     return True
 
 

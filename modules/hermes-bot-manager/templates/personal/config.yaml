@@ -149,6 +149,9 @@ logging:
   level: INFO
   max_size_mb: 5
   backup_count: 3
+telemetry:
+  shared_metrics:
+    enabled: true
 updates:
   pre_update_backup: quick
   backup_keep: 5

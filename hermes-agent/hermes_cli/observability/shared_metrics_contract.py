@@ -15,6 +15,7 @@ TASK_SCOPE = "hermes.task_run"
 SUBSCRIBER_NAME = "hermes.nemo_relay.shared_metrics"
 PRIMARY_MODEL_CALL_ROLE = "primary"
 MODEL_CALL_METRIC = "hermes.model_call.count"
+TOOL_CALL_METRIC = "hermes.tool_call.count"
 TASK_STARTED_METRIC = "hermes.task_run.started"
 TASK_FINISHED_METRIC = "hermes.task_run.finished"
 
@@ -39,6 +40,12 @@ PROVIDER_FAMILIES: frozenset[str] = frozenset({
 })
 MODEL_LOCALITIES: frozenset[str] = frozenset({"local", "remote", "unknown"})
 MODEL_OUTCOMES: frozenset[str] = frozenset({"cancelled", "failed", "success"})
+TOOL_OUTCOMES: frozenset[str] = frozenset({"cancelled", "failed", "success"})
+TOOL_FAMILIES: frozenset[str] = frozenset({
+    "browser", "cron", "delegation", "files", "image_gen", "maton",
+    "memory", "other", "passive_secretary", "terminal", "video_editor",
+    "web_search",
+})
 TASK_OUTCOMES: frozenset[str] = frozenset({
     "cancelled",
     "failed",
@@ -127,6 +134,11 @@ _COUNTER_DIMENSION_VALUES: dict[str, dict[str, frozenset[str]]] = {
         "model_family": MODEL_FAMILIES,
         "outcome": MODEL_OUTCOMES,
         "provider_family": PROVIDER_FAMILIES,
+    },
+    TOOL_CALL_METRIC: {
+        "duration_bucket": DURATION_BUCKETS,
+        "outcome": TOOL_OUTCOMES,
+        "tool_family": TOOL_FAMILIES,
     },
     TASK_STARTED_METRIC: {
         "entrypoint": TASK_ENTRYPOINTS,
@@ -418,6 +430,53 @@ def count_bucket(count: int) -> str:
     if value <= 10:
         return "6_to_10"
     return "gte_11"
+
+
+def tool_family(kwargs: dict[str, Any]) -> str:
+    """Map raw tool names to a bounded, privacy-safe product family."""
+    name = str(kwargs.get("tool_name") or "").strip().lower().replace("-", "_")
+    if not name:
+        return "other"
+    if name.startswith("mcp__maton__") or name.startswith("maton_"):
+        return "maton"
+    if "passive_secretary" in name or name.startswith("secretary_"):
+        return "passive_secretary"
+    if name.startswith(("image_gen", "generate_image", "edit_image")):
+        return "image_gen"
+    if "video_editor" in name or name.startswith(("video_edit", "video_render")):
+        return "video_editor"
+    if name.startswith(("web_search", "search_web", "tavily")):
+        return "web_search"
+    if name.startswith(("browser", "playwright")):
+        return "browser"
+    if name.startswith(("memory", "recall")):
+        return "memory"
+    if name.startswith(("read_file", "write_file", "edit_file", "list_directory", "file_")):
+        return "files"
+    if name.startswith(("terminal", "shell", "execute_command", "run_command")):
+        return "terminal"
+    if name.startswith(("cron", "schedule", "task_schedule")):
+        return "cron"
+    if name.startswith(("delegate", "subagent", "spawn_agent")):
+        return "delegation"
+    return "other"
+
+
+def tool_call_outcome(kwargs: dict[str, Any]) -> str:
+    value = str(kwargs.get("status") or "").strip().lower()
+    if value in {"cancelled", "canceled"}:
+        return "cancelled"
+    if value in {"ok", "success", "completed"}:
+        return "success"
+    return "failed"
+
+
+def tool_call_dimensions(kwargs: dict[str, Any]) -> dict[str, str]:
+    return {
+        "duration_bucket": duration_bucket(int(kwargs.get("duration_ms") or 0)),
+        "outcome": tool_call_outcome(kwargs),
+        "tool_family": tool_family(kwargs),
+    }
 
 
 def provider_family(kwargs: dict[str, Any]) -> str:

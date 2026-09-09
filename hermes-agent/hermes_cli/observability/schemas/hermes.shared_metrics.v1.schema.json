@@ -64,6 +64,9 @@
           },
           {
             "$ref": "#/$defs/task_finished_counter"
+          },
+          {
+            "$ref": "#/$defs/tool_call_counter"
           }
         ]
       }
@@ -333,6 +336,65 @@
         "6_to_10",
         "gte_11"
       ]
+    },
+    "tool_call_counter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "type",
+        "dimensions",
+        "value"
+      ],
+      "properties": {
+        "name": {
+          "const": "hermes.tool_call.count"
+        },
+        "type": {
+          "const": "counter"
+        },
+        "dimensions": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "duration_bucket",
+            "outcome",
+            "tool_family"
+          ],
+          "properties": {
+            "duration_bucket": {
+              "$ref": "#/$defs/duration_bucket"
+            },
+            "outcome": {
+              "enum": [
+                "cancelled",
+                "failed",
+                "success"
+              ]
+            },
+            "tool_family": {
+              "enum": [
+                "browser",
+                "cron",
+                "delegation",
+                "files",
+                "image_gen",
+                "maton",
+                "memory",
+                "other",
+                "passive_secretary",
+                "terminal",
+                "video_editor",
+                "web_search"
+              ]
+            }
+          }
+        },
+        "value": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
     }
   }
 }

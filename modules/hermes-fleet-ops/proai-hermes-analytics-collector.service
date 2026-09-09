@@ -1,0 +1,21 @@
+[Unit]
+Description=Hermes Forge privacy-safe fleet analytics collector
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+WorkingDirectory=/opt/proai-hermes-fleet-ops
+ExecStart=/usr/bin/python3 /opt/proai-hermes-fleet-ops/collector.py collect
+UMask=0077
+StateDirectory=proai-hermes-analytics
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/var/lib/proai-hermes-analytics
+PrivateTmp=true
+NoNewPrivileges=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+LockPersonality=true

@@ -1,0 +1,73 @@
+{
+  "schema_version": 1,
+  "enabled": true,
+  "defaults": {
+    "forge_new": {
+      "track": "modern",
+      "channel": "stable"
+    }
+  },
+  "tracks": {
+    "modern": {
+      "canary": {
+        "release_id": "hermes-0.21.0-29112bef-vektor4-modern",
+        "stages": [100],
+        "healthy_cycles_to_advance": 1
+      },
+      "preview": {
+        "release_id": "hermes-0.21.0-29112bef-vektor4-modern",
+        "stages": [100],
+        "healthy_cycles_to_advance": 1
+      },
+      "stable": {
+        "release_id": "hermes-0.21.0-29112bef-vektor4-modern",
+        "stages": [10, 50, 100],
+        "healthy_cycles_to_advance": 2
+      }
+    },
+    "legacy": {
+      "canary": {
+        "release_id": "hermes-0.21.0-29112bef-vektor3-baysangur",
+        "stages": [100],
+        "healthy_cycles_to_advance": 1
+      },
+      "preview": {
+        "release_id": "hermes-0.21.0-29112bef-vektor3-baysangur",
+        "stages": [100],
+        "healthy_cycles_to_advance": 1
+      },
+      "stable": {
+        "release_id": "hermes-0.21.0-29112bef-vektor3-baysangur",
+        "stages": [10, 50, 100],
+        "healthy_cycles_to_advance": 2
+      }
+    }
+  },
+  "profiles": {
+    "pavel": {
+      "track": "modern",
+      "channel": "pinned",
+      "release_id": "hermes-0.21.0-29112bef-vektor3-pavel"
+    },
+    "baysangur": {
+      "track": "legacy",
+      "channel": "pinned",
+      "release_id": "hermes-0.21.0-29112bef-vektor3-baysangur"
+    },
+    "vyacheslav": {
+      "track": "modern",
+      "channel": "pinned",
+      "release_id": "hermes-0.21.0-29112bef-vektor3-vyacheslav"
+    },
+    "bebov": {
+      "track": "modern",
+      "channel": "pinned",
+      "release_id": "hermes-0.21.0-29112bef-vektor4-modern"
+    },
+    "salavat": {
+      "track": "modern",
+      "channel": "pinned",
+      "release_id": "hermes-0.21.0-29112bef-vektor3-vyacheslav"
+    }
+  }
+}

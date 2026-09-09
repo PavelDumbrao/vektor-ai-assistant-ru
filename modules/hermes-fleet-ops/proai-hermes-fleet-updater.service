@@ -1,0 +1,21 @@
+[Unit]
+Description=Hermes Forge progressive fleet updater
+After=network-online.target proai-hermes-analytics-collector.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+WorkingDirectory=/opt/proai-hermes-fleet-ops
+ExecStart=/usr/bin/python3 /opt/proai-hermes-fleet-ops/updater.py update
+UMask=0077
+TimeoutStartSec=1800
+PrivateTmp=false
+NoNewPrivileges=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+LockPersonality=true
+StandardOutput=journal
+StandardError=journal

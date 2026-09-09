@@ -283,8 +283,19 @@ def test_direct_runtime_records_without_enabling_a_plugin(direct_runtime, tmp_pa
     metrics = {metric["name"]: metric for metric in package["metrics"]}
     assert set(metrics) == {
         "hermes.model_call.count",
+        "hermes.tool_call.count",
         "hermes.task_run.finished",
         "hermes.task_run.started",
+    }
+    assert metrics["hermes.tool_call.count"] == {
+        "name": "hermes.tool_call.count",
+        "type": "counter",
+        "dimensions": {
+            "duration_bucket": "lt_1s",
+            "outcome": "success",
+            "tool_family": "terminal",
+        },
+        "value": 1,
     }
     assert metrics["hermes.model_call.count"]["dimensions"]["model_family"] == "claude"
     assert metrics["hermes.model_call.count"]["value"] == 1
@@ -443,6 +454,10 @@ def test_real_binding_drives_lifecycle_aggregation_export_and_snapshot(
     assert set(terminal_by_outcome) == {"success", "failed", "cancelled"}
     assert terminal_by_outcome["success"]["dimensions"]["retry_count_bucket"] == "1"
     assert terminal_by_outcome["success"]["dimensions"]["tool_call_count_bucket"] == "1"
+    assert len(by_metric["hermes.tool_call.count"]) == 1
+    assert by_metric["hermes.tool_call.count"][0]["dimensions"]["tool_family"] == "terminal"
+    assert by_metric["hermes.tool_call.count"][0]["dimensions"]["outcome"] == "success"
+    assert by_metric["hermes.tool_call.count"][0]["value"] == 1
     assert terminal_by_outcome["failed"]["dimensions"]["end_reason"] == (
         "system_aborted"
     )

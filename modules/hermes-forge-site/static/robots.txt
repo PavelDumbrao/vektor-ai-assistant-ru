@@ -1,0 +1,3 @@
+User-agent: *
+Allow: /
+Sitemap: https://forge.proaicommunity.online/sitemap.xml

@@ -1,0 +1,11 @@
+name: video-editor
+version: 0.1.0
+kind: standalone
+description: Safe transcript-first talking-head editor backed by pinned i-hate-editing.
+author: ProAI
+provides_tools:
+  - video_editor_prepare
+  - video_editor_takes
+  - video_editor_render
+  - video_editor_status
+  - video_editor_feedback

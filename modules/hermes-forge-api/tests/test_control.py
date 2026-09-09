@@ -232,3 +232,138 @@ def test_capability_state_ids_match_catalog_v1_manifests():
         payload = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
         manifest_ids.add(str(payload.get("id") or ""))
     assert manifest_ids == set(control.CAPABILITY_IDS)
+
+
+def _action_store(monkeypatch, tmp_path):
+    root = tmp_path / "forge-action-state"
+    monkeypatch.setattr(control, "ACTION_STATE_ROOT", root)
+    monkeypatch.setattr(control, "ACTION_JOBS_DIR", root / "jobs")
+    monkeypatch.setattr(control, "ACTION_DESIRED_DIR", root / "desired")
+    monkeypatch.setattr(control, "ACTION_AUDIT_DIR", root / "audit")
+    monkeypatch.setattr(control, "ACTION_AUDIT_FILE", root / "audit/capability-actions.jsonl")
+    return root
+
+
+def _action_profile(monkeypatch, tmp_path):
+    entry, env, config = fake_profile(tmp_path)
+    _install_capability_markers(entry)
+    config.write_text(yaml.safe_dump({
+        "agent": {"disabled_toolsets": []},
+        "plugins": {"enabled": ["image_gen/grsai", "passive-secretary", "video-editor"]},
+        "mcp_servers": {"maton": {"enabled": False}},
+        "image_gen": {"provider": "grsai", "model": "gpt-image-2.5"},
+        "search": {"provider": "tavily"},
+    }, sort_keys=False), encoding="utf-8")
+    monkeypatch.setattr(control, "_profile_paths", lambda _profile: (entry, env, config))
+    monkeypatch.setattr(control, "_profile_release", lambda _profile: "hermes-test-release")
+    monkeypatch.setattr(control, "_service_state", lambda _profile: "active")
+    monkeypatch.setattr(control, "_unit_active", lambda _unit: True)
+    monkeypatch.setattr(control, "_unit_enabled", lambda _unit: True)
+    monkeypatch.setattr(control, "_active_sessions", lambda _profile: 0)
+    monkeypatch.setattr(control, "_health", lambda _profile: {"healthy": True, "active_agents": 0})
+    return entry, env, config
+
+
+def test_capability_action_disable_and_enable_persists_sanitized_state(monkeypatch, tmp_path):
+    root = _action_store(monkeypatch, tmp_path)
+    _, _, config = _action_profile(monkeypatch, tmp_path)
+    monkeypatch.setattr(control, "_restart", lambda _profile: {"healthy": True})
+
+    disabled = control._capability_action(42, "pavel", "image-studio", "disable")
+    assert disabled["outcome"] == "success"
+    assert disabled["capability"]["enabled"] is False
+    assert "image_gen" in yaml.safe_load(config.read_text())["agent"]["disabled_toolsets"]
+
+    enabled = control._capability_action(42, "pavel", "image-studio", "enable")
+    assert enabled["outcome"] == "success"
+    assert enabled["capability"]["enabled"] is True
+    assert "image_gen" not in yaml.safe_load(config.read_text())["agent"]["disabled_toolsets"]
+
+    jobs = sorted((root / "jobs").glob("capability-*.json"))
+    assert len(jobs) == 2
+    for path in jobs:
+        payload = json.loads(path.read_text())
+        assert payload["state"] == "success"
+        assert payload["actor_user_id"] == 42
+        assert payload["profile"] == "pavel"
+        assert "secret" not in json.dumps(payload).lower()
+
+    desired = json.loads((root / "desired/pavel.json").read_text())
+    assert desired["capabilities"]["image-studio"]["enabled"] is True
+    audit = (root / "audit/capability-actions.jsonl").read_text()
+    assert '"outcome":"requested"' in audit
+    assert '"outcome":"success"' in audit
+    assert "MCP_MATON_API_KEY" not in audit
+
+
+def test_capability_action_rolls_back_config_when_restart_fails(monkeypatch, tmp_path):
+    root = _action_store(monkeypatch, tmp_path)
+    _, _, config = _action_profile(monkeypatch, tmp_path)
+    original = config.read_text()
+    calls = []
+
+    def restart(_profile):
+        calls.append(1)
+        if len(calls) == 1:
+            raise control.ControlError("restart_failed", 503)
+        return {"healthy": True}
+
+    monkeypatch.setattr(control, "_restart", restart)
+    with pytest.raises(control.ControlError, match="restart_failed"):
+        control._capability_action(42, "pavel", "video-editor", "disable")
+    assert config.read_text() == original
+    assert len(calls) == 2
+    job = json.loads(next((root / "jobs").glob("capability-*.json")).read_text())
+    assert job["state"] == "rolled_back"
+    assert job["error_code"] == "restart_failed"
+    assert not (root / "desired/pavel.json").exists()
+
+
+def test_capability_action_blocks_busy_before_config_mutation(monkeypatch, tmp_path):
+    root = _action_store(monkeypatch, tmp_path)
+    _, _, config = _action_profile(monkeypatch, tmp_path)
+    original = config.read_text()
+    monkeypatch.setattr(control, "_health", lambda _profile: {"healthy": True, "active_agents": 1})
+    monkeypatch.setattr(control, "_restart", lambda _profile: (_ for _ in ()).throw(AssertionError("restart must not run")))
+    with pytest.raises(control.ControlError, match="profile_busy"):
+        control._capability_action(42, "pavel", "web-search", "disable")
+    assert config.read_text() == original
+    job = json.loads(next((root / "jobs").glob("capability-*.json")).read_text())
+    assert job["state"] == "blocked"
+    assert job["error_code"] == "profile_busy"
+
+
+def test_capability_action_rejects_connection_consent_and_planned_targets(monkeypatch, tmp_path):
+    root = _action_store(monkeypatch, tmp_path)
+    _action_profile(monkeypatch, tmp_path)
+    for capability, error in (
+        ("maton", "capability_requires_connection"),
+        ("telegram-secretary", "capability_requires_consent"),
+        ("finance", "capability_planned"),
+    ):
+        with pytest.raises(control.ControlError, match=error):
+            control._capability_action(42, "pavel", capability, "enable")
+    jobs = [json.loads(path.read_text()) for path in (root / "jobs").glob("capability-*.json")]
+    assert len(jobs) == 3
+    assert {item["state"] for item in jobs} == {"rejected"}
+    assert {item["error_code"] for item in jobs} == {
+        "capability_requires_connection", "capability_requires_consent", "capability_planned",
+    }
+
+
+def test_video_state_respects_video_editor_disabled_toolset(monkeypatch, tmp_path):
+    entry, env, config = _action_profile(monkeypatch, tmp_path)
+    payload = yaml.safe_load(config.read_text())
+    payload["agent"]["disabled_toolsets"] = ["video_editor"]
+    config.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
+    rows = {item["id"]: item for item in control._capability_states("pavel")["items"]}
+    assert rows["video-editor"]["installed"] is True
+    assert rows["video-editor"]["enabled"] is False
+    assert rows["video-editor"]["health"] == "disabled"
+    assert rows["video-editor"]["reason"] == "disabled"
+
+
+def test_control_unit_has_private_persistent_action_state_directory():
+    unit = (MODULE.parent / "proai-hermes-forge-control.service").read_text()
+    assert "StateDirectory=proai-hermes-forge" in unit
+    assert "StateDirectoryMode=0700" in unit

@@ -9,13 +9,24 @@
   const text = (id, value) => { $(id).textContent = value == null ? "—" : String(value); };
   const result = (id, value, bad=false) => { const el=$(id); el.textContent=value||""; el.style.color=bad?"#9b2e22":"#555"; };
   const pill = (el, label, kind="") => { el.textContent=label; el.className="pill"+(kind?" "+kind:""); };
+  const friendlyError = (code) => ({
+    profile_busy:"Hermes сейчас занят задачей. Повтори после её завершения.",
+    profile_unhealthy:"Сначала восстанови здоровье Hermes, затем меняй инструменты.",
+    capability_not_installed:"Инструмент ещё не установлен на этом Hermes.",
+    capability_config_mismatch:"Конфигурация инструмента требует технической проверки.",
+    capability_requires_connection:"Этот инструмент подключается через отдельную настройку доступа.",
+    capability_requires_consent:"Для этого инструмента нужен отдельный экран разрешений.",
+    capability_planned:"Этот инструмент пока только в плане.",
+    capability_verification_failed:"Изменение не прошло проверку и было отменено.",
+    capability_rollback_failed:"Не удалось безопасно завершить откат. Требуется техническая проверка.",
+  })[code] || code || "request_failed";
 
   async function request(path, options={}) {
     const headers = {"Content-Type":"application/json", ...(options.headers||{})};
     if (session) headers.Authorization = "Bearer " + session;
     const response = await fetch(path, {...options, headers});
     const payload = await response.json().catch(() => ({ok:false,error:"invalid_response"}));
-    if (!response.ok || payload.ok !== true) throw new Error(payload.error || "request_failed");
+    if (!response.ok || payload.ok !== true) throw new Error(friendlyError(payload.error));
     return payload.result;
   }
 
@@ -99,6 +110,25 @@
     })[reason] || "";
   }
 
+  function capabilityActionButton(item, live) {
+    if (!current || !live || item.availability !== "available") return null;
+    if (item.id === "maton") {
+      const button=document.createElement("button");
+      button.className="secondary capability-button";
+      button.dataset.capabilitySettings="maton";
+      button.textContent="Настроить";
+      return button;
+    }
+    if (!new Set(["image-studio","video-editor","web-search"]).has(item.id)) return null;
+    if (!live.installed || live.reason === "config_mismatch") return null;
+    const button=document.createElement("button");
+    button.className=live.enabled?"danger-soft capability-button":"secondary capability-button";
+    button.dataset.capabilityId=item.id;
+    button.dataset.capabilityAction=live.enabled?"disable":"enable";
+    button.textContent=live.enabled?"Выключить":"Включить";
+    return button;
+  }
+
   function renderCatalog(data) {
     const capabilities=(data&&data.capabilities)||[];
     const agents=(data&&data.agents)||[];
@@ -118,7 +148,10 @@
         const reason=capabilityReason(live.reason); if (reason) { const detail=document.createElement("span"); detail.className="chip"; detail.textContent=reason; meta.append(detail); }
       }
       if (item.metering && item.metering!=="none") { const metering=document.createElement("span"); metering.className="chip"; metering.textContent="Usage metering"; meta.append(metering); }
-      card.append(meta); toolsRoot.append(card);
+      card.append(meta);
+      const actionButton=capabilityActionButton(item,live);
+      if (actionButton) { const actions=document.createElement("div"); actions.className="actions capability-actions"; actions.append(actionButton); card.append(actions); }
+      toolsRoot.append(card);
     }
     const employeesRoot=$("employees-list"); employeesRoot.textContent="";
     const nameById=new Map(capabilities.map(x=>[x.id,x.name||x.id]));
@@ -177,9 +210,16 @@
     if (tab) { selectTab(tab.dataset.tab); return; }
     if (!current) return;
     const button=event.target.closest("button"); if (!button) return;
+    if (button.dataset.capabilitySettings === "maton") { selectTab("secrets"); return; }
     button.disabled=true;
     try {
-      if (button.id==="health-button") {
+      if (button.dataset.capabilityId && button.dataset.capabilityAction) {
+        const id=button.dataset.capabilityId; const action=button.dataset.capabilityAction;
+        result("tools-result", action==="enable"?"Включаю и проверяю Hermes…":"Выключаю и проверяю Hermes…");
+        const data=await request(`/v1/hermes/${current.profile}/capabilities/${id}/${action}`,{method:"POST",body:"{}"});
+        result("tools-result",data.outcome==="unchanged"?"Состояние уже было применено":(action==="enable"?"Инструмент включён":"Инструмент выключен"));
+        await Promise.all([refreshHermes(),loadCapabilityStates()]);
+      } else if (button.id==="health-button") {
         result("hermes-result","Проверяю…");
         const h=await request(`/v1/hermes/${current.profile}/health-check`,{method:"POST",body:"{}"});
         result("hermes-result",h.healthy?"Все базовые проверки пройдены":"Есть компонент, требующий внимания",!h.healthy); await refreshHermes(); await loadCapabilityStates();
@@ -200,7 +240,9 @@
         result("secret-result","Ключ удалён. Перезапусти Hermes для применения."); await Promise.all([loadSecrets(),loadConnections(),loadCapabilityStates()]);
       }
     } catch (err) {
-      const message=String(err && err.message || err); const target=button.id.includes("maton")?"secret-result":"hermes-result"; result(target,message,true);
+      const message=String(err && err.message || err);
+      const target=button.dataset.capabilityId?"tools-result":(button.id.includes("maton")?"secret-result":"hermes-result");
+      result(target,message,true);
     } finally { button.disabled=false; }
   });
 

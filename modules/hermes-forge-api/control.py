@@ -43,6 +43,20 @@ CAPABILITY_IDS = (
     "telegram-secretary", "video-editor", "web-search",
 )
 PLANNED_CAPABILITIES = frozenset({"finance", "github", "google-workspace"})
+CAPABILITY_TOGGLE_TOOLSETS = {
+    "image-studio": "image_gen",
+    "video-editor": "video_editor",
+    "web-search": "web",
+}
+CAPABILITY_ACTIONS = frozenset({"enable", "disable"})
+ACTION_STATE_ROOT = Path(os.environ.get("FORGE_ACTION_STATE_ROOT", "/var/lib/proai-hermes-forge"))
+ACTION_JOBS_DIR = ACTION_STATE_ROOT / "jobs"
+ACTION_DESIRED_DIR = ACTION_STATE_ROOT / "desired"
+ACTION_AUDIT_DIR = ACTION_STATE_ROOT / "audit"
+ACTION_AUDIT_FILE = ACTION_AUDIT_DIR / "capability-actions.jsonl"
+ACTION_AUDIT_MAX_BYTES = 8 * 1024 * 1024
+ACTION_ID_RE = re.compile(r"^[0-9a-f]{32}$")
+_ACTION_LOCK = threading.RLock()
 CAPABILITY_HEALTH = frozenset({"healthy", "degraded", "unknown", "disabled", "planned"})
 CAPABILITY_REASONS = frozenset({
     "ready", "disabled", "not_installed", "config_mismatch",
@@ -553,15 +567,20 @@ def _capability_states(profile: str) -> dict[str, Any]:
     video_plugin = hermes / "plugins/video-editor/plugin.yaml"
     video_skill = hermes / "skills/video-editor/SKILL.md"
     video_installed = all(path.is_file() and not path.is_symlink() for path in (video_plugin, video_skill))
-    video_enabled = video_installed and "video-editor" in plugins
+    video_configured = video_installed and "video-editor" in plugins
+    video_enabled = video_configured and "video_editor" not in disabled
     video_broker = _unit_active("vektor-video-asr-broker.service") if video_enabled else False
     if video_enabled and service_active and video_broker:
         rows.append(_capability_row("video-editor", True, True, "healthy", "ready"))
     elif video_enabled:
         reason = "runtime_unavailable" if not service_active else "shared_dependency_unavailable"
         rows.append(_capability_row("video-editor", True, True, "degraded", reason))
+    elif video_configured:
+        rows.append(_capability_row("video-editor", True, False, "disabled", "disabled"))
+    elif video_installed:
+        rows.append(_capability_row("video-editor", True, False, "degraded", "config_mismatch"))
     else:
-        rows.append(_capability_row("video-editor", video_installed, False, "disabled", "disabled" if video_installed else "not_installed"))
+        rows.append(_capability_row("video-editor", False, False, "disabled", "not_installed"))
 
     search_cfg = config.get("search") or {}
     search_provider = str(search_cfg.get("provider") or "") if isinstance(search_cfg, dict) else ""
@@ -604,6 +623,344 @@ def _restart(profile: str) -> dict[str, Any]:
             return current
         time.sleep(1)
     raise ControlError("restart_health_timeout", 503)
+
+
+def _ensure_action_dir(path: Path) -> None:
+    path.mkdir(parents=True, exist_ok=True, mode=0o700)
+    if path.is_symlink() or not path.is_dir():
+        raise ControlError("action_state_unsafe", 500)
+    os.chmod(path, 0o700)
+    if os.geteuid() == 0:
+        os.chown(path, 0, 0)
+
+
+def _ensure_action_state() -> None:
+    for path in (ACTION_STATE_ROOT, ACTION_JOBS_DIR, ACTION_DESIRED_DIR, ACTION_AUDIT_DIR):
+        _ensure_action_dir(path)
+
+
+def _atomic_root_json(path: Path, payload: dict[str, Any]) -> None:
+    _ensure_action_dir(path.parent)
+    if path.is_symlink():
+        raise ControlError("action_state_unsafe", 500)
+    raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n"
+    fd, temp_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    temp = Path(temp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(raw)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(temp, 0o600)
+        if os.geteuid() == 0:
+            os.chown(temp, 0, 0)
+        os.replace(temp, path)
+        directory_fd = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    finally:
+        if temp.exists():
+            temp.unlink()
+
+
+def _rotate_audit_if_needed() -> None:
+    path = ACTION_AUDIT_FILE
+    if not path.exists():
+        return
+    if path.is_symlink() or not path.is_file():
+        raise ControlError("audit_state_unsafe", 500)
+    if path.stat().st_size < ACTION_AUDIT_MAX_BYTES:
+        return
+    rotated = path.with_suffix(path.suffix + ".1")
+    if rotated.exists():
+        if rotated.is_symlink() or not rotated.is_file():
+            raise ControlError("audit_state_unsafe", 500)
+        rotated.unlink()
+    os.replace(path, rotated)
+    os.chmod(rotated, 0o600)
+
+
+def _append_action_audit(job: dict[str, Any], outcome: str, error_code: str = "") -> None:
+    _ensure_action_state()
+    event = {
+        "schema": "hermes.capability-audit/v1",
+        "action_id": job["action_id"],
+        "actor_user_id": int(job["actor_user_id"]),
+        "profile": job["profile"],
+        "capability_id": job["capability_id"],
+        "action": job["action"],
+        "outcome": outcome,
+        "error_code": str(error_code or "")[:64],
+        "release_id": job["release_id"],
+        "timestamp": int(time.time()),
+    }
+    raw = (json.dumps(event, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
+    if len(raw) > 4096:
+        raise ControlError("audit_event_invalid", 500)
+    with _ACTION_LOCK:
+        _rotate_audit_if_needed()
+        if ACTION_AUDIT_FILE.is_symlink():
+            raise ControlError("audit_state_unsafe", 500)
+        fd = os.open(ACTION_AUDIT_FILE, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        try:
+            os.fchmod(fd, 0o600)
+            if os.geteuid() == 0:
+                os.fchown(fd, 0, 0)
+            os.write(fd, raw)
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+
+
+def _action_job(actor_user_id: int, profile: str, capability_id: str, action: str) -> dict[str, Any]:
+    action_id = secrets.token_hex(16)
+    if not ACTION_ID_RE.fullmatch(action_id):
+        raise ControlError("action_id_invalid", 500)
+    timestamp = int(time.time())
+    return {
+        "schema": "hermes.capability-action/v1",
+        "action_id": action_id,
+        "actor_user_id": int(actor_user_id),
+        "profile": profile,
+        "capability_id": capability_id,
+        "action": action,
+        "target_enabled": action == "enable",
+        "release_id": _profile_release(profile),
+        "state": "requested",
+        "error_code": "",
+        "created_at": timestamp,
+        "updated_at": timestamp,
+    }
+
+
+def _write_action_job(job: dict[str, Any]) -> None:
+    action_id = str(job.get("action_id") or "")
+    if not ACTION_ID_RE.fullmatch(action_id):
+        raise ControlError("action_id_invalid", 500)
+    _atomic_root_json(ACTION_JOBS_DIR / f"capability-{action_id}.json", job)
+
+
+def _finish_action_job(job: dict[str, Any], state: str, error_code: str = "") -> None:
+    job["state"] = state
+    job["error_code"] = str(error_code or "")[:64]
+    job["updated_at"] = int(time.time())
+    _write_action_job(job)
+    try:
+        _append_action_audit(job, state, job["error_code"])
+        job["audit_recorded"] = True
+    except Exception:
+        job["audit_recorded"] = False
+    _write_action_job(job)
+
+
+def _desired_path(profile: str) -> Path:
+    if not PROFILE_RE.fullmatch(profile):
+        raise ControlError("profile_invalid", 400)
+    return ACTION_DESIRED_DIR / f"{profile}.json"
+
+
+def _load_desired(profile: str) -> dict[str, Any]:
+    path = _desired_path(profile)
+    if not path.exists():
+        return {"schema": "hermes.capability-desired/v1", "profile": profile, "capabilities": {}}
+    if path.is_symlink() or not path.is_file():
+        raise ControlError("desired_state_unsafe", 500)
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        raise ControlError("desired_state_invalid", 500) from None
+    if not isinstance(payload, dict) or payload.get("schema") != "hermes.capability-desired/v1" or payload.get("profile") != profile:
+        raise ControlError("desired_state_invalid", 500)
+    capabilities = payload.get("capabilities")
+    if not isinstance(capabilities, dict):
+        raise ControlError("desired_state_invalid", 500)
+    for key, value in capabilities.items():
+        if key not in CAPABILITY_IDS or not isinstance(value, dict) or type(value.get("enabled")) is not bool:
+            raise ControlError("desired_state_invalid", 500)
+    return payload
+
+
+def _persist_desired(profile: str, capability_id: str, enabled: bool, action_id: str) -> None:
+    payload = _load_desired(profile)
+    capabilities = dict(payload.get("capabilities") or {})
+    capabilities[capability_id] = {
+        "enabled": bool(enabled),
+        "action_id": action_id,
+        "updated_at": int(time.time()),
+    }
+    payload["capabilities"] = capabilities
+    payload["updated_at"] = int(time.time())
+    _atomic_root_json(_desired_path(profile), payload)
+
+
+def _backup_capability_config(profile: str, action_id: str) -> Path:
+    if not ACTION_ID_RE.fullmatch(action_id):
+        raise ControlError("action_id_invalid", 500)
+    entry, _, config_path = _profile_paths(profile)
+    if config_path.is_symlink() or not config_path.is_file():
+        raise ControlError("config_missing", 409)
+    root = Path(entry.pw_dir) / ".hermes/backups" / f"forge-capability-{action_id}"
+    if root.exists() or root.is_symlink():
+        raise ControlError("capability_backup_conflict", 500)
+    root.mkdir(parents=True, mode=0o700)
+    os.chown(root, entry.pw_uid, entry.pw_gid)
+    os.chmod(root, 0o700)
+    target = root / "config.yaml"
+    target.write_bytes(config_path.read_bytes())
+    os.chown(target, entry.pw_uid, entry.pw_gid)
+    os.chmod(target, 0o600)
+    return root
+
+
+def _restore_capability_config(profile: str, backup: Path) -> None:
+    entry, _, config_path = _profile_paths(profile)
+    expected_root = Path(entry.pw_dir) / ".hermes/backups"
+    try:
+        resolved = backup.resolve(strict=True)
+        if resolved.parent != expected_root.resolve(strict=True) or not resolved.name.startswith("forge-capability-"):
+            raise ValueError
+    except Exception:
+        raise ControlError("capability_rollback_failed", 500) from None
+    source = resolved / "config.yaml"
+    if source.is_symlink() or not source.is_file():
+        raise ControlError("capability_rollback_failed", 500)
+    _atomic_text(config_path, source.read_text(encoding="utf-8"), entry)
+
+
+def _set_capability_toolset(profile: str, capability_id: str, enabled: bool) -> bool:
+    toolset = CAPABILITY_TOGGLE_TOOLSETS.get(capability_id)
+    if not toolset:
+        raise ControlError("capability_action_not_supported", 409)
+    entry, _, config_path = _profile_paths(profile)
+    if config_path.is_symlink() or not config_path.is_file():
+        raise ControlError("config_missing", 409)
+    try:
+        config = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+    except Exception:
+        raise ControlError("config_invalid", 409) from None
+    if not isinstance(config, dict):
+        raise ControlError("config_invalid", 409)
+    agent = config.setdefault("agent", {})
+    if not isinstance(agent, dict):
+        raise ControlError("config_invalid", 409)
+    raw = agent.setdefault("disabled_toolsets", [])
+    if not isinstance(raw, list) or any(not isinstance(item, str) for item in raw):
+        raise ControlError("config_invalid", 409)
+    disabled = list(raw)
+    before = list(disabled)
+    if enabled:
+        disabled = [item for item in disabled if item != toolset]
+    elif toolset not in disabled:
+        disabled.append(toolset)
+    if disabled == before:
+        return False
+    agent["disabled_toolsets"] = disabled
+    _atomic_text(config_path, yaml.safe_dump(config, allow_unicode=True, sort_keys=False), entry)
+    return True
+
+
+def _capability_by_id(profile: str, capability_id: str) -> dict[str, Any]:
+    rows = _capability_states(profile)["items"]
+    for row in rows:
+        if row["id"] == capability_id:
+            return row
+    raise ControlError("capability_state_missing", 500)
+
+
+def _assert_action_target(capability_id: str, action: str, current: dict[str, Any]) -> None:
+    if capability_id not in CAPABILITY_IDS or action not in CAPABILITY_ACTIONS:
+        raise ControlError("capability_action_invalid", 400)
+    if capability_id in PLANNED_CAPABILITIES:
+        raise ControlError("capability_planned", 409)
+    if capability_id == "maton":
+        raise ControlError("capability_requires_connection", 409)
+    if capability_id == "telegram-secretary":
+        raise ControlError("capability_requires_consent", 409)
+    if capability_id not in CAPABILITY_TOGGLE_TOOLSETS:
+        raise ControlError("capability_action_not_supported", 409)
+    if not current.get("installed"):
+        raise ControlError("capability_not_installed", 409)
+    if current.get("reason") == "config_mismatch":
+        raise ControlError("capability_config_mismatch", 409)
+
+
+def _assert_profile_actionable(profile: str) -> None:
+    health = _health(profile)
+    if not health.get("healthy"):
+        raise ControlError("profile_unhealthy", 409)
+    if int(health.get("active_agents") or 0) != 0 or _active_sessions(profile) != 0:
+        raise ControlError("profile_busy", 409)
+
+
+def _verify_capability_target(profile: str, capability_id: str, enabled: bool) -> dict[str, Any]:
+    state = _capability_by_id(profile, capability_id)
+    if bool(state.get("enabled")) != bool(enabled):
+        raise ControlError("capability_verification_failed", 503)
+    if enabled and state.get("health") != "healthy":
+        raise ControlError("capability_verification_failed", 503)
+    if not enabled and state.get("health") != "disabled":
+        raise ControlError("capability_verification_failed", 503)
+    return state
+
+
+def _capability_action(actor_user_id: int, profile: str, capability_id: str, action: str) -> dict[str, Any]:
+    if capability_id not in CAPABILITY_IDS or action not in CAPABILITY_ACTIONS:
+        raise ControlError("capability_action_invalid", 400)
+    with _ACTION_LOCK:
+        _ensure_action_state()
+        _load_desired(profile)  # Fail closed before any tenant mutation if persistent state is corrupt.
+        job = _action_job(actor_user_id, profile, capability_id, action)
+        _write_action_job(job)
+        _append_action_audit(job, "requested")
+        current = _capability_by_id(profile, capability_id)
+        try:
+            _assert_action_target(capability_id, action, current)
+        except ControlError as exc:
+            _finish_action_job(job, "rejected", exc.code)
+            raise
+        target_enabled = action == "enable"
+        if bool(current.get("enabled")) == target_enabled:
+            _persist_desired(profile, capability_id, target_enabled, job["action_id"])
+            _finish_action_job(job, "unchanged")
+            return {"action_id": job["action_id"], "outcome": "unchanged", "capability": current, "restarted": False}
+        try:
+            _assert_profile_actionable(profile)
+        except ControlError as exc:
+            _finish_action_job(job, "blocked", exc.code)
+            raise
+
+        backup: Path | None = None
+        mutated = False
+        try:
+            job["state"] = "running"
+            job["updated_at"] = int(time.time())
+            _write_action_job(job)
+            backup = _backup_capability_config(profile, job["action_id"])
+            mutated = _set_capability_toolset(profile, capability_id, target_enabled)
+            if not mutated:
+                raise ControlError("capability_mutation_noop", 500)
+            _restart(profile)
+            final_state = _verify_capability_target(profile, capability_id, target_enabled)
+            _persist_desired(profile, capability_id, target_enabled, job["action_id"])
+            _finish_action_job(job, "success")
+            return {"action_id": job["action_id"], "outcome": "success", "capability": final_state, "restarted": True}
+        except Exception as exc:
+            code = exc.code if isinstance(exc, ControlError) else "capability_action_failed"
+            if backup is not None and mutated:
+                try:
+                    _restore_capability_config(profile, backup)
+                    _restart(profile)
+                    _finish_action_job(job, "rolled_back", code)
+                except Exception:
+                    _finish_action_job(job, "failed", "capability_rollback_failed")
+                    raise ControlError("capability_rollback_failed", 500) from None
+            else:
+                _finish_action_job(job, "failed", code)
+            if isinstance(exc, ControlError):
+                raise
+            raise ControlError("capability_action_failed", 500) from None
 
 
 def _connections(profile: str) -> list[dict[str, Any]]:
@@ -651,6 +1008,10 @@ def dispatch(payload: dict[str, Any]) -> dict[str, Any]:
         return {"items": _connections(profile)}
     if op == "list_capabilities":
         return _capability_states(profile)
+    if op == "capability_action":
+        return _capability_action(
+            user_id, profile, str(payload.get("capability_id") or ""), str(payload.get("action") or ""),
+        )
     if op == "list_secrets":
         return {"items": [_secret_status(profile, name) for name in sorted(ALLOWED_PERSONAL_SECRETS)]}
     if op == "set_secret":

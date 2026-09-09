@@ -119,11 +119,27 @@ def test_capabilities_route_is_authenticated_and_forwards_owner_scope(monkeypatc
         api.route("GET", "/v1/hermes/pavel/capabilities", {}, {})
 
 
-def test_tools_ui_reads_capability_state_without_capability_mutations():
+def test_tools_ui_exposes_only_bounded_existing_capability_actions():
     app = (MODULE.parent / "static/app.js").read_text(encoding="utf-8")
     assert "loadCapabilityStates" in app
-    assert "/capabilities`" in app
     assert "capabilityPresentation" in app
+    assert 'new Set(["image-studio","video-editor","web-search"])' in app
+    assert "capabilities/${id}/${action}" in app
     assert "capabilities/install" not in app
-    assert "capabilities/enable" not in app
-    assert "capabilities/disable" not in app
+    assert "capabilities/uninstall" not in app
+    assert 'dataset.capabilitySettings="maton"' in app
+
+
+def test_capability_action_route_forwards_only_bounded_action(monkeypatch):
+    seen = []
+    monkeypatch.setattr(api, "call_control", lambda payload: seen.append(payload) or {"action_id": "a" * 32, "outcome": "success"})
+    headers = {"Authorization": "Bearer opaque-session"}
+    status, result = api.route("POST", "/v1/hermes/pavel/capabilities/web-search/disable", {}, headers)
+    assert status == 200
+    assert result["outcome"] == "success"
+    assert seen == [{
+        "op": "capability_action", "session": "opaque-session", "profile": "pavel",
+        "capability_id": "web-search", "action": "disable",
+    }]
+    with pytest.raises(api.ApiError, match="not_found"):
+        api.route("POST", "/v1/hermes/pavel/capabilities/web-search/install", {}, headers)

@@ -25,6 +25,7 @@ def test_bridge_is_private_docker_gateway_only():
     assert "bind=172.18.0.1" in unit
     assert "TCP:127.0.0.1:8650" in unit
     assert "DynamicUser=yes" in unit
+    assert "SuccessExitStatus=143" in unit
     assert "IPAddressDeny=any" in unit
     assert "IPAddressAllow=172.18.0.0/16" in unit
 

@@ -10,6 +10,7 @@ DynamicUser=yes
 ExecStart=/usr/bin/socat TCP-LISTEN:8650,bind=172.18.0.1,fork,reuseaddr TCP:127.0.0.1:8650
 Restart=always
 RestartSec=2
+SuccessExitStatus=143
 NoNewPrivileges=true
 PrivateTmp=true
 PrivateDevices=true

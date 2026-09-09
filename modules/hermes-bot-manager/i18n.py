@@ -534,6 +534,25 @@ CATALOGS.update({
 })
 
 
+PANEL_LABELS = {
+    "ru": "⚙️ Панель Hermes", "en": "⚙️ Hermes Control",
+    "es": "⚙️ Panel de Hermes", "de": "⚙️ Hermes-Steuerung",
+    "fr": "⚙️ Panneau Hermes", "pt": "⚙️ Painel Hermes",
+    "zh": "⚙️ Hermes 控制台", "ar": "⚙️ لوحة Hermes",
+    "hi": "⚙️ Hermes पैनल", "tr": "⚙️ Hermes Paneli",
+    "it": "⚙️ Pannello Hermes", "ja": "⚙️ Hermes 管理",
+    "ko": "⚙️ Hermes 관리", "id": "⚙️ Panel Hermes",
+    "vi": "⚙️ Bảng điều khiển Hermes", "pl": "⚙️ Panel Hermes",
+    "uk": "⚙️ Панель Hermes", "nl": "⚙️ Hermes-paneel",
+    "fa": "⚙️ پنل Hermes", "he": "⚙️ לוח Hermes",
+    "th": "⚙️ แผง Hermes", "bn": "⚙️ Hermes প্যানেল",
+    "ur": "⚙️ Hermes پینل", "ms": "⚙️ Panel Hermes",
+    "fil": "⚙️ Panel ng Hermes",
+}
+for _locale, _label in PANEL_LABELS.items():
+    CATALOGS[_locale]["menu_panel"] = _label
+
+
 def canonical_locale(code: str | None) -> str:
     raw = (code or "").strip().lower().replace("_", "-")
     if raw in ALIASES:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any, Callable
 
@@ -88,12 +89,14 @@ FEEDBACK_SCHEMA = {
 }
 
 
-def _guard(fn: Callable[..., dict[str, Any]], args: dict[str, Any]) -> dict[str, Any]:
+def _guard(fn: Callable[..., dict[str, Any]], args: dict[str, Any]) -> str:
+    """Return the JSON-string tool result required by Hermes' agent registry."""
     try:
-        return fn(**args)
+        result = fn(**args)
     except engine.VideoEditorError as exc:
         logger.warning("video editor tool failed: %s", exc)
-        return {"ok": False, "error": str(exc)}
+        result = {"ok": False, "error": str(exc)}
+    return json.dumps(result, ensure_ascii=False, separators=(",", ":"))
 
 
 def register(ctx: Any) -> None:

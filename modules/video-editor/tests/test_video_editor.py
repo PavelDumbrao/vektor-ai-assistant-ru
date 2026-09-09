@@ -25,6 +25,18 @@ def profile(tmp_path: Path, monkeypatch):
     return home, hermes, videos, workspace
 
 
+def test_run_failure_includes_bounded_stderr_and_stdout(monkeypatch):
+    import subprocess
+    def fake_run(*args, **kwargs):
+        return subprocess.CompletedProcess(args[0], 2, stdout="detailed stdout", stderr="short stderr")
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    with pytest.raises(engine.VideoEditorError) as exc:
+        engine._run(["fake-command"])
+    text = str(exc.value)
+    assert "stderr=short stderr" in text
+    assert "stdout=detailed stdout" in text
+
+
 def test_source_path_is_profile_scoped(tmp_path, monkeypatch):
     _, _, videos, _ = profile(tmp_path, monkeypatch)
     video = videos / "clip.mp4"
@@ -108,6 +120,21 @@ def test_prepare_schema_exposes_bounded_quality_modes():
     assert quality["enum"] == ["fast", "quality"]
     assert quality["default"] == "fast"
 
+def test_tool_guard_returns_registry_compatible_json_string():
+    import json
+    raw = plugin._guard(lambda value: {"ok": True, "value": value}, {"value": "привет"})
+    assert isinstance(raw, str)
+    assert json.loads(raw) == {"ok": True, "value": "привет"}
+
+
+def test_tool_guard_serializes_video_editor_errors():
+    import json
+    def fail():
+        raise engine.VideoEditorError("boom")
+    raw = plugin._guard(fail, {})
+    assert json.loads(raw) == {"ok": False, "error": "boom"}
+
+
 def test_plugin_registers_only_video_editor_tools(monkeypatch):
     monkeypatch.setattr(engine, "runtime_ready", lambda: True)
     seen = []
@@ -170,6 +197,39 @@ def test_look_schema_requires_previewable_presets():
     props = LOOK_SCHEMA["parameters"]["properties"]
     assert props["preset"]["enum"] == ["none", "warm_lift", "neutral_punch", "cool_clean"]
     assert props["apply"]["default"] is False
+
+
+def test_compose_uses_pinned_hyperframes_and_private_tmp(monkeypatch, tmp_path):
+    import subprocess
+    from plugin import enrichment
+    studio = tmp_path / "studio"
+    studio.mkdir()
+    calls = []
+    def fake_run(cmd, **kwargs):
+        calls.append((cmd, kwargs))
+        return subprocess.CompletedProcess(cmd, 0, stdout="ok", stderr="")
+    monkeypatch.setattr(enrichment.engine, "_run", fake_run)
+    monkeypatch.setattr(enrichment, "_localize_gsap", lambda studio: studio / "composition/gsap.min.js")
+    monkeypatch.setattr(enrichment, "_pinned_hyperframes_binary", lambda: Path("/pinned/hyperframes"))
+    enrichment._compose_self_contained(studio, "python3", {"npm_config_offline": "true"})
+    assert calls[1][0] == ["/pinned/hyperframes", "check"]
+    assert calls[2][0][0:3] == ["/pinned/hyperframes", "render", "."]
+    assert all(call[1]["extra_env"]["TMPDIR"] == str(studio / ".hyperframes-tmp") for call in calls)
+    assert (studio / ".hyperframes-tmp").stat().st_mode & 0o777 == 0o700
+    assert all("npx" not in call[0] for call in calls)
+
+
+def test_pinned_hyperframes_version_is_enforced(tmp_path):
+    from plugin import enrichment
+    binary = tmp_path / "hyperframes.mjs"
+    package = tmp_path / "package.json"
+    binary.write_text("#!/usr/bin/env node\n")
+    binary.chmod(0o755)
+    package.write_text('{"version":"0.8.29"}')
+    with pytest.raises(engine.VideoEditorError, match="version_mismatch"):
+        enrichment._pinned_hyperframes_binary(binary, package, expected_uid=os.getuid())
+    package.write_text('{"version":"0.8.30"}')
+    assert enrichment._pinned_hyperframes_binary(binary, package, expected_uid=os.getuid()) == binary
 
 
 def test_sfx_auto_tune_targets_peak(monkeypatch):

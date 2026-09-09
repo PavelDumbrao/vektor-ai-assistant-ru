@@ -24,10 +24,13 @@ GitHub хранит только воспроизводимый код и saniti
 4. Развернуть sanitized profile template, затем локально подставить owner/admin IDs и env secrets.
 5. Установить стандартные plugins из GitHub, включая Passive Secretary recall.
 6. Создать персональные SOUL/USER только из подтверждённых данных клиента.
-7. Подключать Telegram-группы через owner consent; trusted technical inviter может только инициировать enrollment.
-8. Старую историю импортировать отдельным `history_backfill`, сохраняя provenance.
-9. Прогнать E2E: Telegram DM, group capture, history recall, voice ASR, fallback LLM.
-10. Зафиксировать sanitized snapshot/изменение отдельным PR и дождаться CI.
+7. Для клиентского Telegram-бота включить в BotFather `Secretary Mode`; до owner consent профиль остаётся `blocked`.
+8. После подключения владельцем перевести Business capture только в receive-only: `business_updates_mode: passive`, `passive_media_enabled: true`, `business_reply_enabled: false`, а toolset `passive_secretary_outbound` должен оставаться disabled.
+9. Владелец сам выбирает scope Telegram Business: все приватные чаты с исключениями или только выбранные. Это нельзя подменять серверной настройкой.
+10. Подключать Telegram-группы через owner consent; trusted technical inviter может только инициировать enrollment.
+11. Старую историю импортировать отдельным `history_backfill`, сохраняя provenance.
+12. Прогнать E2E: Telegram DM, Business receive-only capture, group capture, history recall, voice ASR, fallback LLM.
+13. Зафиксировать sanitized snapshot/изменение отдельным PR и дождаться CI.
 
 Никаких изменений общей продуктовой логики только в `/home/<client>/.hermes`: сначала или сразу вслед за пилотом они должны стать модулем/патчем в GitHub.
 ## Memory/retrieval product layers

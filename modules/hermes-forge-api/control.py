@@ -38,6 +38,17 @@ PROFILE_RE = re.compile(r"^[a-z0-9_-]{2,40}$")
 SAFE_VERSION_RE = re.compile(r"^[A-Za-z0-9_.+-]{1,80}$")
 SAFE_SECRET_RE = re.compile(r"^[\x21-\x7e]{20,512}$")
 ALLOWED_PERSONAL_SECRETS = frozenset({"MCP_MATON_API_KEY"})
+CAPABILITY_IDS = (
+    "finance", "github", "google-workspace", "image-studio", "maton",
+    "telegram-secretary", "video-editor", "web-search",
+)
+PLANNED_CAPABILITIES = frozenset({"finance", "github", "google-workspace"})
+CAPABILITY_HEALTH = frozenset({"healthy", "degraded", "unknown", "disabled", "planned"})
+CAPABILITY_REASONS = frozenset({
+    "ready", "disabled", "not_installed", "config_mismatch",
+    "runtime_unavailable", "shared_dependency_unavailable",
+    "external_check_required", "planned",
+})
 MATON_HOST = "api.maton.ai"
 MATON_PATH = "/connections?limit=1"
 
@@ -439,6 +450,137 @@ def _maton_status(profile: str, *, validate: bool = False) -> dict[str, Any]:
     return result
 
 
+def _unit_active(unit: str) -> bool:
+    result = subprocess.run(
+        ["/usr/bin/systemctl", "is-active", "--quiet", unit],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10, check=False,
+    )
+    return result.returncode == 0
+
+
+def _unit_enabled(unit: str) -> bool:
+    result = subprocess.run(
+        ["/usr/bin/systemctl", "is-enabled", "--quiet", unit],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10, check=False,
+    )
+    return result.returncode == 0
+
+
+def _env_key_present(path: Path, name: str) -> bool:
+    if path.is_symlink() or not path.is_file() or name not in ALLOWED_PERSONAL_SECRETS:
+        return False
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            for raw in handle:
+                if raw.startswith(name + "=") and raw.partition("=")[2].strip():
+                    return True
+    except OSError:
+        return False
+    return False
+
+
+def _capability_row(capability_id: str, installed: bool, enabled: bool, health: str, reason: str) -> dict[str, Any]:
+    if capability_id not in CAPABILITY_IDS or health not in CAPABILITY_HEALTH or reason not in CAPABILITY_REASONS:
+        raise ControlError("capability_state_invalid", 500)
+    return {
+        "id": capability_id,
+        "installed": bool(installed),
+        "enabled": bool(enabled),
+        "health": health,
+        "reason": reason,
+    }
+
+
+def _capability_states(profile: str) -> dict[str, Any]:
+    entry, env_path, config_path = _profile_paths(profile)
+    if config_path.is_symlink() or not config_path.is_file():
+        raise ControlError("config_missing", 409)
+    try:
+        config = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+    except Exception:
+        raise ControlError("config_invalid", 409) from None
+    if not isinstance(config, dict):
+        raise ControlError("config_invalid", 409)
+
+    hermes = Path(entry.pw_dir) / ".hermes"
+    plugins_raw = (config.get("plugins") or {}).get("enabled", [])
+    plugins = {str(item) for item in plugins_raw if isinstance(item, str)} if isinstance(plugins_raw, list) else set()
+    disabled_raw = (config.get("agent") or {}).get("disabled_toolsets", [])
+    disabled = {str(item) for item in disabled_raw if isinstance(item, str)} if isinstance(disabled_raw, list) else set()
+    service_active = _service_state(profile) == "active"
+
+    rows = [_capability_row(item, False, False, "planned", "planned") for item in sorted(PLANNED_CAPABILITIES)]
+
+    image_cfg = config.get("image_gen") or {}
+    image_provider = str(image_cfg.get("provider") or "") if isinstance(image_cfg, dict) else ""
+    image_marker = hermes / "plugins/image_gen/grsai/plugin.yaml"
+    image_installed = image_marker.is_file() and not image_marker.is_symlink()
+    image_signals = image_installed and "image_gen/grsai" in plugins and image_provider == "grsai"
+    image_enabled = image_signals and "image_gen" not in disabled
+    if image_enabled:
+        rows.append(_capability_row("image-studio", True, True, "healthy" if service_active else "degraded", "ready" if service_active else "runtime_unavailable"))
+    elif image_installed and ("image_gen/grsai" in plugins or image_provider == "grsai") and "image_gen" not in disabled:
+        rows.append(_capability_row("image-studio", True, False, "degraded", "config_mismatch"))
+    else:
+        rows.append(_capability_row("image-studio", image_installed, False, "disabled", "disabled" if image_installed else "not_installed"))
+
+    mcp = config.get("mcp_servers") or {}
+    maton_cfg = mcp.get("maton") if isinstance(mcp, dict) else None
+    maton_installed = isinstance(maton_cfg, dict)
+    maton_config_enabled = bool(maton_cfg.get("enabled") is True) if maton_installed else False
+    maton_secret = _env_key_present(env_path, "MCP_MATON_API_KEY")
+    maton_enabled = maton_installed and maton_config_enabled and maton_secret
+    if maton_enabled:
+        rows.append(_capability_row("maton", True, True, "unknown", "external_check_required"))
+    elif maton_installed and maton_config_enabled != maton_secret:
+        rows.append(_capability_row("maton", True, False, "degraded", "config_mismatch"))
+    else:
+        rows.append(_capability_row("maton", maton_installed, False, "disabled", "disabled" if maton_installed else "not_installed"))
+
+    secretary_plugin = hermes / "plugins/passive-secretary/plugin.yaml"
+    secretary_settings = hermes / "plugins/passive-secretary/settings.json"
+    secretary_installed = all(path.is_file() and not path.is_symlink() for path in (secretary_plugin, secretary_settings))
+    secretary_enabled = secretary_installed and "passive-secretary" in plugins and "passive_secretary" not in disabled
+    secretary_maintenance = _unit_enabled(f"{profile}-hermes-passive-secretary-retention.timer") if secretary_enabled else False
+    if secretary_enabled and service_active and secretary_maintenance:
+        rows.append(_capability_row("telegram-secretary", True, True, "healthy", "ready"))
+    elif secretary_enabled:
+        reason = "runtime_unavailable" if not service_active else "shared_dependency_unavailable"
+        rows.append(_capability_row("telegram-secretary", True, True, "degraded", reason))
+    else:
+        rows.append(_capability_row("telegram-secretary", secretary_installed, False, "disabled", "disabled" if secretary_installed else "not_installed"))
+
+    video_plugin = hermes / "plugins/video-editor/plugin.yaml"
+    video_skill = hermes / "skills/video-editor/SKILL.md"
+    video_installed = all(path.is_file() and not path.is_symlink() for path in (video_plugin, video_skill))
+    video_enabled = video_installed and "video-editor" in plugins
+    video_broker = _unit_active("vektor-video-asr-broker.service") if video_enabled else False
+    if video_enabled and service_active and video_broker:
+        rows.append(_capability_row("video-editor", True, True, "healthy", "ready"))
+    elif video_enabled:
+        reason = "runtime_unavailable" if not service_active else "shared_dependency_unavailable"
+        rows.append(_capability_row("video-editor", True, True, "degraded", reason))
+    else:
+        rows.append(_capability_row("video-editor", video_installed, False, "disabled", "disabled" if video_installed else "not_installed"))
+
+    search_cfg = config.get("search") or {}
+    search_provider = str(search_cfg.get("provider") or "") if isinstance(search_cfg, dict) else ""
+    provider_safe = bool(re.fullmatch(r"[a-z0-9_-]{1,40}", search_provider))
+    search_registry = hermes / "hermes-agent/agent/web_search_registry.py"
+    search_plugin = hermes / "hermes-agent/plugins/web" / search_provider / "plugin.yaml" if provider_safe else Path("/nonexistent")
+    search_installed = search_registry.is_file() and search_plugin.is_file()
+    search_enabled = search_installed and "web" not in disabled
+    if search_enabled:
+        rows.append(_capability_row("web-search", True, True, "healthy" if service_active else "degraded", "ready" if service_active else "runtime_unavailable"))
+    elif provider_safe and search_registry.is_file():
+        rows.append(_capability_row("web-search", search_installed, False, "degraded" if not search_installed else "disabled", "not_installed" if not search_installed else "disabled"))
+    else:
+        rows.append(_capability_row("web-search", False, False, "disabled", "not_installed"))
+
+    ordered = {row["id"]: row for row in rows}
+    return {"schema": "hermes.capability-state/v1", "items": [ordered[item] for item in CAPABILITY_IDS]}
+
+
 def _active_sessions(profile: str) -> int:
     payload = _safe_json(HOME_ROOT / profile / ".hermes/runtime/active_sessions.json")
     entries = payload.get("entries")
@@ -507,6 +649,8 @@ def dispatch(payload: dict[str, Any]) -> dict[str, Any]:
         return _restart(profile)
     if op == "list_connections":
         return {"items": _connections(profile)}
+    if op == "list_capabilities":
+        return _capability_states(profile)
     if op == "list_secrets":
         return {"items": [_secret_status(profile, name) for name in sorted(ALLOWED_PERSONAL_SECRETS)]}
     if op == "set_secret":

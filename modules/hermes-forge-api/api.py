@@ -165,6 +165,8 @@ def route(method: str, path: str, body: dict[str, Any], headers: Any) -> tuple[i
         return 200, call_control({"op": "restart", **base})
     if method == "GET" and suffix == "connections":
         return 200, call_control({"op": "list_connections", **base})
+    if method == "GET" and suffix == "capabilities":
+        return 200, call_control({"op": "list_capabilities", **base})
     if method == "GET" and suffix == "secrets":
         return 200, call_control({"op": "list_secrets", **base})
     secret = re.fullmatch(r"secrets/([A-Z][A-Z0-9_]{2,80})", suffix)

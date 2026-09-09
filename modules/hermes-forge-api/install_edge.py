@@ -10,7 +10,6 @@ import shutil
 import subprocess
 import tempfile
 import time
-import urllib.request
 from pathlib import Path
 
 SOURCE = Path(__file__).resolve().parent
@@ -22,7 +21,8 @@ BRIDGE_UNIT = "proai-hermes-forge-bridge.service"
 DEFAULT_HOSTNAME = "forge.srv1250550.hstgr.cloud"
 DOCKER_NETWORK = "n8n_default"
 DOCKER_GATEWAY = "172.18.0.1"
-BRIDGE_URL = "http://172.18.0.1:8650/healthz"
+EDGE_IMAGE = "nginx:1.27-alpine"
+BRIDGE_HEALTH_URL = "http://host.docker.internal:8650/healthz"
 HOST_RE = re.compile(r"^[a-z0-9](?:[a-z0-9.-]{1,251}[a-z0-9])?$")
 
 
@@ -63,17 +63,31 @@ def docker_gateway() -> str:
     return str(payload[0]["IPAM"]["Config"][0]["Gateway"])
 
 
-def wait_bridge(timeout: float = 15.0) -> None:
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        try:
-            with urllib.request.urlopen(BRIDGE_URL, timeout=2) as response:
-                payload = json.loads(response.read().decode("utf-8"))
-            if response.status == 200 and payload.get("ok") is True:
-                return
-        except Exception:
-            pass
-        time.sleep(0.25)
+def bridge_probe() -> bool:
+    """Probe the bridge from the same Docker network used by the HTTPS edge."""
+    try:
+        result = run(
+            "/usr/bin/docker", "run", "--rm",
+            "--network", DOCKER_NETWORK,
+            "--add-host", f"host.docker.internal:{DOCKER_GATEWAY}",
+            "--read-only", "--cap-drop", "ALL",
+            "--security-opt", "no-new-privileges:true",
+            EDGE_IMAGE, "wget", "-qO-", "-T", "2", BRIDGE_HEALTH_URL,
+            timeout=15,
+        )
+        payload = json.loads(result.stdout)
+        return isinstance(payload, dict) and payload.get("ok") is True
+    except Exception:
+        return False
+
+
+def wait_bridge(attempts: int = 12, delay: float = 0.25) -> None:
+    count = max(1, int(attempts))
+    for attempt in range(count):
+        if bridge_probe():
+            return
+        if attempt + 1 < count:
+            time.sleep(max(0.0, float(delay)))
     raise RuntimeError("bridge_health_failed")
 
 

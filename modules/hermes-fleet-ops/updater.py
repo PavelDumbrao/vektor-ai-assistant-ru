@@ -251,28 +251,22 @@ def run_channel(
 
 
 def run_pinned(store: AnalyticsStore, policy: dict[str, Any], profiles: list[dict[str, str]]) -> dict[str, int]:
-    updated = deferred = failed = 0
+    """Observe pinned profiles without ever mutating their runtime binding.
+
+    Pinned is the escape hatch for compatibility holds, pilots and operator-led
+    changes. A release mismatch is therefore drift to surface, not desired state
+    for the automatic updater to enforce. This prevents a stale Fleet policy from
+    undoing a separately verified/manual rollout.
+    """
+    del store  # Pinned observation intentionally creates no update attempt.
+    drifted = 0
     for profile in profiles:
         item = assignment(profile["owner"], policy)
         if not item or item["channel"] != "pinned":
             continue
-        target = item["release_id"]
-        if profile["release_id"] == target:
-            continue
-        started = now()
-        outcome, error_code = run_upgrade(profile["owner"], target)
-        record_attempt(
-            store, owner=profile["owner"], track=item["track"], channel="pinned",
-            from_release=profile["release_id"], to_release=target,
-            outcome=outcome, error_code=error_code, started_at=started,
-        )
-        if outcome == "success":
-            updated += 1
-        elif outcome == "deferred":
-            deferred += 1
-        else:
-            failed += 1
-    return {"updated": updated, "deferred": deferred, "failed": failed}
+        if profile["release_id"] != item["release_id"]:
+            drifted += 1
+    return {"updated": 0, "deferred": 0, "failed": 0, "pinned_drift": drifted}
 
 
 def update_fleet(store: AnalyticsStore, policy: dict[str, Any]) -> dict[str, Any]:

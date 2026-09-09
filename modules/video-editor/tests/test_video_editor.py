@@ -117,6 +117,89 @@ def test_plugin_registers_only_video_editor_tools(monkeypatch):
     plugin.register(Ctx())
     assert {x["name"] for x in seen} == {
         "video_editor_prepare", "video_editor_takes", "video_editor_render",
-        "video_editor_status", "video_editor_feedback",
+        "video_editor_status", "video_editor_feedback", "video_editor_captions",
+        "video_editor_caption_approve", "video_editor_cards", "video_editor_capture",
+        "video_editor_proof", "video_editor_sound", "video_editor_look", "video_editor_master",
     }
     assert {x["toolset"] for x in seen} == {"video_editor"}
+
+
+def test_prepare_schema_exposes_asr_provider_modes():
+    mode = plugin.PREPARE_SCHEMA["parameters"]["properties"]["asr_provider"]
+    assert mode["enum"] == ["auto", "openrouter", "local"]
+    assert mode["default"] == "auto"
+
+
+def test_asr_normalise_prefers_word_timestamps():
+    from plugin import asr_client
+    items, granularity = asr_client._normalise({"words": [
+        {"word": "привет", "start": 0.2, "end": 0.7},
+        {"word": "мир", "start": 0.8, "end": 1.1},
+    ]}, 5.0)
+    assert granularity == "word"
+    assert items[0] == {"start": 5.2, "end": 5.7, "text": "привет"}
+    assert items[1]["text"] == "мир"
+
+
+def test_safe_capture_rejects_local_and_non_http_schemes(monkeypatch):
+    import importlib.util
+    import egress_proxy
+    monkeypatch.setattr(egress_proxy, "resolve_public", lambda host, port: ["93.184.216.34"] if host == "example.com" else (_ for _ in ()).throw(ValueError("non_public_host")))
+    path = MODULE / "safe_capture.py"
+    spec = importlib.util.spec_from_file_location("safe_capture_test", path)
+    mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
+    assert mod.validate_url("http://example.com") == "http://example.com"
+    assert mod.validate_url("https://example.com") == "https://example.com"
+    with pytest.raises(ValueError):
+        mod.validate_url("file:///etc/passwd")
+    with pytest.raises(ValueError):
+        mod.validate_url("https://127.0.0.1")
+
+
+def test_cards_reject_out_of_timeline(monkeypatch, tmp_path):
+    from plugin import enrichment
+    studio = tmp_path / "studio"; studio.mkdir()
+    (studio / "timeline.json").write_text('{"predicted_duration": 5.0}')
+    monkeypatch.setattr(enrichment, "_ctx", lambda job_id: (tmp_path, {"state": "verified"}, studio))
+    with pytest.raises(engine.VideoEditorError, match="out_of_bounds"):
+        enrichment.cards("012345abcdef", [{"start": 4.5, "duration": 1.0, "big": "late"}])
+
+
+def test_look_schema_requires_previewable_presets():
+    from plugin.look_schema import LOOK_SCHEMA
+    props = LOOK_SCHEMA["parameters"]["properties"]
+    assert props["preset"]["enum"] == ["none", "warm_lift", "neutral_punch", "cool_clean"]
+    assert props["apply"]["default"] is False
+
+
+def test_sfx_auto_tune_targets_peak(monkeypatch):
+    from plugin import enrichment
+    monkeypatch.setattr(enrichment, "_source_peak_db", lambda path, duration, volume=1.0: -1.0 + 20.0 * __import__("math").log10(volume))
+    tuned = enrichment._tune_sounds([{
+        "file": "/tmp/a.mp3", "duration": 1.0, "category": "pop", "hit_at": 1.0
+    }], 1.0, target_db=-14.0)
+    assert len(tuned) == 1
+    assert -14.05 <= tuned[0]["predicted_peak_db"] <= -13.95
+    assert 0.05 < tuned[0]["volume"] < 1.0
+    assert "base_volume" in tuned[0]
+
+
+def test_sound_gate_uses_voice_only_cut(monkeypatch, tmp_path):
+    from plugin import enrichment
+    studio = tmp_path / "studio"; studio.mkdir()
+    (studio / "cut.mp4").write_bytes(b"cut")
+    (studio / "sfx.json").write_text('{"sounds":[{"file":"/tmp/a.mp3","duration":1.0,"volume":0.2,"category":"pop","hit_at":1.0}]}')
+    monkeypatch.setattr(engine, "_audio_peak_db", lambda path: -4.5)
+    monkeypatch.setattr(enrichment, "_source_peak_db", lambda path, duration, volume=1.0: -14.0)
+    result = enrichment._sound_gate(studio)
+    assert result["ok"] is True
+    assert result["voice_peak_db"] == -4.5
+    assert result["checks"][0]["status"] == "ok"
+
+
+def test_broker_body_cap_is_bounded():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("video_asr_broker_test", MODULE / "asr_broker.py")
+    mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
+    assert mod.MAX_BODY <= 4 * 1024 * 1024
+    assert mod.HOST == "127.0.0.1"

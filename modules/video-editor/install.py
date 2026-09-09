@@ -5,7 +5,9 @@ from __future__ import annotations
 import argparse
 import os
 import pwd
+import re
 import shutil
+import stat
 import tempfile
 import time
 from pathlib import Path
@@ -16,6 +18,32 @@ PLUGIN_KEY = "video-editor"
 TOOLSET = "video_editor"
 RUNTIME = Path("/opt/vektor/video-editor")
 ENGINE_COMMIT = "e8ea406bc2440ca8fc8d1b239c8758e9de112388"
+PROFILE_RE = re.compile(r"^[a-z][a-z0-9_-]{1,31}$")
+
+
+def safe_owned_dir(path: Path, uid: int, gid: int, *, create: bool = False) -> Path:
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        if not create:
+            raise RuntimeError("profile_directory_missing")
+        path.mkdir(mode=0o700)
+        os.chown(path, uid, gid)
+        os.chmod(path, 0o700)
+        info = path.lstat()
+    if path.is_symlink() or not stat.S_ISDIR(info.st_mode) or info.st_uid != uid:
+        raise RuntimeError("profile_directory_unsafe")
+    return path
+
+
+def safe_owned_file(path: Path, uid: int) -> Path:
+    try:
+        info = path.lstat()
+    except OSError as exc:
+        raise RuntimeError("profile_file_missing") from exc
+    if path.is_symlink() or not stat.S_ISREG(info.st_mode) or info.st_uid != uid or (info.st_mode & 0o022):
+        raise RuntimeError("profile_file_unsafe")
+    return path
 
 
 def atomic_yaml(path: Path, data: dict, uid: int, gid: int) -> None:
@@ -48,8 +76,10 @@ def copy_owned(source: Path, target: Path, uid: int, gid: int) -> None:
 def install(owner: str) -> None:
     if os.geteuid() != 0:
         raise RuntimeError("root_required")
+    if not PROFILE_RE.fullmatch(owner):
+        raise RuntimeError("invalid_owner")
     entry = pwd.getpwnam(owner)
-    if entry.pw_uid <= 0:
+    if entry.pw_uid <= 0 or Path(entry.pw_dir).name != owner:
         raise RuntimeError("invalid_owner")
     if not (RUNTIME / "engine" / ENGINE_COMMIT / "scripts" / "render.py").is_file():
         raise RuntimeError("video_runtime_missing")
@@ -58,23 +88,22 @@ def install(owner: str) -> None:
     if not all((RUNTIME / "models" / name).is_file() for name in ("ggml-small.bin", "ggml-medium.bin")):
         raise RuntimeError("video_runtime_models_incomplete")
 
-    home = Path(entry.pw_dir)
-    hermes = home / ".hermes"
-    config_path = hermes / "config.yaml"
-    if not hermes.is_dir() or not config_path.is_file() or config_path.is_symlink():
-        raise RuntimeError("profile_missing_or_unsafe")
+    home = safe_owned_dir(Path(entry.pw_dir), entry.pw_uid, entry.pw_gid)
+    hermes = safe_owned_dir(home / ".hermes", entry.pw_uid, entry.pw_gid)
+    config_path = safe_owned_file(hermes / "config.yaml", entry.pw_uid)
     plugin_source = Path(__file__).resolve().parent / "plugin"
     skill_source = Path(__file__).resolve().parent / "skill"
     if not (plugin_source / "plugin.yaml").is_file() or not (skill_source / "SKILL.md").is_file():
         raise RuntimeError("module_source_incomplete")
 
-    plugin_root = hermes / "plugins"
-    skill_root = hermes / "skills"
-    plugin_root.mkdir(parents=True, exist_ok=True); skill_root.mkdir(parents=True, exist_ok=True)
+    plugin_root = safe_owned_dir(hermes / "plugins", entry.pw_uid, entry.pw_gid, create=True)
+    skill_root = safe_owned_dir(hermes / "skills", entry.pw_uid, entry.pw_gid, create=True)
+    backups_root = safe_owned_dir(hermes / "backups", entry.pw_uid, entry.pw_gid, create=True)
     plugin_target = plugin_root / PLUGIN_KEY
     skill_target = skill_root / PLUGIN_KEY
-    backup = hermes / "backups" / f"video-editor-install-{time.time_ns()}"
-    backup.mkdir(parents=True, mode=0o700)
+    backup = backups_root / f"video-editor-install-{time.time_ns()}"
+    backup.mkdir(mode=0o700)
+    os.chown(backup, entry.pw_uid, entry.pw_gid)
     shutil.copy2(config_path, backup / "config.yaml")
     if plugin_target.is_dir() and not plugin_target.is_symlink():
         shutil.copytree(plugin_target, backup / "plugin")

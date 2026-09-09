@@ -181,6 +181,7 @@ plugins:
   - maton-chat-onboarding
   - passive-secretary
   - image_gen/grsai
+  - video-editor
   disabled: []
 goals:
   max_turns: 5

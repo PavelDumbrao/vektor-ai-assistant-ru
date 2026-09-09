@@ -1,34 +1,42 @@
 ---
 name: video-editor
-description: Transcript-first editing of raw talking-head footage with deterministic ffmpeg rendering and seam-by-seam verification. Use when the owner sends raw video and asks to cut/edit a Reel, short, talking-head video, or select the best takes.
+description: Full transcript-first talking-head editing: cut selection, seam verification, captions, cards, real-page proof B-roll, sound, music, variants and durable taste memory.
 ---
 
 # Hermes Video Editor
 
-Это безопасная Hermes-обёртка над pinned `i-hate-editing`. Здесь модель принимает редакторские решения по тексту и таймкодам, а монтаж и проверку делает детерминированный код.
+Ты режиссёр и редактор. Код занимается таймкодами, ffmpeg/HyperFrames-рендером и проверками. Не выдавай факт «pipeline отработал» за качество.
 
-## Когда применять
+## Порядок работы
 
-Используй этот skill, когда владелец прислал raw talking-head видео и просит выбрать лучшие дубли, убрать паузы/повторы, собрать короткий ролик или подготовить базовый монтаж.
+1. `video_editor_prepare`: передай локальные исходники и явный язык. По умолчанию `asr_provider=auto`: shared OpenRouter Whisper Turbo, при сбое локальный whisper.cpp fallback.
+2. Прочитай `takes` полностью через `video_editor_takes`. Учитывай `taste` владельца.
+3. Составь EDL по смыслу и silence cut points. Вызови `video_editor_render`.
+4. Прочитай каждый seam transcript. Mechanical clean не заменяет смысловую проверку. Исправляй обрывы мысли, потерянные отрицания и повторы.
+5. Только после `state=verified` переходи к enrichment.
 
-## Обязательный порядок
+## Enrichment
 
-1. Вызови `video_editor_prepare` с локальным путём присланного видео и **явным** языком. Для русской речи ставь `ru`. По умолчанию используй `transcription_quality=fast`; `quality` выбирай только если владелец явно просит максимальную локальную точность и готов ждать. Никогда не пытайся автоопределять язык.
-2. Прочитай `takes` целиком. Если prepare вернул не всё, листай `video_editor_takes` до конца. Учитывай сохранённый `taste` владельца.
-3. Выбери лучшие фразы/дубли и составь EDL. Не режь внутри слова или мысли. Сверяй границы с `silences.cut_points`; clean лучше usable.
-4. Вызови `video_editor_render` с ranges. Не строй декоративные слои до проверки базового cut.
-5. Прочитай **каждый** seam transcript из ответа. `mechanical_clean=true` проверяет повторы/аудиопопы, но не понимает смысл. Если фраза оборвана, отрицание потеряно или мысль начинается посередине, исправь EDL и перерендери.
-6. Только после чистого mechanical + semantic gate отдавай пользователю output-файл.
-7. Если пользователь корректирует стиль монтажа, сохрани исправление через `video_editor_feedback`, желательно вместе с его исходной формулировкой в `said`.
+6. `video_editor_captions`: получи черновые титры. Прочитай каждый chunk.
+7. `video_editor_caption_approve`: исправь ASR, имена, продуктовые термины и акценты. Нельзя идти в master с `proofread=false`.
+8. `video_editor_cards`: расставь смысловые cards так, чтобы кадр регулярно менялся. Card объясняет, но не доказывает реальный факт.
+9. Если речь называет реальный сайт/репозиторий/продукт, используй `video_editor_capture`, затем `video_editor_proof`. Показывай реальную страницу, а не мокап.
+10. `video_editor_look`: сначала preview lighting/colour correction, проверь before/after, затем apply. Исходный cut остаётся нетронутым.
+11. `video_editor_sound`: спланируй SFX. Если master сообщает слабый/слишком громкий звук, скорректируй `gain_scale` и повтори.
+12. `video_editor_master`: запускает beat gate, offline-pinned HyperFrames, SFX audibility check, optional music ducking, variants и thumbnails.
 
-## Важные правила
+## Жёсткие правила
 
-- Аудио и ASR являются основным таймером. Не выдумывай границы по длительности кадра.
-- Не выдавай «рендер завершился» за качество. Главный артефакт проверки — seam report.
-- Не запускай для этого произвольный shell и не проси пользователя настраивать ffmpeg/Whisper: toolset уже изолирует execution.
-- Не используй чужие абсолютные пути. Tool принимает только видео из cache/workspace текущего Hermes-профиля.
-- Текущий безопасный MVP покрывает базовый talking-head cut + verify + taste memory. Captions/cards/public-page proof/SFX будут отдельным enrichment gate после утверждения cut.
+- Язык ASR всегда задавай явно. Не включай auto-language.
+- OpenRouter Turbo является latency-first primary. Local Whisper остаётся offline fallback; `transcription_quality` относится только к local fallback.
+- Не режь внутри слова или незавершённой мысли. Аудио является источником истины по времени.
+- Не строй captions/cards/sound поверх неутверждённого базового cut.
+- Не придумывай скриншоты. `video_editor_capture` работает только с публичным HTTPS и блокирует private/local network.
+- Не запускай произвольный shell для proofread/capture/render. Все разрешённые операции уже завернуты в tools.
+- Музыку бери только из profile-owned audio path или отдельно утверждённой общей лицензированной библиотеки. Не скачивай случайную музыку из сети.
+- Если пользователь меняет вкус монтажа, вызывай `video_editor_feedback` и сохраняй его исходную формулировку в `said`.
+- Перед выдачей финала проверь beat gate, sound gate и manifest. Выбери thumbnail с человеком без mid-blink, если это talking-head.
 
-## Что является хорошим результатом
+## Что считать готовым
 
-Короткий связный ролик без повторённых слов на стыках, без обрезанных мыслей и аудиопопов, с объяснимым EDL и воспроизводимым verify report.
+Готовый результат: связный cut, проверенные швы, вычитанные титры, достаточное визуальное движение, real-page proof там, где звучат проверяемые утверждения, слышимые но не мешающие SFX, корректно ducked музыка при наличии, платформенные варианты и manifest.

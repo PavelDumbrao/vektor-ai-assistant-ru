@@ -21,5 +21,30 @@
         "sha256": "6c14d5adee5f86394037b4e4e8b59f1673b6cee10e3cf0b11bbdbee79c156208"
       }
     }
+  },
+  "openrouter_asr": {
+    "model": "openai/whisper-large-v3-turbo",
+    "endpoint": "https://openrouter.ai/api/v1/audio/transcriptions",
+    "response_format": "verbose_json",
+    "timestamp_granularities": [
+      "word",
+      "segment"
+    ],
+    "role": "latency-first primary; local whisper.cpp is fallback"
+  },
+  "hyperframes": {
+    "version": "0.8.30",
+    "npm_integrity": "sha512-SH+Cn0Ct0ZYSWqZ09QfBszQ93dOhBDxYXG5ARdjiFGGGNGhr2Rldyk8OFBKq85qhhiH/PdPspnNki39i6k6mEg==",
+    "package_lock_sha256": "113a6df214ca15727882ba783975bd52fc02da90a3d3ff0da0acb67a60e14515",
+    "allowed_cli_commands": [
+      "check",
+      "render"
+    ],
+    "chrome_headless_shell_version": "152.0.7977.30",
+    "chrome_binary_sha256": "6642ab58861e8dedcd195e1fe090f76dae4cff8476f971911a11781e7ec7d2da"
+  },
+  "playwright": {
+    "version": "1.62.0",
+    "role": "hardened public-HTTPS proof capture"
   }
 }

@@ -13,6 +13,8 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from . import asr_client, seam_verify
+
 ENGINE_COMMIT = "e8ea406bc2440ca8fc8d1b239c8758e9de112388"
 RUNTIME_ROOT = Path(os.environ.get("HERMES_VIDEO_EDITOR_RUNTIME", "/opt/vektor/video-editor"))
 ENGINE_ROOT = RUNTIME_ROOT / "engine" / ENGINE_COMMIT
@@ -154,10 +156,12 @@ def _safe_tail(text: str, limit: int = 1200) -> str:
     return text[-limit:] if len(text) > limit else text
 
 
-def _run(cmd: list[str], *, cwd: Path | None = None, allowed: tuple[int, ...] = (0,), timeout: int = PROCESS_TIMEOUT) -> subprocess.CompletedProcess[str]:
+def _run(cmd: list[str], *, cwd: Path | None = None, allowed: tuple[int, ...] = (0,), timeout: int = PROCESS_TIMEOUT, extra_env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
     env["PATH"] = str(BIN_DIR) + os.pathsep + env.get("PATH", "")
     env["LD_LIBRARY_PATH"] = str(WHISPER_LIB_DIR) + (os.pathsep + env["LD_LIBRARY_PATH"] if env.get("LD_LIBRARY_PATH") else "")
+    if extra_env:
+        env.update({str(k): str(v) for k, v in extra_env.items()})
     try:
         proc = subprocess.run(
             [str(item) for item in cmd],
@@ -277,7 +281,44 @@ def _silence_summary(studio: Path, alias: str) -> dict[str, Any]:
     }
 
 
-def prepare(sources: list[str], language: str = "ru", pacing: str = "punchy", aspect: str = "9:16", transcription_quality: str = "fast") -> dict[str, Any]:
+def _cleanup_broker_outputs(details: list[dict[str, Any]], studio: Path) -> None:
+    root = (studio / "transcripts").resolve()
+    for detail in details:
+        raw = str((detail or {}).get("output") or "").strip()
+        if not raw:
+            continue
+        try:
+            path = Path(raw).resolve()
+        except OSError:
+            continue
+        if _is_within(path, root):
+            path.unlink(missing_ok=True)
+
+
+def _transcribe_sources(source_files: list[str], studio: Path, language: str, selected_model: Path, asr_provider: str, py: str) -> tuple[str, list[dict[str, Any]], str | None]:
+    asr_used = "local"
+    asr_details: list[dict[str, Any]] = []
+    broker_error: str | None = None
+    if asr_provider in {"auto", "openrouter"}:
+        try:
+            for source_file in source_files:
+                asr_details.append(asr_client.transcribe(Path(source_file), studio, language))
+            asr_used = "openrouter"
+        except Exception as exc:
+            broker_error = str(exc)[:160]
+            _cleanup_broker_outputs(asr_details, studio)
+            asr_details = []
+            if asr_provider == "openrouter":
+                raise VideoEditorError(f"video_openrouter_asr_failed:{broker_error}") from exc
+    if asr_used != "openrouter":
+        _run([
+            py, str(ENGINE_ROOT / "scripts" / "transcribe.py"), *source_files,
+            "--studio", str(studio), "--lang", language, "--model", str(selected_model),
+        ], cwd=ENGINE_ROOT)
+    return asr_used, asr_details, broker_error
+
+
+def prepare(sources: list[str], language: str = "ru", pacing: str = "punchy", aspect: str = "9:16", transcription_quality: str = "fast", asr_provider: str = "auto") -> dict[str, Any]:
     if not runtime_ready():
         raise VideoEditorError("video_editor_runtime_not_ready")
     if not isinstance(sources, list) or not 1 <= len(sources) <= 8:
@@ -291,6 +332,8 @@ def prepare(sources: list[str], language: str = "ru", pacing: str = "punchy", as
         raise VideoEditorError("video_aspect_invalid")
     if transcription_quality not in {"fast", "quality"}:
         raise VideoEditorError("video_transcription_quality_invalid")
+    if asr_provider not in {"auto", "openrouter", "local"}:
+        raise VideoEditorError("video_asr_provider_invalid")
     selected_model = model_path(transcription_quality)
     if not selected_model.is_file():
         raise VideoEditorError("video_transcription_model_missing")
@@ -338,6 +381,7 @@ def prepare(sources: list[str], language: str = "ru", pacing: str = "punchy", as
         "aspect": aspect,
         "model": str(selected_model),
         "transcription_quality": transcription_quality,
+        "asr_provider_requested": asr_provider,
         "sources": meta_sources,
     }
     _atomic_json(job / "job.json", meta)
@@ -346,10 +390,14 @@ def prepare(sources: list[str], language: str = "ru", pacing: str = "punchy", as
     try:
         with runtime_lock():
             source_files = [item["file"] for item in meta_sources.values()]
-            _run([
-                py, str(ENGINE_ROOT / "scripts" / "transcribe.py"), *source_files,
-                "--studio", str(studio), "--lang", language, "--model", str(selected_model),
-            ], cwd=ENGINE_ROOT)
+            asr_used, asr_details, broker_error = _transcribe_sources(
+                source_files, studio, language, selected_model, asr_provider, py
+            )
+            meta["asr_provider"] = asr_used
+            meta["asr_details"] = asr_details
+            if broker_error:
+                meta["asr_fallback_reason"] = broker_error
+            _atomic_json(job / "job.json", meta)
             for alias, item in meta_sources.items():
                 proc = _run([
                     py, str(ENGINE_ROOT / "scripts" / "silences.py"), item["file"], "--json",
@@ -376,6 +424,8 @@ def prepare(sources: list[str], language: str = "ru", pacing: str = "punchy", as
         "takes_total_lines": len(takes),
         "silences": [_silence_summary(studio, alias) for alias in meta_sources],
         "taste": (studio / "taste.md").read_text(encoding="utf-8")[:5000],
+        "asr_provider": meta.get("asr_provider", "local"),
+        "asr_details": meta.get("asr_details", []),
         "next": "Read more takes if needed, then author an EDL and call video_editor_render. Cut edges should align with phrase/silence boundaries.",
     }
 
@@ -444,12 +494,45 @@ def _normalize_ranges(meta: dict[str, Any], ranges: list[dict[str, Any]]) -> lis
     return clean
 
 
+
+def _audio_peak_db(path: Path) -> float | None:
+    proc = subprocess.run(
+        ["ffmpeg", "-hide_banner", "-nostats", "-i", str(path), "-af", "volumedetect", "-f", "null", "-"],
+        capture_output=True, text=True, errors="replace",
+    )
+    match = re.search(r"max_volume:\s*(-?[\d.]+) dB", proc.stderr)
+    return float(match.group(1)) if match else None
+
+
+def _normalize_voice_level(path: Path, target_peak: float = -4.5) -> dict[str, Any]:
+    before = _audio_peak_db(path)
+    if before is None:
+        return {"applied": False, "reason": "no_audio_peak"}
+    # Upstream sound rules define healthy talking-head voice peaks as -3..-6 dBFS.
+    if -6.0 <= before <= -3.0:
+        return {"applied": False, "before_peak_db": before, "after_peak_db": before}
+    gain = max(-12.0, min(18.0, target_peak - before))
+    temp = path.with_name(path.stem + ".voice-normalized" + path.suffix)
+    proc = subprocess.run(
+        ["ffmpeg", "-y", "-loglevel", "error", "-i", str(path), "-map", "0:v:0", "-map", "0:a:0?",
+         "-c:v", "copy", "-af", f"volume={gain:.3f}dB,alimiter=limit=0.95",
+         "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2",
+         "-movflags", "+faststart", str(temp)],
+        capture_output=True, text=True, errors="replace",
+    )
+    if proc.returncode != 0 or not temp.is_file():
+        temp.unlink(missing_ok=True)
+        raise VideoEditorError("video_voice_normalization_failed")
+    os.replace(temp, path)
+    after = _audio_peak_db(path)
+    return {"applied": True, "before_peak_db": before, "gain_db": round(gain,3), "after_peak_db": after}
+
 def render(job_id: str, ranges: list[dict[str, Any]], speed: float = 1.0, grade: str = "none", preview: bool = False) -> dict[str, Any]:
     if not runtime_ready():
         raise VideoEditorError("video_editor_runtime_not_ready")
     job = _job_dir(job_id)
     meta = _read_meta(job)
-    if meta.get("state") not in {"prepared", "rendered", "needs_fix", "verified"}:
+    if meta.get("state") not in {"prepared", "rendered", "needs_fix", "verified", "enriched", "mastered"}:
         raise VideoEditorError("video_job_not_ready_for_render")
     clean_ranges = _normalize_ranges(meta, ranges)
     try:
@@ -471,14 +554,32 @@ def render(job_id: str, ranges: list[dict[str, Any]], speed: float = 1.0, grade:
     }
     _atomic_json(studio / "edl.json", edl)
     py = shutil.which("python3") or "python3"
+    verify_provider = "local"
+    verify_log = ""
     with runtime_lock():
         cmd = [py, str(ENGINE_ROOT / "scripts" / "render.py"), "--studio", str(studio)]
         if preview:
             cmd.append("--preview")
         render_proc = _run(cmd, cwd=ENGINE_ROOT)
-        verify_proc = _run([
-            py, str(ENGINE_ROOT / "scripts" / "verify.py"), "--studio", str(studio),
-        ], cwd=ENGINE_ROOT, allowed=(0, 2))
+        rendered_path = studio / ("preview.mp4" if preview else "cut.mp4")
+        audio_normalization = _normalize_voice_level(rendered_path)
+        broker_failed = None
+        if meta.get("asr_provider") == "openrouter":
+            try:
+                report = seam_verify.verify(studio, str(meta.get("language") or "ru"))
+                verify_provider = "openrouter"
+                verify_log = f"OpenRouter seam verification: {len(report.get('seams') or [])} seam(s)"
+            except Exception as exc:
+                broker_failed = str(exc)[:160]
+                if meta.get("asr_provider_requested") == "openrouter":
+                    raise VideoEditorError(f"video_openrouter_verify_failed:{broker_failed}") from exc
+        if verify_provider != "openrouter":
+            verify_proc = _run([
+                py, str(ENGINE_ROOT / "scripts" / "verify.py"), "--studio", str(studio),
+            ], cwd=ENGINE_ROOT, allowed=(0, 2))
+            verify_log = _safe_tail(verify_proc.stdout, 4000)
+            if broker_failed:
+                verify_log = f"OpenRouter verify fallback: {broker_failed}\n" + verify_log
 
     report_path = studio / "verify" / "report.json"
     if not report_path.is_file():
@@ -509,7 +610,9 @@ def render(job_id: str, ranges: list[dict[str, Any]], speed: float = 1.0, grade:
         "problems": problems,
         "seams": seam_reports,
         "render_log": _safe_tail(render_proc.stdout, 2000),
-        "verify_log": _safe_tail(verify_proc.stdout, 4000),
+        "verify_log": verify_log,
+        "verify_provider": verify_provider,
+        "audio_normalization": audio_normalization,
         "judgement_gate": "Mechanical verification is not semantic approval. Read every seam transcript and ensure no clause starts/ends mid-thought before presenting the cut.",
     }
 
@@ -519,10 +622,17 @@ def status(job_id: str) -> dict[str, Any]:
     meta = _read_meta(job)
     studio = job / "studio"
     files: dict[str, str] = {}
-    for name in ("takes.md", "edl.json", "timeline.json", "cut.mp4", "preview.mp4"):
+    for name in ("takes.md", "edl.json", "timeline.json", "cut.mp4", "preview.mp4", "cut_graded.mp4", "captions.json", "cards.json", "proof.json", "sfx.json"):
         path = studio / name
         if path.is_file():
             files[name] = str(path)
+    for name in ("master.mp4", "final.mp4", "manifest.json", "post.md"):
+        path = studio / "out" / name
+        if path.is_file():
+            files["out/" + name] = str(path)
+    thumbs = studio / "out" / "thumbnails"
+    if thumbs.is_dir():
+        files["out/thumbnails"] = str(thumbs)
     report = studio / "verify" / "report.json"
     if report.is_file():
         files["verify/report.json"] = str(report)
@@ -533,6 +643,8 @@ def status(job_id: str) -> dict[str, Any]:
         "language": meta.get("language"),
         "pacing": meta.get("pacing"),
         "aspect": meta.get("aspect"),
+        "asr_provider": meta.get("asr_provider"),
+        "look": meta.get("look"),
         "transcription_quality": meta.get("transcription_quality", "quality"),
         "sources": [{"source": alias, "filename": item.get("filename"), "original_name": item.get("original_name"), "duration": item.get("duration")} for alias, item in (meta.get("sources") or {}).items()],
         "files": files,

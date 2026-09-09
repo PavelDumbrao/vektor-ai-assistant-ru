@@ -7,10 +7,10 @@ Hermes 0.21.0 (`29112bef099274229cadff79cdff7bf7b99c4b77`) и проверенн
 
 | Профиль | Вариант core | Модель / контекст | Дополнения |
 |---|---|---|---|
-| pavel | modern | gpt-5.6-sol / 500000 | passive-secretary, Maton, Focus Assistant, AI Fixer; Curator gpt-5.6-terra |
-| baysangur | legacy | gpt-5.6-sol / 180000 | passive-secretary, прежний maton-chat-onboarding |
-| vyacheslav | modern | gpt-5.6-sol / 180000 | passive-secretary, maton-onboarding, bounded TTS и PDF hook |
-| bebov | modern | gpt-5.6-sol / 180000 | passive-secretary с owner-consent для рабочих групп, maton-onboarding, bounded TTS и PDF hook |
+| pavel | modern | gpt-5.6-sol / 500000 | passive-secretary, video-editor v0.3, Maton, Focus Assistant, AI Fixer; Curator gpt-5.6-terra |
+| baysangur | legacy | gpt-5.6-sol / 180000 | passive-secretary, video-editor v0.3, прежний maton-chat-onboarding |
+| vyacheslav | modern | gpt-5.6-sol / 180000 | passive-secretary, video-editor v0.3, maton-onboarding, bounded TTS и PDF hook |
+| bebov | modern | gpt-5.6-sol / 180000 | passive-secretary с owner-consent для рабочих групп, video-editor v0.3, maton-onboarding, bounded TTS и PDF hook |
 
 У всех FIFO queue, потоковый вывод, один временный статус выполнения. Входящий
 архив и исходящие Business-действия имеют раздельные разрешения; исходящие
@@ -18,8 +18,7 @@ Business-ответы в этом снимке отключены. Legacy-вар
 существующего профиля и не является шаблоном новых установок. `bebov` переведён на
 immutable `vektor4-modern` с trusted technical inviter; финальный consent рабочих групп
 остаётся owner-only. Все четыре профиля используют merged Passive Secretary с full-history
-recall (Russian FTS + pg_trgm fuzzy fallback); outbound по-прежнему отключён. Изоляция
-обеспечивается отдельным Linux user, `HERMES_HOME`, процессом и БД.
+recall (Russian FTS + pg_trgm fuzzy fallback); outbound по-прежнему отключён. Общий `video-editor` v0.3 использует root-owned loopback ASR broker с per-profile auth: OpenRouter Whisper Turbo является primary, pinned local whisper.cpp остаётся fallback; captions/cards/hardened public-page proof/SFX/music/look/master/variants доступны без terminal toolset. Изоляция обеспечивается отдельным Linux user, `HERMES_HOME`, процессом и БД.
 
 ## Где находятся программы и данные
 

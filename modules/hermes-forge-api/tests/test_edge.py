@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -47,3 +48,34 @@ def test_nginx_edge_bounds_body_rate_and_upstream():
     assert "burst=40" in nginx
     assert "proxy_pass http://host.docker.internal:8650;" in nginx
     assert "proxy_read_timeout 95s;" in nginx
+
+
+def test_bridge_probe_runs_from_real_edge_network(monkeypatch):
+    calls = []
+
+    def fake_run(*args, **kwargs):
+        calls.append((args, kwargs))
+        return SimpleNamespace(stdout='{"ok":true,"result":{"ok":true}}')
+
+    monkeypatch.setattr(edge, "run", fake_run)
+    assert edge.bridge_probe() is True
+    args, kwargs = calls[0]
+    assert args[:2] == ("/usr/bin/docker", "run")
+    assert ("--network", "n8n_default") == args[3:5]
+    assert "host.docker.internal:172.18.0.1" in args
+    assert "--read-only" in args
+    assert "ALL" in args
+    assert "no-new-privileges:true" in args
+    assert "http://host.docker.internal:8650/healthz" in args
+    assert kwargs["timeout"] == 15
+
+
+def test_wait_bridge_retries_bounded_probe(monkeypatch):
+    outcomes = iter([False, False, True])
+    monkeypatch.setattr(edge, "bridge_probe", lambda: next(outcomes))
+    monkeypatch.setattr(edge.time, "sleep", lambda _delay: None)
+    edge.wait_bridge(attempts=3, delay=0)
+
+    monkeypatch.setattr(edge, "bridge_probe", lambda: False)
+    with pytest.raises(RuntimeError, match="bridge_health_failed"):
+        edge.wait_bridge(attempts=2, delay=0)

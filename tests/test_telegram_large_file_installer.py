@@ -3,9 +3,9 @@ import os
 import pwd
 import shutil
 import subprocess
+import tempfile
+import unittest
 from pathlib import Path
-
-import pytest
 
 MODULE = Path(__file__).resolve().parents[1] / "modules/telegram-large-file/install.py"
 spec = importlib.util.spec_from_file_location("telegram_large_file_install", MODULE)
@@ -24,66 +24,64 @@ def _acl_text(path: Path) -> str:
     return result.stdout
 
 
-def test_dropin_contains_no_shared_group_or_token():
-    owner = "alice"
-    tenant_hash = "a" * 64
-    text = installer._dropin_content(owner, tenant_hash).decode()
-    assert "SupplementaryGroups=" not in text
-    assert "SupplementaryGroups=telegram-transcriber" not in text
-    assert "BindReadOnlyPaths=" in text
-    assert "InaccessiblePaths=/opt/telegram-transcriber-bot" in text
-    assert tenant_hash in text
-    assert "0000000000:" not in text
+class TelegramLargeFileInstallerTests(unittest.TestCase):
+    def test_dropin_contains_no_shared_group_or_token(self):
+        owner = "alice"
+        tenant_hash = "a" * 64
+        text = installer._dropin_content(owner, tenant_hash).decode()
+        self.assertNotIn("SupplementaryGroups=", text)
+        self.assertNotIn("SupplementaryGroups=telegram-transcriber", text)
+        self.assertIn("BindReadOnlyPaths=", text)
+        self.assertIn("InaccessiblePaths=/opt/telegram-transcriber-bot", text)
+        self.assertIn(tenant_hash, text)
+        self.assertNotIn("0000000000:", text)
 
-
-def test_acl_access_default_and_restore(tmp_path):
-    if not shutil.which("setfacl") or not shutil.which("getfacl"):
-        pytest.skip("acl tools unavailable")
-    nobody = str(pwd.getpwnam("nobody").pw_uid)
-    tenant = tmp_path / "tenant"
-    media = tenant / "videos"
-    media.mkdir(parents=True)
-    source = media / "clip.mp4"
-    source.write_bytes(b"video")
-    tenant.chmod(0o750)
-    media.chmod(0o750)
-    source.chmod(0o640)
-
-    before = installer._snapshot_acl(tenant)
-    installer._apply_tenant_acl(nobody, tenant)
-
-    tenant_acl = _acl_text(tenant)
-    media_acl = _acl_text(media)
-    source_acl = _acl_text(source)
-    assert "default:user:nobody:r-x" in tenant_acl
-    assert "default:user:nobody:r-x" in media_acl
-    assert "user:nobody:r--" in source_acl
-
-    inherited = media / "new.bin"
-    inherited.write_bytes(b"new")
-    inherited.chmod(0o640)
-    inherited_acl = _acl_text(inherited)
-    assert "user:nobody:r-x" in inherited_acl
-    assert "mask::r--" in inherited_acl
-
-    installer._restore_acl(before)
-    assert "user:nobody:" not in _acl_text(tenant)
-    assert "user:nobody:" not in _acl_text(media)
-    assert "user:nobody:" not in _acl_text(source)
-
-
-def test_acl_symlink_directory_is_refused(tmp_path):
-    if not shutil.which("setfacl"):
-        pytest.skip("acl tools unavailable")
-    nobody = str(pwd.getpwnam("nobody").pw_uid)
-    tenant = tmp_path / "tenant"
-    tenant.mkdir()
-    outside = tmp_path / "outside"
-    outside.mkdir()
-    (tenant / "link").symlink_to(outside, target_is_directory=True)
-    before = installer._snapshot_acl(tenant)
-    try:
-        with pytest.raises(RuntimeError, match="telegram_tenant_tree_contains_symlink"):
+    @unittest.skipUnless(shutil.which("setfacl") and shutil.which("getfacl"), "acl tools unavailable")
+    def test_acl_access_default_and_restore(self):
+        nobody = str(pwd.getpwnam("nobody").pw_uid)
+        with tempfile.TemporaryDirectory() as raw:
+            tmp_path = Path(raw)
+            tenant = tmp_path / "tenant"
+            media = tenant / "videos"
+            media.mkdir(parents=True)
+            source = media / "clip.mp4"
+            source.write_bytes(b"video")
+            tenant.chmod(0o750)
+            media.chmod(0o750)
+            source.chmod(0o640)
+            before = installer._snapshot_acl(tenant)
             installer._apply_tenant_acl(nobody, tenant)
-    finally:
-        installer._restore_acl(before)
+            self.assertIn("default:user:nobody:r-x", _acl_text(tenant))
+            self.assertIn("default:user:nobody:r-x", _acl_text(media))
+            self.assertIn("user:nobody:r--", _acl_text(source))
+            inherited = media / "new.bin"
+            inherited.write_bytes(b"new")
+            inherited.chmod(0o640)
+            inherited_acl = _acl_text(inherited)
+            self.assertIn("user:nobody:r-x", inherited_acl)
+            self.assertIn("mask::r--", inherited_acl)
+            installer._restore_acl(before)
+            self.assertNotIn("user:nobody:", _acl_text(tenant))
+            self.assertNotIn("user:nobody:", _acl_text(media))
+            self.assertNotIn("user:nobody:", _acl_text(source))
+
+    @unittest.skipUnless(shutil.which("setfacl") and shutil.which("getfacl"), "acl tools unavailable")
+    def test_acl_symlink_directory_is_refused(self):
+        nobody = str(pwd.getpwnam("nobody").pw_uid)
+        with tempfile.TemporaryDirectory() as raw:
+            tmp_path = Path(raw)
+            tenant = tmp_path / "tenant"
+            tenant.mkdir()
+            outside = tmp_path / "outside"
+            outside.mkdir()
+            (tenant / "link").symlink_to(outside, target_is_directory=True)
+            before = installer._snapshot_acl(tenant)
+            try:
+                with self.assertRaisesRegex(RuntimeError, "telegram_tenant_tree_contains_symlink"):
+                    installer._apply_tenant_acl(nobody, tenant)
+            finally:
+                installer._restore_acl(before)
+
+
+if __name__ == "__main__":
+    unittest.main()

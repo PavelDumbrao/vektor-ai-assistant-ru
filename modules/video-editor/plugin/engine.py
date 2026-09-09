@@ -175,7 +175,14 @@ def _run(cmd: list[str], *, cwd: Path | None = None, allowed: tuple[int, ...] = 
     except subprocess.TimeoutExpired as exc:
         raise VideoEditorError("video_editor_process_timeout") from exc
     if proc.returncode not in allowed:
-        detail = _safe_tail(proc.stderr or proc.stdout)
+        parts = []
+        stderr = _safe_tail(proc.stderr, 1800).strip()
+        stdout = _safe_tail(proc.stdout, 1800).strip()
+        if stderr:
+            parts.append("stderr=" + stderr)
+        if stdout and stdout != stderr:
+            parts.append("stdout=" + stdout)
+        detail = " | ".join(parts)
         raise VideoEditorError(f"video_editor_process_failed:{detail}" if detail else "video_editor_process_failed")
     return proc
 

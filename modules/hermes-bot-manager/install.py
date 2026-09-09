@@ -39,7 +39,7 @@ def main() -> int:
     (TARGET / 'state').mkdir(parents=True, exist_ok=True, mode=0o700)
     for child in ('managed', 'instances', 'provisioning', 'jobs'):
         (TARGET / 'state' / child).mkdir(parents=True, exist_ok=True, mode=0o700)
-    for name in ('manager.py', 'configure.py', 'hermes_instance.py', 'provisioner.py', 'seed_platform_secrets.py'):
+    for name in ('manager.py', 'configure.py', 'i18n.py', 'hermes_instance.py', 'provisioner.py', 'seed_platform_secrets.py'):
         shutil.copy2(HERE / name, TARGET / name)
         os.chmod(TARGET / name, 0o600)
     for dirname in ('templates',):

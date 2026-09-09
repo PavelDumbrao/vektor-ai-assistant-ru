@@ -1,0 +1,35 @@
+[Unit]
+Description=Hermes personal profile @OWNER@
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=@OWNER@
+Group=@OWNER@
+WorkingDirectory=/home/@OWNER@/.hermes
+ExecStart=/home/@OWNER@/.hermes/hermes-agent/venv/bin/python -m hermes_cli.main gateway run
+Environment="HOME=/home/@OWNER@"
+Environment="USER=@OWNER@"
+Environment="LOGNAME=@OWNER@"
+Environment="HERMES_HOME=/home/@OWNER@/.hermes"
+Environment="VIRTUAL_ENV=/home/@OWNER@/.hermes/hermes-agent/venv"
+Environment="PATH=/home/@OWNER@/.hermes/hermes-agent/venv/bin:/home/@OWNER@/.hermes/bin:/usr/local/bin:/usr/bin:/bin"
+Environment="TMPDIR=/tmp/vkr/@UID@"
+Environment="HERMES_TELEGRAM_DISABLE_FALLBACK_IPS=1"
+UMask=0077
+Restart=always
+RestartSec=5
+RestartForceExitStatus=75
+RestartPreventExitStatus=78
+KillMode=mixed
+KillSignal=SIGTERM
+ExecReload=/bin/kill -USR1 $MAINPID
+ExecStopPost=-/home/@OWNER@/.hermes/hermes-agent/venv/bin/python -m gateway.cgroup_cleanup
+TimeoutStopSec=120
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

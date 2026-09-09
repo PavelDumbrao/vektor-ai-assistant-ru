@@ -41,6 +41,10 @@ def test_remember_locale_persists_and_preference_wins():
 def test_localized_main_menu_and_welcome():
     es = manager.main_menu("es")
     assert es["inline_keyboard"][0][0]["text"] == "⚡ Contratar asistente de IA"
+    assert es["inline_keyboard"][1][0] == {
+        "text": "⚙️ Panel de Hermes",
+        "web_app": {"url": manager.DEFAULT_FORGE_WEBAPP_URL},
+    }
     assert "🌐 Idioma" == es["inline_keyboard"][-1][0]["text"]
     assert "Autoaprendizaje" in manager.welcome_text("es")
     assert "自我学习" in manager.welcome_text("zh")
@@ -101,3 +105,33 @@ def test_every_supported_locale_renders_critical_hiring_flow():
 def test_installer_bundles_i18n_module():
     install_source = (ROOT / "install.py").read_text()
     assert "'i18n.py'" in install_source
+
+
+def test_webapp_url_is_https_only_and_fails_safe(monkeypatch):
+    monkeypatch.setattr(manager, "load_manager_settings", lambda: {
+        "FORGE_WEBAPP_URL": "https://forge.example.com/panel"
+    })
+    assert manager.forge_webapp_url() == "https://forge.example.com/panel"
+
+    for unsafe in (
+        "http://forge.example.com/",
+        "https://user:pass@forge.example.com/",
+        "https://forge.example.com/?secret=x",
+        "javascript:alert(1)",
+    ):
+        monkeypatch.setattr(manager, "load_manager_settings", lambda value=unsafe: {
+            "FORGE_WEBAPP_URL": value
+        })
+        assert manager.forge_webapp_url() == manager.DEFAULT_FORGE_WEBAPP_URL
+
+
+def test_every_supported_locale_has_localized_webapp_button(monkeypatch):
+    monkeypatch.setattr(manager, "load_manager_settings", lambda: {})
+    assert set(i18n.PANEL_LABELS) == set(i18n.SUPPORTED)
+    for locale in i18n.SUPPORTED:
+        menu = manager.main_menu(locale)
+        button = menu["inline_keyboard"][1][0]
+        assert button["text"] == i18n.PANEL_LABELS[locale]
+        assert button["web_app"]["url"] == "https://forge.srv1250550.hstgr.cloud/"
+        assert button["web_app"]["url"].startswith("https://")
+        assert "callback_data" not in button

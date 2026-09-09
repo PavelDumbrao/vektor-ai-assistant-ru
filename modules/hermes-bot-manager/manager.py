@@ -33,6 +33,7 @@ PROVISIONER_UNIT = 'proai-hermes-provisioner@{instance_id}.service'
 PROFILE_DIR = Path('/opt/vektor/profiles')
 PAVEL_ID = 450206471
 BOT_USERNAME = 'ProAIHermesBot'
+DEFAULT_FORGE_WEBAPP_URL = 'https://forge.srv1250550.hstgr.cloud/'
 TOKEN_RE = re.compile(r'^\d{5,}:[A-Za-z0-9_-]{20,}$')
 RUNNING = True
 
@@ -64,6 +65,25 @@ def stable_release_id() -> str:
     if not value:
         raise RuntimeError('forge_stable_release_missing')
     return value
+
+
+def forge_webapp_url() -> str:
+    try:
+        configured = load_manager_settings().get('FORGE_WEBAPP_URL', '').strip()
+    except OSError:
+        configured = ''
+    candidate = configured or DEFAULT_FORGE_WEBAPP_URL
+    try:
+        parsed = urllib.parse.urlsplit(candidate)
+    except ValueError:
+        return DEFAULT_FORGE_WEBAPP_URL
+    if (
+        parsed.scheme != 'https' or not parsed.hostname or parsed.username or parsed.password
+        or parsed.query or parsed.fragment
+    ):
+        return DEFAULT_FORGE_WEBAPP_URL
+    path = parsed.path or '/'
+    return urllib.parse.urlunsplit(('https', parsed.netloc, path, '', ''))
 
 
 def build_instance(owner_id: int, bot: dict) -> HermesInstance:
@@ -143,6 +163,7 @@ def main_menu(locale: str = "ru"):
     return {
         'inline_keyboard': [
             [{'text': i18n.t(locale, 'menu_hire'), 'callback_data': 'create'}],
+            [{'text': i18n.t(locale, 'menu_panel'), 'web_app': {'url': forge_webapp_url()}}],
             [{'text': i18n.t(locale, 'menu_my'), 'callback_data': 'my'},
              {'text': i18n.t(locale, 'menu_how'), 'callback_data': 'how'}],
             [{'text': i18n.t(locale, 'menu_security'), 'callback_data': 'security'},

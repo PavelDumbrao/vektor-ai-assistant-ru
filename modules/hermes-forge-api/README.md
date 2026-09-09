@@ -21,6 +21,7 @@ The Mini App sends Telegram `WebApp.initData` once to `/v1/auth/telegram`. Only 
 - `POST /v1/hermes/{profile}/restart`
 - `GET /v1/hermes/{profile}/connections`
 - `GET /v1/hermes/{profile}/capabilities` — read-only installed/enabled/health state for catalog capabilities
+- `POST /v1/hermes/{profile}/capabilities/{id}/enable|disable` — bounded toggle for installed Image Studio, Video Editor and Web Search only
 - `GET /v1/hermes/{profile}/secrets`
 - `PUT|DELETE /v1/hermes/{profile}/secrets/MCP_MATON_API_KEY`
 - `POST /v1/hermes/{profile}/connections/maton/test`
@@ -41,3 +42,11 @@ Public TLS keeps the API loopback-only. The production path is:
 Default MVP hostname: `forge.srv1250550.hstgr.cloud`, which uses the existing Hostinger wildcard DNS. `install_edge.py --hostname ...` can replace the hostname later without changing the API service.
 
 The edge enforces a 64 KiB request-body ceiling, bounded request rate and TLS/HSTS via the existing Traefik certificate resolver.
+
+## Capability Actions v1
+
+Capability toggles are deliberately narrower than the catalog. Only already-installed `image-studio`, `video-editor` and `web-search` can be enabled or disabled here. Maton stays on the write-only secret flow, Telegram Secretary requires a separate consent UX, and planned capabilities remain inert.
+
+Every mutation is owner-scoped and idle-gated before touching config. Forge writes a sanitized root-owned job receipt and audit event, creates a private tenant config backup, mutates only the fixed allowlisted toolset, restarts the exact Hermes profile, verifies the resulting state, and rolls back the config plus restart if verification fails.
+
+Persistent action metadata lives under systemd-managed `/var/lib/proai-hermes-forge` with mode `0700`. Job/audit/desired-state records never contain messages, prompts, tool arguments/results, secret values or arbitrary exception text. The desired-state record is updated only after a successful or already-satisfied action, so a failed mutation cannot become an unimplemented future reconciliation request.

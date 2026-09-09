@@ -167,6 +167,13 @@ def route(method: str, path: str, body: dict[str, Any], headers: Any) -> tuple[i
         return 200, call_control({"op": "list_connections", **base})
     if method == "GET" and suffix == "capabilities":
         return 200, call_control({"op": "list_capabilities", **base})
+    capability_action = re.fullmatch(r"capabilities/([a-z0-9-]{2,64})/(enable|disable)", suffix)
+    if method == "POST" and capability_action:
+        return 200, call_control({
+            "op": "capability_action", **base,
+            "capability_id": capability_action.group(1),
+            "action": capability_action.group(2),
+        })
     if method == "GET" and suffix == "secrets":
         return 200, call_control({"op": "list_secrets", **base})
     secret = re.fullmatch(r"secrets/([A-Z][A-Z0-9_]{2,80})", suffix)

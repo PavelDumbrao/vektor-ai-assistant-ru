@@ -117,11 +117,15 @@ def api(method: str, payload: dict | None = None, timeout: int = 65):
 
 def load_state() -> dict:
     if not STATE_FILE.exists():
-        return {'offset': 0, 'managed': {}, 'drafts': {}}
+        return {'offset': 0, 'managed': {}, 'imported': {}, 'drafts': {}}
     try:
-        return json.loads(STATE_FILE.read_text(encoding='utf-8'))
+        state = json.loads(STATE_FILE.read_text(encoding='utf-8'))
+        state.setdefault('managed', {})
+        state.setdefault('imported', {})
+        state.setdefault('drafts', {})
+        return state
     except Exception:
-        return {'offset': 0, 'managed': {}, 'drafts': {}}
+        return {'offset': 0, 'managed': {}, 'imported': {}, 'drafts': {}}
 
 
 def save_state(state: dict) -> None:
@@ -326,14 +330,103 @@ def show_create(chat_id: int, user: dict, state: dict):
         return
     ask_hire_name(chat_id, int(user['id']), state)
 
+
+def _profile_owner_telegram_id(owner: str) -> int:
+    if not re.fullmatch(r'[a-z0-9_-]{2,40}', owner):
+        raise RuntimeError('import_profile_invalid_owner')
+    registry = PROFILE_DIR / f'{owner}.json'
+    if registry.is_symlink() or not registry.is_file():
+        raise RuntimeError('import_profile_registry_missing')
+    meta = json.loads(registry.read_text(encoding='utf-8'))
+    if str(meta.get('owner') or '') != owner:
+        raise RuntimeError('import_profile_registry_mismatch')
+    cfg = Path(f'/home/{owner}/.hermes/config.yaml')
+    if cfg.is_symlink() or not cfg.is_file():
+        raise RuntimeError('import_profile_config_missing')
+    text = cfg.read_text(encoding='utf-8', errors='replace')
+    match = re.search(r'home_channel:\s*\n(?:\s+.*\n){0,6}?\s+chat_id:\s*[\'\"]?(\d+)', text)
+    if not match:
+        raise RuntimeError('import_profile_owner_chat_missing')
+    return int(match.group(1))
+
+
+def _profile_bot_identity(owner: str) -> dict:
+    env_path = Path(f'/home/{owner}/.hermes/.env')
+    if env_path.is_symlink() or not env_path.is_file():
+        raise RuntimeError('import_profile_env_missing')
+    token = ''
+    for raw in env_path.read_text(encoding='utf-8').splitlines():
+        if raw.startswith('TELEGRAM_BOT_TOKEN='):
+            token = raw.partition('=')[2].strip().strip('"\'')
+            break
+    if not TOKEN_RE.fullmatch(token):
+        raise RuntimeError('import_profile_token_missing')
+    req = urllib.request.Request(f'https://api.telegram.org/bot{token}/getMe')
+    try:
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            data = json.loads(resp.read().decode('utf-8'))
+    except Exception as exc:
+        raise RuntimeError('import_profile_getme_failed') from exc
+    bot = data.get('result') or {}
+    bot_id = int(bot.get('id') or 0)
+    username = str(bot.get('username') or '').strip().lower()
+    if not bot_id or not username:
+        raise RuntimeError('import_profile_identity_invalid')
+    return {
+        'bot_id': bot_id,
+        'username': username,
+        'name': str(bot.get('first_name') or '').strip(),
+    }
+
+
+def import_existing_profile(owner: str, state: dict) -> dict:
+    owner = str(owner or '').strip().lower()
+    owner_user_id = _profile_owner_telegram_id(owner)
+    bot = _profile_bot_identity(owner)
+    bot_id = int(bot['bot_id'])
+    item = {
+        'owner_user_id': owner_user_id,
+        'profile': owner,
+        'profile_status': 'active' if _imported_service_active({'profile': owner}) else 'inactive',
+        'bot_id': bot_id,
+        'username': bot['username'],
+        'name': bot['name'],
+        'source': 'existing_profile',
+        'imported_at': int(time.time()),
+    }
+    state.setdefault('imported', {})[str(bot_id)] = item
+    save_state(state)
+    return item
+
+def _imported_service_active(item: dict) -> bool:
+    owner = str(item.get('profile') or '')
+    if not re.fullmatch(r'[a-z0-9_-]{2,40}', owner):
+        return False
+    service = f'{owner}-hermes.service'
+    return subprocess.run(
+        ['/usr/bin/systemctl', 'is-active', '--quiet', service],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    ).returncode == 0
+
+
 def show_my(chat_id: int, user_id: int, state: dict):
     rows = []
-    for item in state.get('managed', {}).values():
+    seen_bot_ids = set()
+    for bot_id, item in state.get('managed', {}).items():
         if int(item.get('owner_user_id', 0)) != int(user_id):
             continue
-        uname = item.get('username') or ''
+        uname = item.get('username') or bot_id
         status = item.get('profile_status') or 'registered'
         rows.append(f'• <b>@{uname}</b> — {status}')
+        seen_bot_ids.add(str(item.get('bot_id') or bot_id))
+    for bot_id, item in state.get('imported', {}).items():
+        if int(item.get('owner_user_id', 0)) != int(user_id):
+            continue
+        if str(item.get('bot_id') or bot_id) in seen_bot_ids:
+            continue
+        uname = item.get('username') or bot_id
+        status = 'работает' if _imported_service_active(item) else 'остановлен'
+        rows.append(f'• <b>@{uname}</b> — {status} · подключён ранее')
     if not rows:
         text = ('<b>Мои AI-ассистенты</b>\n\nПока никого не наняли. '
                 'Нажми «Нанять AI-ассистента» в главном меню.')
@@ -599,6 +692,27 @@ def handle_message(msg: dict, state: dict):
     parts = text.split()
     command = parts[0].split('@')[0].lower() if text.startswith('/') and parts else ''
 
+    # Admin-only migration of already-running legacy Hermes profiles.
+    if command == '/importprofile':
+        if not is_admin(user_id):
+            access_denied(chat_id)
+            return
+        if len(parts) != 2:
+            send(chat_id, 'Формат: <code>/importprofile PROFILE</code>', main_menu())
+            return
+        try:
+            item = import_existing_profile(parts[1], state)
+        except Exception as exc:
+            send(chat_id,
+                 '<b>Импорт не выполнен.</b>\n\n'
+                 f'Код: <code>{html.escape(str(exc))[:120]}</code>', main_menu())
+            return
+        send(chat_id,
+             '<b>✅ Существующий AI-ассистент добавлен в Forge.</b>\n\n'
+             f'@{item["username"]}\nПрофиль: <code>{item["profile"]}</code>\n'
+             'Бот не пересоздавался, текущий токен остался на месте.', main_menu())
+        return
+
     # Admin-only admission control for future clients.
     if command in {'/allow', '/deny', '/allowed'}:
         if not is_admin(user_id):
@@ -643,11 +757,18 @@ def handle_message(msg: dict, state: dict):
     elif command in {'/my', '/bots'}:
         show_my(chat_id, user_id, state)
     elif command == '/status':
-        managed = sum(1 for x in state.get('managed', {}).values()
-                      if int(x.get('owner_user_id', 0)) == user_id)
+        managed_ids = {
+            str(x.get('bot_id') or bot_id) for bot_id, x in state.get('managed', {}).items()
+            if int(x.get('owner_user_id', 0)) == user_id
+        }
+        imported_ids = {
+            str(x.get('bot_id') or bot_id) for bot_id, x in state.get('imported', {}).items()
+            if int(x.get('owner_user_id', 0)) == user_id
+        }
+        total = len(managed_ids | imported_ids)
         send(chat_id,
              '<b>Твои AI-ассистенты</b>\n\n'
-             f'Нанято: <b>{managed}</b>', main_menu())
+             f'Подключено: <b>{total}</b>', main_menu())
     elif command == '/help':
         send(chat_id,
              '<b>Помощь</b>\n\n/hire — нанять AI-ассистента\n/my — мои ассистенты\n'

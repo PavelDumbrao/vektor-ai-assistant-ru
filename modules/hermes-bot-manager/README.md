@@ -29,3 +29,13 @@ The normal new-client lifecycle is `provisioning -> active` or explicit `provisi
 The manager is intentionally sandboxed with `ProtectSystem=full`. It does not perform Linux-user/systemd/database mutations itself. It writes desired state and asks systemd to start a validated provisioner instance. The provisioner has no arbitrary-command API.
 
 `seed_platform_secrets.py` is a one-time migration helper for the current VPS. It copies only approved provider keys into the dedicated platform file and never prints values.
+
+## Existing assistant imports
+
+Bots that existed before Managed Bots can be registered in Forge without recreation.
+Pavel can run `/importprofile <linux_owner>` in a private Forge chat. The manager
+resolves the profile owner, reads the existing bot identity, and stores only safe
+metadata under `state.imported`; the existing bot token is never copied into state.
+Imported assistants appear in **Мои AI-ассистенты** with live systemd status.
+Telegram-level managed-bot privileges are not retroactively added: those are available
+only for bots originally created through Telegram's managed-bot flow.

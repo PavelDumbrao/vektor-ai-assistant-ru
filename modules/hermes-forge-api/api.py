@@ -143,9 +143,9 @@ def route(method: str, path: str, body: dict[str, Any], headers: Any) -> tuple[i
         return 200, {"ok": True}
     if method == "POST" and path == "/v1/auth/telegram":
         return 200, call_control({"op": "authenticate", "init_data": str(body.get("init_data") or "")})
-    session = _session(headers)
     if method == "GET" and path == "/v1/catalog":
         return 200, _public_catalog()
+    session = _session(headers)
     if method == "GET" and path == "/v1/hermes":
         return 200, call_control({"op": "list_hermes", "session": session})
     match = re.fullmatch(r"/v1/hermes/([a-z0-9_-]{2,40})(?:/(.*))?", path)

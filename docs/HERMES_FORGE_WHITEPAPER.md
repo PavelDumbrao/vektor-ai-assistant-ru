@@ -66,8 +66,10 @@ The manager bot is `@ProAIHermesBot`. Telegram reports `can_manage_bots=true`, s
 
 The current flow already supports:
 
-- native Telegram `request_managed_bot` creation;
-- `managed_bot` event handling;
+- chat-first hiring: the client enters the assistant display name and username as ordinary Telegram messages;
+- username validation/canonicalization before creation;
+- a final `Подтвердить найм` deep link into Telegram's native managed-bot creation confirmation;
+- `managed_bot` event handling after Telegram creates the client-owned child bot;
 - child token retrieval through Telegram Bot API;
 - root-only token storage;
 - owner/profile matching by Telegram identity;
@@ -191,7 +193,7 @@ Tenant Hermes Runtime
 
 Responsibilities:
 - identity bootstrap through Telegram;
-- native Managed Bot creation;
+- chat-first collection of the child bot name/username and handoff to Telegram's native managed-bot confirmation;
 - notifications and alerts;
 - approval prompts for consequential actions;
 - deep links into Mini App screens.
@@ -389,7 +391,7 @@ A successful first-time flow should require no operator SSH access:
 
 1. Admin admits/invites the user, or future commercial signup authorizes them.
 2. User chooses an Agent Package.
-3. User creates or binds a Telegram Managed Bot.
+3. User confirms creation of their own child Managed Bot from inside the existing `@ProAIHermesBot` onboarding flow.
 4. Forge creates a tenant/profile identity.
 5. Provisioner allocates database/runtime resources.
 6. Required integrations are requested through Mini App.

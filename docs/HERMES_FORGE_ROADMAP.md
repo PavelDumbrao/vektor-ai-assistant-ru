@@ -24,11 +24,11 @@ The roadmap is dependency-ordered. Each milestone should be small enough to revi
 
 ## P0 - Prove current Managed Bot path
 
-**Goal:** demonstrate that the existing Forge manager can create and manage one real child bot end to end before adding more layers.
+**Goal:** prove the already deployed `@ProAIHermesBot` onboarding path by completing creation and management of one real client-owned child bot end to end before adding more layers. The Forge manager bot itself already exists and is not part of this milestone.
 Tasks:
 
-1. Create one authorized test Managed Bot through `@ProAIHermesBot`.
-2. Confirm `managed_bot` update arrives and token is stored only in root-protected managed state.
+1. Use the current chat-first flow: enter child bot display name and username inside `@ProAIHermesBot`, then press `Подтвердить найм` and complete Telegram's native system confirmation.
+2. Confirm the resulting `managed_bot` update arrives and token is stored only in root-protected managed state.
 3. Confirm restricted bot access is applied as expected.
 4. Bind the bot to a disposable/test Hermes profile, not an important production profile.
 5. Verify service start, Telegram identity and one real request/response.

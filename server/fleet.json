@@ -55,5 +55,11 @@
         "video-editor"
       ]
     }
-  ]
+  ],
+  "shared_video_editor": {
+    "version": "0.3.0",
+    "primary_asr": "openrouter/openai/whisper-large-v3-turbo",
+    "fallback_asr": "whisper.cpp v1.9.2",
+    "broker": "loopback per-profile auth"
+  }
 }

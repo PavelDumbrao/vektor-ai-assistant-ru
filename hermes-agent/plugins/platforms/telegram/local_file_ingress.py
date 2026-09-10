@@ -15,6 +15,28 @@ class LocalTelegramPathError(ValueError):
     """A local Bot API path escaped or violated the tenant boundary."""
 
 
+def strip_trusted_bot_file_url(file_path: str, *, trusted_base_file_url: str) -> str:
+    """Undo PTB's trusted ``base_file_url`` prefix in Local Bot API mode.
+
+    PTB prefixes a Bot API ``file_path`` with its tokenized ``base_file_url``
+    whenever the server-side absolute path is not visible in the caller's mount
+    namespace. Hermes intentionally hides that shared server root and exposes only
+    a tenant-specific read-only mount, so the trusted HTTP prefix must be removed
+    before tenant-relative validation. Arbitrary URLs are never accepted.
+    """
+    raw = str(file_path or "")
+    if "://" not in raw:
+        return raw
+    base = str(trusted_base_file_url or "").rstrip("/")
+    prefix = base + "/" if base else ""
+    if not prefix or not raw.startswith(prefix):
+        raise LocalTelegramPathError("Telegram local file URL is not trusted")
+    relative = raw[len(prefix):]
+    if not relative:
+        raise LocalTelegramPathError("Telegram local file URL has no path")
+    return relative
+
+
 def tenant_relative_path(
     file_path: str,
     *,

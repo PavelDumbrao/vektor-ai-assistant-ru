@@ -10377,6 +10377,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     raw_file_path,
                     expected_tenant_sha256=tenant_hash,
                     server_root=server_root,
+                    allow_private_mount_relative=True,
                 )
                 await asyncio.to_thread(
                     copy_from_private_mount,
@@ -10555,8 +10556,7 @@ class TelegramAdapter(BasePlatformAdapter):
     ) -> None:
         """Surface a failed media download/cache on BOTH ends instead of swallowing it.
 
-        When download_as_bytearray()/cache_*_from_bytes() raises (typically a
-        transient httpx.ConnectError to Telegram's CDN), the attachment never
+        When Telegram media download/cache raises, the attachment never
         made it into event.media_urls. Without this, the handler falls through
         and dispatches an empty turn: the user thinks the file was delivered,
         the agent sees nothing, and the only record is a buried log warning.
@@ -11084,27 +11084,19 @@ class TelegramAdapter(BasePlatformAdapter):
         # because _handle_sticker overwrites event.text with its vision description.
         event = self._apply_telegram_group_observe_attribution(event)
 
-        # Download photo to local image cache so the vision tool can access it
-        # even after Telegram's ephemeral file URLs expire (~1 hour).
+        # Download photo through the same bounded disk-backed ingress used by
+        # voice/video/document. In Local Bot API mode, file_path may be relative
+        # and HTTP byte-downloads are both unnecessary and token-fragile.
         if msg.photo:
             try:
-                # msg.photo is a list of PhotoSize sorted by size; take the largest
+                # Telegram PhotoSize payloads are server-normalized JPEG images.
                 photo = msg.photo[-1]
-                file_obj = await photo.get_file()
-                # Download the image bytes directly into memory
-                image_bytes = await file_obj.download_as_bytearray()
-                # Determine extension from the file path if available
-                ext = ".jpg"
-                if file_obj.file_path:
-                    for candidate in [".png", ".webp", ".gif", ".jpeg", ".jpg"]:
-                        if file_obj.file_path.lower().endswith(candidate):
-                            ext = candidate
-                            break
-                # Save to local cache (for vision tool access)
-                cached_path = cache_image_from_bytes(bytes(image_bytes), ext=ext)
-                event.media_urls = [cached_path]
-                event.media_types = [f"image/{ext.lstrip('.')}" ]
-                logger.info("[Telegram] Cached user photo at %s", cached_path)
+                cached = await self._download_telegram_media_file(
+                    photo, filename="photo.jpg", mime_type="image/jpeg", default_kind="image"
+                )
+                event.media_urls = [cached.path]
+                event.media_types = [cached.media_type]
+                logger.info("[Telegram] Cached user photo at %s", cached.path)
                 media_group_id = getattr(msg, "media_group_id", None)
                 if media_group_id:
                     await self._queue_media_group_event(str(media_group_id), event)

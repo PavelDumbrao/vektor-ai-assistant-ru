@@ -1,5 +1,5 @@
 {
-  "snapshot_date": "2026-09-09",
+  "snapshot_date": "2026-09-10",
   "code_release": "../modules/shared-runtime/releases/v0.21.0/vektor3.json",
   "profiles": [
     {
@@ -54,6 +54,19 @@
         "passive-secretary",
         "video-editor"
       ]
+    },
+    {
+      "owner_label": "salavat",
+      "hermes_home": "/home/salavat/.hermes",
+      "service": "salavat-hermes.service",
+      "release_id": "hermes-0.21.0-29112bef-vektor3-vyacheslav-tglf1-vtm1",
+      "variant": "modern",
+      "config_template": "profiles/salavat/config.yaml.example",
+      "plugins": [
+        "maton-onboarding",
+        "passive-secretary",
+        "video-editor"
+      ]
     }
   ],
   "shared_video_editor": {
@@ -80,7 +93,8 @@
       "pavel",
       "baysangur",
       "vyacheslav",
-      "bebov"
+      "bebov",
+      "salavat"
     ],
     "local_bot_api": "127.0.0.1:8082 --local",
     "max_file_bytes": 1073741824,

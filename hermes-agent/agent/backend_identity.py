@@ -63,6 +63,7 @@ _REASON_SCOPES = {
     "model incompatible with route": FailureScope.MODEL,
     "invalid provider response": FailureScope.MODEL,
     "connection error": FailureScope.MODEL,
+    "server error": FailureScope.MODEL,
     "timeout": FailureScope.MODEL,
 }
 

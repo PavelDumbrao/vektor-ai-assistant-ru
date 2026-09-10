@@ -10682,6 +10682,15 @@ class TelegramAdapter(BasePlatformAdapter):
         self._observe_bot_identity_from_message(message)
         if self._is_own_message(message):
             return False
+        if (
+            self.config.extra.get("ignore_bot_senders", False) is True
+            and getattr(getattr(message, "from_user", None), "is_bot", False) is True
+        ):
+            logger.info(
+                "[%s] Ignoring Telegram message from bot sender id=%s",
+                self.name, getattr(getattr(message, "from_user", None), "id", None),
+            )
+            return False
 
         if not self._is_group_chat(message):
             return True

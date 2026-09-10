@@ -22,6 +22,7 @@ def _make_adapter(
     group_allowed_chats=None,
     guest_mode=None,
     observe_unmentioned_group_messages=None,
+    ignore_bot_senders=None,
     bot_username="hermes_bot",
 ):
     from plugins.platforms.telegram.adapter import TelegramAdapter
@@ -65,6 +66,8 @@ def _make_adapter(
         extra["guest_mode"] = guest_mode
     if observe_unmentioned_group_messages is not None:
         extra["observe_unmentioned_group_messages"] = observe_unmentioned_group_messages
+    if ignore_bot_senders is not None:
+        extra["ignore_bot_senders"] = ignore_bot_senders
 
     adapter = object.__new__(TelegramAdapter)
     adapter.platform = Platform.TELEGRAM
@@ -112,7 +115,7 @@ def _group_message(
         message_thread_id=thread_id,
         is_topic_message=thread_id is not None,
         chat=SimpleNamespace(id=chat_id, type="group", title="Test Group", is_forum=thread_id is not None),
-        from_user=SimpleNamespace(id=from_user_id, full_name=from_user_name, first_name=from_user_name.split()[0]),
+        from_user=SimpleNamespace(id=from_user_id, full_name=from_user_name, first_name=from_user_name.split()[0], is_bot=False),
         reply_to_message=reply_to_message,
         date=None,
     )
@@ -492,6 +495,22 @@ def test_gating_forum_general_topic_normalizes_to_one():
 
     adapter2 = _make_adapter(require_mention=False, allowed_chats=["-100"], allowed_topics=["8"])
     assert adapter2._should_process_message(general) is False
+
+
+def test_opt_in_ignore_bot_senders_blocks_other_bots_but_not_people():
+    adapter = _make_adapter(require_mention=False, ignore_bot_senders=True)
+
+    human = _group_message("hello", chat_id=555, from_user_id=111)
+    human.chat.type = "private"
+    assert adapter._should_process_message(human) is True
+
+    other_bot = _group_message("automated reply", chat_id=777, from_user_id=777)
+    other_bot.chat.type = "private"
+    other_bot.from_user.is_bot = True
+    assert adapter._should_process_message(other_bot) is False
+
+    legacy = _make_adapter(require_mention=False, ignore_bot_senders=False)
+    assert legacy._should_process_message(other_bot) is True
 
 
 def test_bot_self_messages_are_ignored_in_dm_and_group():

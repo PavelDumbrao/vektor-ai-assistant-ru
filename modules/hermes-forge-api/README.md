@@ -50,3 +50,8 @@ Capability toggles are deliberately narrower than the catalog. Only already-inst
 Every mutation is owner-scoped and idle-gated before touching config. Forge writes a sanitized root-owned job receipt and audit event, creates a private tenant config backup, mutates only the fixed allowlisted toolset, restarts the exact Hermes profile, verifies the resulting state, and rolls back the config plus restart if verification fails.
 
 Persistent action metadata lives under systemd-managed `/var/lib/proai-hermes-forge` with mode `0700`. Job/audit/desired-state records never contain messages, prompts, tool arguments/results, secret values or arbitrary exception text. The desired-state record is updated only after a successful or already-satisfied action, so a failed mutation cannot become an unimplemented future reconciliation request.
+## Planned restart contract
+
+Forge never uses bare `systemctl restart` for a healthy idle Hermes. Managed profiles expose `ExecReload=/bin/kill -USR1 $MAINPID`; Forge validates that contract plus `SuccessExitStatus=75` and `RestartForceExitStatus=75`, then asks systemd to reload the exact owner service. Hermes drains through its native SIGUSR1 restart path and exits with reserved code 75, which systemd treats as a successful planned exit and still relaunches.
+
+Existing profiles are migrated with `install_restart_contract.py`. Dry-run is the default; `--apply` writes only a root-owned systemd drop-in adding `SuccessExitStatus=75`, daemon-reloads, verifies every profile and rolls the whole migration back if verification fails. The migration does not restart Hermes. New Forge profiles inherit the directive from the canonical service template.

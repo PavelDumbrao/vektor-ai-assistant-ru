@@ -607,21 +607,88 @@ def _active_sessions(profile: str) -> int:
     return len(entries) if isinstance(entries, list) else 0
 
 
+def _systemd_properties(service: str, names: tuple[str, ...]) -> dict[str, str]:
+    if not re.fullmatch(r"[a-z0-9_-]{2,40}-hermes\.service", service):
+        raise ControlError("service_invalid", 500)
+    args = ["/usr/bin/systemctl", "show", service]
+    for name in names:
+        if not re.fullmatch(r"[A-Za-z][A-Za-z0-9]+", name):
+            raise ControlError("service_property_invalid", 500)
+        args.extend(["-p", name])
+    result = subprocess.run(args, capture_output=True, text=True, timeout=15, check=False)
+    if result.returncode:
+        raise ControlError("service_status_failed", 503)
+    output: dict[str, str] = {}
+    for line in result.stdout.splitlines():
+        if "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        if key in names:
+            output[key] = value
+    if any(name not in output for name in names):
+        raise ControlError("service_status_invalid", 503)
+    return output
+
+
+def _exit_status_contains(raw: str, code: int) -> bool:
+    return str(code) in {item for item in re.split(r"[ ,]+", str(raw or "").strip()) if item}
+
+
 def _restart(profile: str) -> dict[str, Any]:
     before = _health(profile)
     if before["active_agents"] != 0 or _active_sessions(profile) != 0:
         raise ControlError("profile_busy", 409)
-    old_pid = str(_safe_json(HOME_ROOT / profile / ".hermes/gateway_state.json").get("pid") or "")
-    result = subprocess.run(["/usr/bin/systemctl", "restart", f"{profile}-hermes.service"], capture_output=True, text=True, timeout=60, check=False)
+
+    service = f"{profile}-hermes.service"
+    contract = _systemd_properties(
+        service,
+        ("MainPID", "ExecReload", "SuccessExitStatus", "RestartForceExitStatus"),
+    )
+    try:
+        service_pid = int(contract["MainPID"])
+    except (TypeError, ValueError):
+        raise ControlError("restart_identity_invalid", 503) from None
+    gateway = _safe_json(HOME_ROOT / profile / ".hermes/gateway_state.json")
+    try:
+        gateway_pid = int(gateway.get("pid") or 0)
+    except (TypeError, ValueError):
+        gateway_pid = 0
+    if service_pid <= 0 or gateway_pid <= 0 or service_pid != gateway_pid:
+        raise ControlError("restart_identity_invalid", 503)
+    if "USR1" not in contract["ExecReload"]:
+        raise ControlError("planned_restart_contract_missing", 503)
+    if not _exit_status_contains(contract["SuccessExitStatus"], 75):
+        raise ControlError("planned_restart_contract_missing", 503)
+    if not _exit_status_contains(contract["RestartForceExitStatus"], 75):
+        raise ControlError("planned_restart_contract_missing", 503)
+
+    # Hermes-native planned restart: ExecReload sends SIGUSR1. The gateway
+    # refuses new work, drains cooperatively, exits with reserved code 75 and
+    # systemd relaunches it. Never fall back silently to systemctl restart:
+    # its bare SIGTERM is intentionally classified by Hermes as unexpected.
+    result = subprocess.run(
+        ["/usr/bin/systemctl", "reload", service],
+        capture_output=True, text=True, timeout=20, check=False,
+    )
     if result.returncode:
-        raise ControlError("restart_failed", 503)
-    deadline = time.monotonic() + 75
+        raise ControlError("restart_signal_failed", 503)
+
+    deadline = time.monotonic() + 90
     while time.monotonic() < deadline:
         current = _health(profile)
-        gateway = _safe_json(HOME_ROOT / profile / ".hermes/gateway_state.json")
-        pid = str(gateway.get("pid") or "")
-        if current["healthy"] and pid and pid != old_pid:
-            return current
+        current_gateway = _safe_json(HOME_ROOT / profile / ".hermes/gateway_state.json")
+        try:
+            pid = int(current_gateway.get("pid") or 0)
+        except (TypeError, ValueError):
+            pid = 0
+        if current["healthy"] and pid > 0 and pid != service_pid:
+            current_service = _systemd_properties(service, ("MainPID",))
+            try:
+                main_pid = int(current_service["MainPID"])
+            except (TypeError, ValueError):
+                main_pid = 0
+            if main_pid == pid:
+                return current
         time.sleep(1)
     raise ControlError("restart_health_timeout", 503)
 

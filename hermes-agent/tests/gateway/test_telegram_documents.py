@@ -332,6 +332,23 @@ class TestVideoDownloadBlock:
 # ---------------------------------------------------------------------------
 
 class TestMediaGroups:
+
+    @pytest.mark.asyncio
+    async def test_photo_uses_bounded_media_ingress_not_bytearray(self, adapter):
+        photo = _make_photo()
+        msg = _make_message(photo=[photo], media_group_id="album-1")
+        adapter._download_telegram_media_file = AsyncMock(
+            return_value=SimpleNamespace(path="/tmp/photo.jpg", media_type="image/jpeg")
+        )
+        adapter._queue_media_group_event = AsyncMock()
+
+        await adapter._handle_media_message(_make_update(msg), MagicMock())
+
+        adapter._download_telegram_media_file.assert_awaited_once_with(
+            photo, filename="photo.jpg", mime_type="image/jpeg", default_kind="image"
+        )
+        adapter._queue_media_group_event.assert_awaited_once()
+
     @pytest.mark.asyncio
     async def test_non_album_photo_burst_is_buffered_and_combined(self, adapter):
         first_photo = _make_photo(_make_file_obj(b"first"))
@@ -340,11 +357,14 @@ class TestMediaGroups:
         msg1 = _make_message(caption="two images", photo=[first_photo])
         msg2 = _make_message(photo=[second_photo])
 
-        with patch("plugins.platforms.telegram.adapter.cache_image_from_bytes", side_effect=["/tmp/burst-one.jpg", "/tmp/burst-two.jpg"]):
-            await adapter._handle_media_message(_make_update(msg1), MagicMock())
-            await adapter._handle_media_message(_make_update(msg2), MagicMock())
-            assert adapter.handle_message.await_count == 0
-            await asyncio.sleep(adapter.MEDIA_GROUP_WAIT_SECONDS + 0.05)
+        adapter._download_telegram_media_file = AsyncMock(side_effect=[
+            SimpleNamespace(path="/tmp/burst-one.jpg", media_type="image/jpeg"),
+            SimpleNamespace(path="/tmp/burst-two.jpg", media_type="image/jpeg"),
+        ])
+        await adapter._handle_media_message(_make_update(msg1), MagicMock())
+        await adapter._handle_media_message(_make_update(msg2), MagicMock())
+        assert adapter.handle_message.await_count == 0
+        await asyncio.sleep(adapter.MEDIA_GROUP_WAIT_SECONDS + 0.05)
 
         adapter.handle_message.assert_awaited_once()
         event = adapter.handle_message.await_args.args[0]

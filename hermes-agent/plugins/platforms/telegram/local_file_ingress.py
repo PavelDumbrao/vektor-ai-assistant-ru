@@ -20,12 +20,31 @@ def tenant_relative_path(
     *,
     expected_tenant_sha256: str,
     server_root: str = str(DEFAULT_SERVER_ROOT),
+    allow_private_mount_relative: bool = False,
 ) -> PurePosixPath:
-    """Validate tenant identity and return its private relative file path."""
+    """Validate a Bot API path and return its tenant-private relative path.
+
+    Telegram Bot API local mode may return either an absolute path rooted at
+    ``server_root`` or a relative path such as ``voice/file_0.oga``. Relative
+    paths are accepted only when the caller explicitly confirms that they are
+    resolved inside a root-owned, tenant-specific private mount.
+    """
     root = PurePosixPath(server_root)
     raw = PurePosixPath(file_path)
-    if not root.is_absolute() or not raw.is_absolute():
-        raise LocalTelegramPathError("Telegram local path must be absolute")
+    expected = (expected_tenant_sha256 or "").strip().lower()
+    if not root.is_absolute():
+        raise LocalTelegramPathError("Telegram local server root must be absolute")
+    if len(expected) != 64:
+        raise LocalTelegramPathError("Telegram tenant identity is invalid")
+
+    if not raw.is_absolute():
+        if not allow_private_mount_relative:
+            raise LocalTelegramPathError("Telegram local path must be absolute")
+        lexical_parts = file_path.split("/")
+        if not lexical_parts or any(part in {"", ".", ".."} for part in lexical_parts):
+            raise LocalTelegramPathError("Telegram local path has invalid components")
+        return PurePosixPath(*lexical_parts)
+
     try:
         below_root = raw.relative_to(root)
     except ValueError as exc:
@@ -35,8 +54,7 @@ def tenant_relative_path(
         raise LocalTelegramPathError("Telegram local path has invalid components")
     tenant_component = parts[0]
     observed = hashlib.sha256(tenant_component.encode("utf-8")).hexdigest()
-    expected = (expected_tenant_sha256 or "").strip().lower()
-    if len(expected) != 64 or not hmac.compare_digest(observed, expected):
+    if not hmac.compare_digest(observed, expected):
         raise LocalTelegramPathError("Telegram local path belongs to another tenant")
     return PurePosixPath(*parts[1:])
 

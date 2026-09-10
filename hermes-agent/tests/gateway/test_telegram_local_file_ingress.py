@@ -219,6 +219,47 @@ async def test_public_fallback_uses_drive_download_not_bytearray(tmp_path, monke
     file_obj.download_as_bytearray.assert_not_awaited()
 
 
+
+def test_private_relative_path_requires_explicit_private_mount_opt_in():
+    relative = "voice/file_5.oga"
+    with pytest.raises(LocalTelegramPathError, match="must be absolute"):
+        tenant_relative_path(
+            relative, expected_tenant_sha256=TENANT_HASH, server_root=SERVER_ROOT
+        )
+    assert tenant_relative_path(
+        relative,
+        expected_tenant_sha256=TENANT_HASH,
+        server_root=SERVER_ROOT,
+        allow_private_mount_relative=True,
+    ) == PurePosixPath("voice/file_5.oga")
+
+
+@pytest.mark.asyncio
+async def test_adapter_local_ingress_accepts_private_relative_file_path(tmp_path, monkeypatch):
+    payload = b"relative local document"
+    mount = tmp_path / "mount"
+    (mount / "documents").mkdir(parents=True)
+    (mount / "documents" / "file_4.txt").write_bytes(payload)
+    monkeypatch.setenv("HERMES_TELEGRAM_LOCAL_MOUNT", str(mount))
+    monkeypatch.setenv("HERMES_TELEGRAM_TENANT_SHA256", TENANT_HASH)
+    monkeypatch.setenv("HERMES_TELEGRAM_LOCAL_SERVER_ROOT", SERVER_ROOT)
+    monkeypatch.delenv("TERMINAL_ENV", raising=False)
+    import gateway.platforms.base as base
+    monkeypatch.setattr(base, "DOCUMENT_CACHE_DIR", tmp_path / "doc-cache")
+    file_obj = SimpleNamespace(
+        file_size=len(payload), file_path="documents/file_4.txt",
+        download_to_drive=AsyncMock(side_effect=AssertionError("HTTP path must not run")),
+        download_as_bytearray=AsyncMock(side_effect=AssertionError("RAM path must not run")),
+    )
+    source = SimpleNamespace(file_size=len(payload), get_file=AsyncMock(return_value=file_obj))
+    cached = await _adapter(local=True)._download_telegram_media_file(
+        source, filename="notes.txt", mime_type="text/plain", default_kind="document"
+    )
+    assert Path(cached.path).read_bytes() == payload
+    assert cached.media_type == "text/plain"
+    file_obj.download_to_drive.assert_not_awaited()
+    file_obj.download_as_bytearray.assert_not_awaited()
+
 def test_staging_directory_ignores_host_tmpdir(tmp_path, monkeypatch):
     hermes_home = tmp_path / "profile" / ".hermes"
     hermes_home.mkdir(parents=True)

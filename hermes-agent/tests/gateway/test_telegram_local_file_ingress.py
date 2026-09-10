@@ -27,6 +27,35 @@ def test_tenant_relative_path_accepts_only_matching_tenant():
     ) == PurePosixPath("videos/clip.mp4")
 
 
+def test_relative_path_requires_explicit_private_mount_context():
+    with pytest.raises(LocalTelegramPathError):
+        tenant_relative_path(
+            "voice/file_0.oga",
+            expected_tenant_sha256=TENANT_HASH,
+            server_root=SERVER_ROOT,
+        )
+
+
+def test_private_mount_relative_path_is_accepted():
+    assert tenant_relative_path(
+        "voice/file_0.oga",
+        expected_tenant_sha256=TENANT_HASH,
+        server_root=SERVER_ROOT,
+        allow_private_mount_relative=True,
+    ) == PurePosixPath("voice/file_0.oga")
+
+
+@pytest.mark.parametrize("candidate", ["../secret.bin", "voice/../secret.bin", "./voice/file.oga", "voice//file.oga"])
+def test_private_mount_relative_path_rejects_unsafe_components(candidate):
+    with pytest.raises(LocalTelegramPathError):
+        tenant_relative_path(
+            candidate,
+            expected_tenant_sha256=TENANT_HASH,
+            server_root=SERVER_ROOT,
+            allow_private_mount_relative=True,
+        )
+
+
 def test_hash_mismatch_is_rejected():
     tenant_b = "9999999999:tenant-b"
     candidate = f"{SERVER_ROOT}/{tenant_b}/videos/clip.mp4"
@@ -154,8 +183,14 @@ def _adapter(*, local: bool) -> TelegramAdapter:
     return TelegramAdapter(config)
 
 
+@pytest.mark.parametrize(
+    "telegram_file_path",
+    [f"{SERVER_ROOT}/{TENANT}/videos/clip.mp4", "videos/clip.mp4"],
+)
 @pytest.mark.asyncio
-async def test_adapter_local_ingress_never_buffers_or_http_downloads(tmp_path, monkeypatch):
+async def test_adapter_local_ingress_never_buffers_or_http_downloads(
+    tmp_path, monkeypatch, telegram_file_path
+):
     payload = b"disk-backed-video"
     mount, _source_path = _make_mount(tmp_path, payload)
     monkeypatch.setenv("HERMES_TELEGRAM_LOCAL_MOUNT", str(mount))
@@ -166,7 +201,7 @@ async def test_adapter_local_ingress_never_buffers_or_http_downloads(tmp_path, m
     monkeypatch.setattr(base, "VIDEO_CACHE_DIR", tmp_path / "video-cache")
     file_obj = SimpleNamespace(
         file_size=len(payload),
-        file_path=f"{SERVER_ROOT}/{TENANT}/videos/clip.mp4",
+        file_path=telegram_file_path,
         download_to_drive=AsyncMock(side_effect=AssertionError("HTTP path must not run")),
         download_as_bytearray=AsyncMock(side_effect=AssertionError("RAM path must not run")),
     )

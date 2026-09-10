@@ -10377,6 +10377,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     raw_file_path,
                     expected_tenant_sha256=tenant_hash,
                     server_root=server_root,
+                    allow_private_mount_relative=True,
                 )
                 await asyncio.to_thread(
                     copy_from_private_mount,

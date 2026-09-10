@@ -8,6 +8,7 @@ import pwd
 import re
 import shutil
 import stat
+import subprocess
 import tempfile
 import time
 from pathlib import Path
@@ -73,6 +74,21 @@ def copy_owned(source: Path, target: Path, uid: int, gid: int) -> None:
             item.chmod(0o600)
 
 
+def require_profile_pillow(hermes: Path) -> None:
+    python = hermes / "hermes-agent" / "venv" / "bin" / "python"
+    if not python.is_file():
+        raise RuntimeError("hermes_runtime_python_missing")
+    try:
+        proc = subprocess.run(
+            [str(python), "-c", "from PIL import Image, ImageDraw, ImageFont, ImageOps"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=15, check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise RuntimeError("hermes_pillow_preflight_failed") from exc
+    if proc.returncode != 0:
+        raise RuntimeError("hermes_pillow_missing")
+
+
 def install(owner: str) -> None:
     if os.geteuid() != 0:
         raise RuntimeError("root_required")
@@ -90,6 +106,7 @@ def install(owner: str) -> None:
 
     home = safe_owned_dir(Path(entry.pw_dir), entry.pw_uid, entry.pw_gid)
     hermes = safe_owned_dir(home / ".hermes", entry.pw_uid, entry.pw_gid)
+    require_profile_pillow(hermes)
     config_path = safe_owned_file(hermes / "config.yaml", entry.pw_uid)
     plugin_source = Path(__file__).resolve().parent / "plugin"
     skill_source = Path(__file__).resolve().parent / "skill"

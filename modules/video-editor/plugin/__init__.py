@@ -4,7 +4,7 @@ import json
 import logging
 from typing import Any, Callable
 
-from . import engine, enrichment
+from . import engine, enrichment, visual
 from .phase2_schemas import (CAPTIONS_SCHEMA, CAPTION_APPROVE_SCHEMA, CARDS_SCHEMA, CAPTURE_SCHEMA, PROOF_SCHEMA, SOUND_SCHEMA, MASTER_SCHEMA)
 from .look_schema import LOOK_SCHEMA
 
@@ -26,6 +26,24 @@ PREPARE_SCHEMA = {
         "required": ["sources"],
     },
 }
+
+TIMELINE_VIEW_SCHEMA = {
+    "name": "video_editor_timeline_view",
+    "description": "Attach an on-demand visual timeline to the agent context: sampled real frames, timestamps, nearby transcript and waveform. Use for ambiguous cuts, gesture continuity, framing, blink/thumbnail checks, and rendered-output self-evaluation. This is a drill-down tool, not a full-video frame dump.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "job_id": {"type": "string"},
+            "target": {"type": "string", "description": "A prepared source alias such as source_01, or cut/master when that artifact exists."},
+            "start": {"type": "number", "minimum": 0},
+            "end": {"type": "number", "minimum": 0},
+            "frames": {"type": "integer", "minimum": 3, "maximum": 8, "default": 6},
+            "question": {"type": "string", "maxLength": 240, "description": "What visual decision to inspect, e.g. whether the hand motion makes this seam look abrupt."},
+        },
+        "required": ["job_id", "target", "start", "end"],
+    },
+}
+
 
 TAKES_SCHEMA = {
     "name": "video_editor_takes",
@@ -89,6 +107,15 @@ FEEDBACK_SCHEMA = {
 }
 
 
+def _visual_guard(args: dict[str, Any]) -> dict[str, Any] | str:
+    """Keep successful visual results multimodal; serialize failures safely."""
+    try:
+        return visual.timeline_view(**args)
+    except engine.VideoEditorError as exc:
+        logger.warning("video editor visual tool failed: %s", exc)
+        return json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False, separators=(",", ":"))
+
+
 def _guard(fn: Callable[..., dict[str, Any]], args: dict[str, Any]) -> str:
     """Return the JSON-string tool result required by Hermes' agent registry."""
     try:
@@ -106,6 +133,9 @@ def register(ctx: Any) -> None:
     ctx.register_tool(name="video_editor_takes", toolset="video_editor", schema=TAKES_SCHEMA,
                       handler=lambda args, **_: _guard(engine.read_takes, args), check_fn=engine.runtime_ready,
                       description="Page through prepared takes and silence cut points.", emoji="📝")
+    ctx.register_tool(name="video_editor_timeline_view", toolset="video_editor", schema=TIMELINE_VIEW_SCHEMA,
+                      handler=lambda args, **_: _visual_guard(args), check_fn=engine.runtime_ready,
+                      description="Look at sampled real frames plus waveform for a job-local time window.", emoji="👁️", timeout_seconds=120)
     ctx.register_tool(name="video_editor_render", toolset="video_editor", schema=RENDER_SCHEMA,
                       handler=lambda args, **_: _guard(engine.render, args), check_fn=engine.runtime_ready,
                       description="Render an EDL and verify every edit seam.", emoji="✂️")

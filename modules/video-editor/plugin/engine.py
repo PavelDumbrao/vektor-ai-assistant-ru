@@ -637,6 +637,9 @@ def status(job_id: str) -> dict[str, Any]:
         path = studio / "out" / name
         if path.is_file():
             files["out/" + name] = str(path)
+    visual = studio / "visual"
+    if visual.is_dir() and not visual.is_symlink():
+        files["visual"] = str(visual)
     thumbs = studio / "out" / "thumbnails"
     if thumbs.is_dir():
         files["out/thumbnails"] = str(thumbs)

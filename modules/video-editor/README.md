@@ -2,13 +2,21 @@
 
 Safe shared Hermes integration of `ranahaani/i-hate-editing`, pinned to commit `e8ea406bc2440ca8fc8d1b239c8758e9de112388` (MIT).
 
-The model is the editor: it reads transcript/timing/taste memory and authors the EDL, captions, cards and proof beats. Deterministic code transcribes, cuts, verifies seams, grades, composites, mixes and packages the result.
+The model is the editor: it reads transcript/timing/taste memory, requests real pixels on demand when a visual decision matters, and authors the EDL, captions, cards and proof beats. Deterministic code transcribes, samples visual windows, cuts, verifies seams, grades, composites, mixes and packages the result.
 
 ## Product flow
 
-`prepare → takes → render/verify → captions/approve → look → cards → real-page proof → sound → master → music/variants/thumbnails`
+`prepare → takes → visual drill-down → render/verify → visual seam review → captions/approve → look → cards → real-page proof → sound → master → visual final review → variants/thumbnails`
 
-Every base-cut seam is re-transcribed. A completed render is not considered correct until mechanical and semantic seam checks pass.
+Every base-cut seam is re-transcribed. A completed render is not considered correct until mechanical, semantic and visual checks pass.
+
+## On-demand visual reasoning
+
+`video_editor_timeline_view` attaches a bounded native multimodal image to the Hermes reasoning turn. It combines 3-8 real frames, exact timestamps, nearby transcript text and an audio waveform. For rendered cuts it marks real seams and preferentially samples immediately before/after them, so the model can judge jump cuts, gesture continuity, blink state and framing instead of guessing from ASR alone.
+
+The tool accepts only an existing job id and a job-local target (`source_XX`, `cut`, or `master`), never an arbitrary filesystem path. Windows are capped at 30 seconds and the JPEG payload is bounded before it enters model context. Outputs stay mode `0600` inside the profile-local job directory.
+
+The visual drill-down pattern is conceptually inspired by `browser-use/video-use` (MIT); this module uses an independent job-scoped implementation rather than copying its helper code.
 
 ## ASR
 
@@ -49,7 +57,7 @@ The module uses its own deterministic delivery layer because the pinned upstream
 
 ## Current operational limits
 
-- Raw Telegram uploads above the public Bot API limit are not yet wired into the multi-tenant Hermes relay. A local `telegram-bot-api --local` daemon already exists on the VPS; profile-isolated file relay is the remaining integration.
+- Large Telegram uploads are wired through the local Bot API with per-tenant read-only mounts and a configurable 1 GB production limit; the public Bot API 20 MB download path is not used for those files.
 - Public proof pages only. Authenticated/private dashboards are intentionally unsupported until a per-client browser credential sandbox exists.
 - Music must come from a profile-owned file or an approved licensed shared library.
 - Heavy renders are serialized on the current 4-core VPS. A worker/GPU execution tier is the scale-out path for many simultaneous clients.

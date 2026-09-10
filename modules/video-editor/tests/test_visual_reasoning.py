@@ -141,3 +141,15 @@ def test_timeline_view_does_not_follow_transcript_symlink(tmp_path, monkeypatch)
     (studio / "transcripts" / "source_01.evil.verbatim.json").symlink_to(outside)
     result = visual.timeline_view(JOB_ID, "source_01", 0.5, 2.5, frames=3)
     assert "SECRET_SHOULD_NOT_LEAK" not in result["text_summary"]
+
+
+def test_timeline_view_accepts_final_candidate(tmp_path, monkeypatch):
+    _, studio = _job(tmp_path, monkeypatch, with_cut=True)
+    _fake_media(monkeypatch)
+    out = studio / "out"
+    out.mkdir(exist_ok=True)
+    (out / "final.mp4").write_bytes(b"video")
+    monkeypatch.setattr(visual, "_probe_media", lambda _path: (4.0, 720, 1280))
+    result = visual.timeline_view(JOB_ID, "final", 0.0, 2.0, frames=3)
+    assert result["_multimodal"] is True
+    assert result["meta"]["target"] == "final"

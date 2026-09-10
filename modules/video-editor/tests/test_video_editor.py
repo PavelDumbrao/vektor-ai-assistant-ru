@@ -143,7 +143,8 @@ def test_plugin_registers_only_video_editor_tools(monkeypatch):
             seen.append(kwargs)
     plugin.register(Ctx())
     assert {x["name"] for x in seen} == {
-        "video_editor_prepare", "video_editor_takes", "video_editor_timeline_view", "video_editor_render",
+        "video_editor_prepare", "video_editor_takes", "video_editor_timeline_view",
+        "video_editor_director_qa", "video_editor_director_approve", "video_editor_render",
         "video_editor_status", "video_editor_feedback", "video_editor_captions",
         "video_editor_caption_approve", "video_editor_cards", "video_editor_capture",
         "video_editor_proof", "video_editor_sound", "video_editor_look", "video_editor_master",
@@ -151,6 +152,8 @@ def test_plugin_registers_only_video_editor_tools(monkeypatch):
     assert {x["toolset"] for x in seen} == {"video_editor"}
     timeline = next(x for x in seen if x["name"] == "video_editor_timeline_view")
     assert timeline["timeout_seconds"] == 120
+    director_qa = next(x for x in seen if x["name"] == "video_editor_director_qa")
+    assert director_qa["timeout_seconds"] == 180
     master = next(x for x in seen if x["name"] == "video_editor_master")
     assert master["timeout_seconds"] == 1200
 

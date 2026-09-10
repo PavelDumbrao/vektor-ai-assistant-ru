@@ -4,7 +4,7 @@ import json
 import logging
 from typing import Any, Callable
 
-from . import engine, enrichment, visual
+from . import director, engine, enrichment, visual
 from .phase2_schemas import (CAPTIONS_SCHEMA, CAPTION_APPROVE_SCHEMA, CARDS_SCHEMA, CAPTURE_SCHEMA, PROOF_SCHEMA, SOUND_SCHEMA, MASTER_SCHEMA)
 from .look_schema import LOOK_SCHEMA
 
@@ -34,13 +34,54 @@ TIMELINE_VIEW_SCHEMA = {
         "type": "object",
         "properties": {
             "job_id": {"type": "string"},
-            "target": {"type": "string", "description": "A prepared source alias such as source_01, or cut/master when that artifact exists."},
+            "target": {"type": "string", "description": "A prepared source alias such as source_01, or cut/master/final when that artifact exists."},
             "start": {"type": "number", "minimum": 0},
             "end": {"type": "number", "minimum": 0},
             "frames": {"type": "integer", "minimum": 3, "maximum": 8, "default": 6},
             "question": {"type": "string", "maxLength": 240, "description": "What visual decision to inspect, e.g. whether the hand motion makes this seam look abrupt."},
         },
         "required": ["job_id", "target", "start", "end"],
+    },
+}
+
+
+DIRECTOR_QA_SCHEMA = {
+    "name": "video_editor_director_qa",
+    "description": "Run the mandatory artifact-bound visual director gate. Automatically selects opening/risky seam/final composition windows and attaches all of them natively for review.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "job_id": {"type": "string"},
+            "stage": {"type": "string", "enum": ["cut", "master"], "default": "cut"},
+        },
+        "required": ["job_id", "stage"],
+    },
+}
+
+DIRECTOR_APPROVE_SCHEMA = {
+    "name": "video_editor_director_approve",
+    "description": "Record the visual verdict for the exact artifact shown by video_editor_director_qa. Approval is bound to the artifact SHA and becomes invalid after rerendering.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "job_id": {"type": "string"},
+            "stage": {"type": "string", "enum": ["cut", "master"]},
+            "qa_token": {"type": "string", "minLength": 16, "maxLength": 256},
+            "verdict": {"type": "string", "enum": ["pass", "fix"]},
+            "summary": {"type": "string", "minLength": 8, "maxLength": 1200},
+            "issues": {"type": "array", "maxItems": 12, "items": {
+                "type": "object",
+                "properties": {
+                    "category": {"type": "string", "enum": ["jump_cut", "gesture", "blink", "framing", "caption", "overlay", "composition", "proof", "thumbnail", "audio_visual_sync", "other"]},
+                    "severity": {"type": "string", "enum": ["low", "medium", "high"]},
+                    "at": {"type": "number", "minimum": 0},
+                    "detail": {"type": "string", "maxLength": 360},
+                    "action": {"type": "string", "maxLength": 360},
+                },
+                "required": ["category", "severity", "detail"],
+            }},
+        },
+        "required": ["job_id", "stage", "qa_token", "verdict", "summary"],
     },
 }
 
@@ -116,6 +157,16 @@ def _visual_guard(args: dict[str, Any]) -> dict[str, Any] | str:
         return json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False, separators=(",", ":"))
 
 
+def _director_guard(args: dict[str, Any]) -> dict[str, Any] | str:
+    """Keep successful Director QA packets multimodal; serialize failures."""
+    try:
+        return director.qa(**args)
+    except engine.VideoEditorError as exc:
+        logger.warning("video editor director QA failed: %s", exc)
+        return json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False, separators=(",", ":"))
+
+
+
 def _guard(fn: Callable[..., dict[str, Any]], args: dict[str, Any]) -> str:
     """Return the JSON-string tool result required by Hermes' agent registry."""
     try:
@@ -136,6 +187,12 @@ def register(ctx: Any) -> None:
     ctx.register_tool(name="video_editor_timeline_view", toolset="video_editor", schema=TIMELINE_VIEW_SCHEMA,
                       handler=lambda args, **_: _visual_guard(args), check_fn=engine.runtime_ready,
                       description="Look at sampled real frames plus waveform for a job-local time window.", emoji="👁️", timeout_seconds=120)
+    ctx.register_tool(name="video_editor_director_qa", toolset="video_editor", schema=DIRECTOR_QA_SCHEMA,
+                      handler=lambda args, **_: _director_guard(args), check_fn=engine.runtime_ready,
+                      description="Run mandatory artifact-bound visual Director QA.", emoji="🎬", timeout_seconds=180)
+    ctx.register_tool(name="video_editor_director_approve", toolset="video_editor", schema=DIRECTOR_APPROVE_SCHEMA,
+                      handler=lambda args, **_: _guard(director.approve, args), check_fn=engine.runtime_ready,
+                      description="Approve or reject the exact visual artifact reviewed by Director QA.", emoji="🧿")
     ctx.register_tool(name="video_editor_render", toolset="video_editor", schema=RENDER_SCHEMA,
                       handler=lambda args, **_: _guard(engine.render, args), check_fn=engine.runtime_ready,
                       description="Render an EDL and verify every edit seam.", emoji="✂️")

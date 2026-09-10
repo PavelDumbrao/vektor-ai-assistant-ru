@@ -6,9 +6,9 @@ The model is the editor: it reads transcript/timing/taste memory, requests real 
 
 ## Product flow
 
-`prepare → takes → visual drill-down → render/verify → visual seam review → captions/approve → look → cards → real-page proof → sound → master → visual final review → variants/thumbnails`
+`prepare → takes → visual drill-down → render/mechanical verify → mandatory Director QA(cut) → captions/cards/proof/look/sound → master candidate → mandatory Director QA(master) → mastered → delivery`
 
-Every base-cut seam is re-transcribed. A completed render is not considered correct until mechanical, semantic and visual checks pass.
+Every base-cut seam is re-transcribed. For v0.5+ jobs, neither a mechanically clean cut nor a successfully rendered master is ship-ready until the exact artifact SHA has a passing Director QA receipt.
 
 ## On-demand visual reasoning
 
@@ -17,6 +17,14 @@ Every base-cut seam is re-transcribed. A completed render is not considered corr
 The tool accepts only an existing job id and a job-local target (`source_XX`, `cut`, or `master`), never an arbitrary filesystem path. Windows are capped at 30 seconds and the JPEG payload is bounded before it enters model context. Outputs stay mode `0600` inside the profile-local job directory.
 
 The visual drill-down pattern is conceptually inspired by `browser-use/video-use` (MIT); this module uses an independent job-scoped implementation rather than copying its helper code.
+
+## Mandatory Director QA
+
+`video_editor_director_qa` automatically chooses a bounded set of visual windows instead of trusting the agent to remember which frames to inspect. Cut QA always includes the opening plus the highest-risk seams, ranked by source changes, short adjacent beats, zoom discontinuities, beat transitions and early-retention position. Final QA includes the opening plus card/proof transitions, risky seams and a face/thumbnail sample.
+
+`video_editor_director_approve` binds the verdict to the SHA-256 and byte size of the exact `cut.mp4` or final/master candidate that was shown. Rerendering invalidates the receipt. Any EDL change deletes timeline-derived captions/cards/proof/SFX/composition/output artifacts; enrichment changes invalidate final approval. Two failed automatic QA cycles exhaust the correction budget and require owner escalation instead of an infinite loop.
+
+Legacy jobs remain readable. The hard Director protocol activates when a job is rerendered under v0.5+, which stamps `director_protocol_version`.
 
 ## ASR
 
@@ -34,7 +42,7 @@ One root-owned runtime is reused by all profiles:
 - shared licensed/free SFX library, peak-indexed;
 - `ffmpeg`/`ffprobe` for deterministic media work.
 
-The video runtime `npx` wrapper accepts only pinned HyperFrames `check` and `render`; `publish`, cloud/capture/import and unpinned packages are blocked.
+The video runtime invokes the pinned local HyperFrames binary directly in offline mode; `publish`, cloud/capture/import and unpinned runtime resolution are outside the production path.
 
 ## Quality gates
 
@@ -42,6 +50,7 @@ The video runtime `npx` wrapper accepts only pinned HyperFrames `check` and `ren
 - SFX are individually peak-normalized near `-14 dBFS`, then checked against voice-only cut levels.
 - Music uses sidechain ducking and must report `voice preserved` before delivery.
 - Captions must be explicitly proofread by Hermes before master rendering.
+- Artifact-bound Director QA blocks enrichment until the cut is visually approved and blocks shipping until the final master candidate is visually approved.
 - Beat-map validation prevents long visually dead stretches.
 - Lighting/colour grade is previewed as before/after and stored as reversible `cut_graded.mp4`.
 

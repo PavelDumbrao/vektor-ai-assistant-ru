@@ -83,8 +83,8 @@ def _target_media(job: Path, meta: dict[str, Any], target: str) -> tuple[Path, f
         path = studio / "cut.mp4"
         duration = float(_job_json(studio / "timeline.json", studio).get("predicted_duration") or 0.0)
         kind = "cut"
-    elif target == "master":
-        path = studio / "out" / "master.mp4"
+    elif target in {"master", "final"}:
+        path = studio / "out" / ("final.mp4" if target == "final" else "master.mp4")
         duration = 0.0
         kind = "master"
     else:

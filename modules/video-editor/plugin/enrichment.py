@@ -9,7 +9,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from . import engine, final_verify
+from . import director, engine, final_verify
 
 SFX_ROOT = engine.RUNTIME_ROOT / "sfx"
 NPM_CACHE = engine.RUNTIME_ROOT / "npm-cache"
@@ -35,6 +35,18 @@ def _ctx(job_id: str) -> tuple[Path, dict[str, Any], Path]:
     meta = engine._read_meta(job)
     studio = job / "studio"
     return job, meta, studio
+
+
+def _require_cut_ready(job: Path, meta: dict[str, Any], studio: Path) -> None:
+    if meta.get("state") not in {"verified", "enriched", "mastered"}:
+        raise engine.VideoEditorError("video_cut_must_be_verified_first")
+    director.require_cut_approval(job, meta, studio)
+
+
+def _mark_enriched(job: Path, meta: dict[str, Any], studio: Path) -> None:
+    director.invalidate_master_qa(studio)
+    meta["state"] = "enriched"
+    engine._atomic_json(job / "job.json", meta)
 
 
 def _duration(studio: Path) -> float:
@@ -130,9 +142,8 @@ def _compose_self_contained(studio: Path, py: str, npm_env: dict[str, str]) -> s
     return render
 
 def captions(job_id: str, keywords: list[str] | None = None, fixes: dict[str, str] | None = None) -> dict[str, Any]:
-    _, meta, studio = _ctx(job_id)
-    if meta.get("state") not in {"verified", "enriched", "mastered"}:
-        raise engine.VideoEditorError("video_cut_must_be_verified_first")
+    job, meta, studio = _ctx(job_id)
+    _require_cut_ready(job, meta, studio)
     cmd = [shutil.which("python3") or "python3", str(engine.ENGINE_ROOT / "scripts" / "captions.py"), "--studio", str(studio)]
     clean_keywords = []
     for item in keywords or []:
@@ -151,6 +162,7 @@ def captions(job_id: str, keywords: list[str] | None = None, fixes: dict[str, st
     if not path.is_file():
         raise engine.VideoEditorError("video_captions_missing")
     data = json.loads(path.read_text(encoding="utf-8"))
+    _mark_enriched(job, meta, studio)
     return {
         "ok": True,
         "job_id": job_id,
@@ -162,9 +174,8 @@ def captions(job_id: str, keywords: list[str] | None = None, fixes: dict[str, st
 
 
 def caption_approve(job_id: str, corrections: list[dict[str, Any]] | None = None) -> dict[str, Any]:
-    _, meta, studio = _ctx(job_id)
-    if meta.get("state") not in {"verified", "enriched", "mastered"}:
-        raise engine.VideoEditorError("video_cut_must_be_verified_first")
+    job, meta, studio = _ctx(job_id)
+    _require_cut_ready(job, meta, studio)
     path = studio / "captions.json"
     if not path.is_file():
         raise engine.VideoEditorError("video_captions_missing")
@@ -215,15 +226,13 @@ def caption_approve(job_id: str, corrections: list[dict[str, Any]] | None = None
     data["proofread_at"] = int(time.time())
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
     os.chmod(path, 0o600)
-    meta["state"] = "enriched"
-    engine._atomic_json(engine._job_dir(job_id) / "job.json", meta)
+    _mark_enriched(job, meta, studio)
     return {"ok": True, "job_id": job_id, "proofread": True, "chunks": chunks}
 
 
 def cards(job_id: str, cards: list[dict[str, Any]]) -> dict[str, Any]:
-    _, meta, studio = _ctx(job_id)
-    if meta.get("state") not in {"verified", "enriched", "mastered"}:
-        raise engine.VideoEditorError("video_cut_must_be_verified_first")
+    job, meta, studio = _ctx(job_id)
+    _require_cut_ready(job, meta, studio)
     if not isinstance(cards, list) or len(cards) > 30:
         raise engine.VideoEditorError("video_cards_invalid")
     total = _duration(studio)
@@ -272,13 +281,13 @@ def cards(job_id: str, cards: list[dict[str, Any]]) -> dict[str, Any]:
     path = studio / "cards.json"
     path.write_text(json.dumps({"cards": clean}, ensure_ascii=False, indent=2), encoding="utf-8")
     os.chmod(path, 0o600)
+    _mark_enriched(job, meta, studio)
     return {"ok": True, "job_id": job_id, "cards": clean}
 
 
 def capture_page(job_id: str, url: str, name: str, find: list[str] | None = None) -> dict[str, Any]:
-    _, meta, studio = _ctx(job_id)
-    if meta.get("state") not in {"verified", "enriched", "mastered"}:
-        raise engine.VideoEditorError("video_cut_must_be_verified_first")
+    job, meta, studio = _ctx(job_id)
+    _require_cut_ready(job, meta, studio)
     if not ASSET_RE.fullmatch(str(name or "")):
         raise engine.VideoEditorError("video_proof_asset_name_invalid")
     if not CAPTURE_PYTHON.is_file() or not SAFE_CAPTURE.is_file():
@@ -301,9 +310,8 @@ def capture_page(job_id: str, url: str, name: str, find: list[str] | None = None
 
 
 def proof(job_id: str, beats: list[dict[str, Any]]) -> dict[str, Any]:
-    _, meta, studio = _ctx(job_id)
-    if meta.get("state") not in {"verified", "enriched", "mastered"}:
-        raise engine.VideoEditorError("video_cut_must_be_verified_first")
+    job, meta, studio = _ctx(job_id)
+    _require_cut_ready(job, meta, studio)
     if not isinstance(beats, list) or len(beats) > 30:
         raise engine.VideoEditorError("video_proof_beats_invalid")
     total = _duration(studio)
@@ -352,6 +360,7 @@ def proof(job_id: str, beats: list[dict[str, Any]]) -> dict[str, Any]:
     path = studio / "proof.json"
     path.write_text(json.dumps({"beats": clean}, ensure_ascii=False, indent=2), encoding="utf-8")
     os.chmod(path, 0o600)
+    _mark_enriched(job, meta, studio)
     return {"ok": True, "job_id": job_id, "beats": clean}
 
 
@@ -406,9 +415,8 @@ def _sound_gate(studio: Path) -> dict[str, Any]:
 
 
 def sound(job_id: str, gain_scale: float = 1.0) -> dict[str, Any]:
-    _, meta, studio = _ctx(job_id)
-    if meta.get("state") not in {"verified", "enriched", "mastered"}:
-        raise engine.VideoEditorError("video_cut_must_be_verified_first")
+    job, meta, studio = _ctx(job_id)
+    _require_cut_ready(job, meta, studio)
     if not (SFX_ROOT / "index.json").is_file():
         raise engine.VideoEditorError("video_sfx_runtime_not_ready")
     try:
@@ -432,6 +440,7 @@ def sound(job_id: str, gain_scale: float = 1.0) -> dict[str, Any]:
     tuned = _tune_sounds(existing_sounds, gain)
     path.write_text(json.dumps({"sounds": tuned}, ensure_ascii=False, indent=2), encoding="utf-8")
     os.chmod(path, 0o600)
+    _mark_enriched(job, meta, studio)
     return {"ok": True, "job_id": job_id, "sounds": tuned, "planned": bool(proc_log), "log": proc_log}
 
 
@@ -565,8 +574,7 @@ def _delivery_package(studio: Path, master: Path, aspects: list[str]) -> dict[st
 
 def master(job_id: str, music_path: str = "", music_level: float = 0.12, aspects: list[str] | None = None) -> dict[str, Any]:
     job, meta, studio = _ctx(job_id)
-    if meta.get("state") not in {"verified", "enriched", "mastered"}:
-        raise engine.VideoEditorError("video_cut_must_be_verified_first")
+    _require_cut_ready(job, meta, studio)
     # A reviewed preview is not the final render. Promote the exact approved EDL
     # to full-quality cut.mp4 and re-run seam verification before enrichment.
     if not (studio / "cut.mp4").is_file():
@@ -611,6 +619,10 @@ def master(job_id: str, music_path: str = "", music_level: float = 0.12, aspects
             "beat_log": engine._safe_tail(beat_proc.stdout, 5000),
             "next": "Add or retime cards/proof so there are no dead stretches, then call video_editor_master again.",
         }
+    director.invalidate_master_qa(studio)
+    if director.protocol_enabled(meta) and meta.get("state") == "mastered":
+        meta["state"] = "enriched"
+        engine._atomic_json(job / "job.json", meta)
     npm_env = {"npm_config_cache": str(NPM_CACHE), "npm_config_offline": "true", "PLAYWRIGHT_BROWSERS_PATH": str(PLAYWRIGHT_BROWSERS), "HYPERFRAMES_BROWSER_PATH": str(HYPERFRAMES_BROWSER)}
     with engine.runtime_lock():
         compose_proc = _compose_self_contained(studio, py, npm_env)
@@ -664,14 +676,34 @@ def master(job_id: str, music_path: str = "", music_level: float = 0.12, aspects
             "final_verification": verification,
             "next": "Inspect the final verification report/contact sheet and fix the reported media or delivery problems before shipping.",
         }
+    meta["output"] = str(final_path)
+    if director.protocol_enabled(meta):
+        meta["state"] = "needs_final_visual_qa"
+        meta["master_candidate_at"] = int(time.time())
+        engine._atomic_json(job / "job.json", meta)
+        return {
+            "ok": True,
+            "job_id": job_id,
+            "state": "needs_final_visual_qa",
+            "ship_ready": False,
+            "director_qa_required": True,
+            "output": str(final_path),
+            "manifest": manifest,
+            "compose_log": engine._safe_tail(compose_proc.stdout, 2500),
+            "sound_gate": sound_gate,
+            "music_log": music_log,
+            "final_verification": verification,
+            "delivery": {"variants": manifest.get("variants", {}), "thumbnails": manifest.get("thumbnails", [])},
+            "next": "Call video_editor_director_qa with stage=master, inspect every attached window, then video_editor_director_approve. Ship only after state=mastered.",
+        }
     meta["state"] = "mastered"
     meta["mastered_at"] = int(time.time())
-    meta["output"] = str(final_path)
     engine._atomic_json(job / "job.json", meta)
     return {
         "ok": True,
         "job_id": job_id,
         "state": "mastered",
+        "ship_ready": True,
         "output": str(final_path),
         "manifest": manifest,
         "compose_log": engine._safe_tail(compose_proc.stdout, 2500),
@@ -684,8 +716,7 @@ def master(job_id: str, music_path: str = "", music_level: float = 0.12, aspects
 
 def look(job_id: str, preset: str = "neutral_punch", strength: str = "normal", apply: bool = False, at: float | None = None) -> dict[str, Any]:
     job, meta, studio = _ctx(job_id)
-    if meta.get("state") not in {"verified", "enriched", "mastered"}:
-        raise engine.VideoEditorError("video_cut_must_be_verified_first")
+    _require_cut_ready(job, meta, studio)
     if preset not in {"none", "warm_lift", "neutral_punch", "cool_clean"}:
         raise engine.VideoEditorError("video_look_preset_invalid")
     if strength not in {"subtle", "normal", "strong"}:
@@ -697,7 +728,7 @@ def look(job_id: str, preset: str = "neutral_punch", strength: str = "normal", a
     if preset == "none":
         graded.unlink(missing_ok=True)
         meta["look"] = {"preset": "none", "strength": strength, "applied": False}
-        engine._atomic_json(job / "job.json", meta)
+        _mark_enriched(job, meta, studio)
         return {"ok": True, "job_id": job_id, "preset": "none", "applied": False}
     cmd = [shutil.which("python3") or "python3", str(engine.ENGINE_ROOT / "scripts" / "grade.py"), str(cut), "--preset", preset, "--strength", strength]
     if at is not None:
@@ -721,7 +752,5 @@ def look(job_id: str, preset: str = "neutral_punch", strength: str = "normal", a
     if apply:
         graded.chmod(0o600)
         meta["look"] = {"preset": preset, "strength": strength, "applied": True, "path": str(graded)}
-        if meta.get("state") != "mastered":
-            meta["state"] = "enriched"
-        engine._atomic_json(job / "job.json", meta)
+        _mark_enriched(job, meta, studio)
     return {"ok": True, "job_id": job_id, "preset": preset, "strength": strength, "applied": bool(apply), "graded": str(graded) if apply else None, "compare": str(compare) if compare.is_file() else None, "before": str(before) if before.is_file() else None, "after": str(after) if after.is_file() else None, "log": engine._safe_tail(proc.stdout, 2500)}

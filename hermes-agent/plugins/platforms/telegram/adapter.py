@@ -329,6 +329,7 @@ from gateway.platforms.base import (
 from plugins.platforms.telegram.local_file_ingress import (
     LocalTelegramPathError,
     copy_from_private_mount,
+    strip_trusted_bot_file_url,
     tenant_relative_path,
 )
 from plugins.platforms.telegram.telegram_ids import (
@@ -10373,8 +10374,16 @@ class TelegramAdapter(BasePlatformAdapter):
                 if not raw_file_path:
                     raise LocalTelegramPathError("Telegram local file path is missing")
                 mount_root, tenant_hash, server_root = ingress
+                try:
+                    source_bot = file_obj.get_bot()
+                    trusted_base_file_url = str(getattr(source_bot, "base_file_url", "") or "")
+                except (AttributeError, RuntimeError):
+                    trusted_base_file_url = ""
+                normalized_file_path = strip_trusted_bot_file_url(
+                    raw_file_path, trusted_base_file_url=trusted_base_file_url
+                )
                 relative = tenant_relative_path(
-                    raw_file_path,
+                    normalized_file_path,
                     expected_tenant_sha256=tenant_hash,
                     server_root=server_root,
                     allow_private_mount_relative=True,

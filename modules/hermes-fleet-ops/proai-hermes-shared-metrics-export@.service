@@ -1,0 +1,28 @@
+[Unit]
+Description=Export privacy-safe Hermes SharedMetrics for %i
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=%i
+Group=%i
+WorkingDirectory=/home/%i
+Environment=HOME=/home/%i
+Environment=HERMES_HOME=/home/%i/.hermes
+ExecStart=/home/%i/.hermes/hermes-agent/venv/bin/python -I /opt/proai-hermes-shared-metrics-exporter/export_shared_metrics.py
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+PrivateNetwork=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=-/home/%i/.hermes/telemetry/shared_metrics
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+LockPersonality=true
+RestrictNamespaces=true
+RestrictAddressFamilies=AF_UNIX

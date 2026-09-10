@@ -54,3 +54,11 @@ Resume a paused rollout only after the incident is understood:
 ```bash
 python3 /opt/proai-hermes-fleet-ops/policyctl.py resume --track modern --channel stable
 ```
+
+## SharedMetrics local export delivery
+
+Product telemetry stays on the Hermes native privacy boundary. Each enrolled profile gets an hourly randomized systemd timer whose oneshot exporter runs as that tenant Linux user with `PrivateNetwork=true`. The exporter does nothing when telemetry is disabled or no native metrics DB exists; otherwise it invokes only `SharedMetricsStore.create_and_export_package_if_due()` from that profile's pinned Hermes runtime.
+
+The resulting `0600` JSON package remains in the tenant-local `~/.hermes/telemetry/shared_metrics/outbox`. The existing root Forge Collector reads and validates only these bounded v1/v2 packages, drops `install_id`, and stores aggregate counters centrally. No conversation text, prompts, model output, tool arguments/results, documents or secret values are part of this delivery path.
+
+A root-only enrollment timer periodically discovers validated profile registry entries and enables the fixed per-tenant exporter timer template. It never reads tenant metrics databases or package bodies. Product packages follow the Hermes native daily package cadence; fleet health and update collection remain on the existing five-minute interval.

@@ -19,6 +19,8 @@
     capability_planned:"Этот инструмент пока только в плане.",
     capability_verification_failed:"Изменение не прошло проверку и было отменено.",
     capability_rollback_failed:"Не удалось безопасно завершить откат. Требуется техническая проверка.",
+    planned_restart_contract_missing:"Безопасный механизм перезапуска ещё не установлен для этого Hermes.",
+    restart_signal_failed:"Hermes не принял безопасную команду перезапуска.",
   })[code] || code || "request_failed";
 
   async function request(path, options={}) {

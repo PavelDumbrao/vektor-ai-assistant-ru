@@ -21,6 +21,7 @@ Environment="HERMES_TELEGRAM_DISABLE_FALLBACK_IPS=1"
 UMask=0077
 Restart=always
 RestartSec=5
+SuccessExitStatus=75
 RestartForceExitStatus=75
 RestartPreventExitStatus=78
 KillMode=mixed

@@ -19,6 +19,7 @@ Environment="HERMES_HOME=/home/@USER@/.hermes"
 Environment="HERMES_TELEGRAM_DISABLE_FALLBACK_IPS=1"
 Restart=always
 RestartSec=5
+SuccessExitStatus=75
 RestartForceExitStatus=75
 RestartPreventExitStatus=78
 KillMode=mixed

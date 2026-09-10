@@ -539,7 +539,7 @@ def render(job_id: str, ranges: list[dict[str, Any]], speed: float = 1.0, grade:
         raise VideoEditorError("video_editor_runtime_not_ready")
     job = _job_dir(job_id)
     meta = _read_meta(job)
-    if meta.get("state") not in {"prepared", "rendered", "needs_fix", "verified", "enriched", "mastered"}:
+    if meta.get("state") not in {"prepared", "rendered", "preview_ready", "needs_fix", "needs_visual_qa", "verified", "enriched", "needs_final_visual_qa", "mastered"}:
         raise VideoEditorError("video_job_not_ready_for_render")
     clean_ranges = _normalize_ranges(meta, ranges)
     try:
@@ -552,6 +552,8 @@ def render(job_id: str, ranges: list[dict[str, Any]], speed: float = 1.0, grade:
         raise VideoEditorError("video_grade_invalid")
 
     studio = job / "studio"
+    from . import director
+    director.invalidate_for_new_cut(studio)
     edl = {
         "sources": {alias: item["file"] for alias, item in (meta.get("sources") or {}).items()},
         "ranges": clean_ranges,
@@ -593,7 +595,13 @@ def render(job_id: str, ranges: list[dict[str, Any]], speed: float = 1.0, grade:
         raise VideoEditorError("video_verify_report_missing")
     report = json.loads(report_path.read_text(encoding="utf-8"))
     problems = report.get("problems") or []
-    meta["state"] = "needs_fix" if problems else "verified"
+    meta["director_protocol_version"] = director.PROTOCOL_VERSION
+    if problems:
+        meta["state"] = "needs_fix"
+    elif preview:
+        meta["state"] = "preview_ready"
+    else:
+        meta["state"] = "needs_visual_qa"
     meta["last_render_at"] = int(time.time())
     meta["output"] = report.get("video")
     meta["preview"] = bool(preview)
@@ -620,7 +628,14 @@ def render(job_id: str, ranges: list[dict[str, Any]], speed: float = 1.0, grade:
         "verify_log": verify_log,
         "verify_provider": verify_provider,
         "audio_normalization": audio_normalization,
-        "judgement_gate": "Mechanical verification is not semantic approval. Read every seam transcript and ensure no clause starts/ends mid-thought before presenting the cut.",
+        "director_qa_required": bool(not problems and not preview),
+        "ship_ready": False,
+        "judgement_gate": "Mechanical verification is not semantic or visual approval. After a clean full render call video_editor_director_qa(stage=cut), inspect every attached window, then video_editor_director_approve before enrichment.",
+        "next": (
+            "Fix mechanical seam problems and render again." if problems else
+            "Render the approved EDL at full quality before enrichment." if preview else
+            "Call video_editor_director_qa with stage=cut, inspect all visual windows, then approve or fix."
+        ),
     }
 
 
@@ -646,6 +661,11 @@ def status(job_id: str) -> dict[str, Any]:
     report = studio / "verify" / "report.json"
     if report.is_file():
         files["verify/report.json"] = str(report)
+    for name in ("director_cut.json", "director_master.json"):
+        path = studio / "verify" / name
+        if path.is_file() and not path.is_symlink():
+            files["verify/" + name] = str(path)
+    from . import director
     return {
         "ok": True,
         "job_id": job_id,
@@ -657,6 +677,11 @@ def status(job_id: str) -> dict[str, Any]:
         "look": meta.get("look"),
         "transcription_quality": meta.get("transcription_quality", "quality"),
         "sources": [{"source": alias, "filename": item.get("filename"), "original_name": item.get("original_name"), "duration": item.get("duration")} for alias, item in (meta.get("sources") or {}).items()],
+        "director_qa": {
+            "cut": director.cut_approval_status(job, meta, studio),
+            "master": director.master_approval_status(job, meta, studio),
+            "escalation_required": bool(meta.get("director_escalation_required")),
+        },
         "files": files,
     }
 

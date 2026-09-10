@@ -1,6 +1,6 @@
 ---
 name: video-editor
-description: Full transcript-first talking-head editing with on-demand native visual reasoning: cut selection, seam verification, captions, cards, real-page proof B-roll, sound, music, variants and durable taste memory.
+description: Full transcript-first talking-head editing with mandatory artifact-bound Director QA, native visual reasoning, cut selection, seam verification, captions, cards, proof B-roll, sound, delivery and durable taste memory.
 ---
 
 # Hermes Video Editor
@@ -12,19 +12,18 @@ description: Full transcript-first talking-head editing with on-demand native vi
 1. `video_editor_prepare`: передай локальные исходники и явный язык. По умолчанию `asr_provider=auto`: shared OpenRouter Whisper Turbo, при сбое локальный whisper.cpp fallback.
 2. Прочитай `takes` полностью через `video_editor_takes`. Учитывай `taste` владельца.
 3. Используй `video_editor_timeline_view` только как visual drill-down, а не как frame dump. До EDL посмотри opening и спорные места, где жест, поза, движение, взгляд или пауза могут изменить решение о склейке. Для source передавай alias вроде `source_01`.
-4. Составь EDL по смыслу и silence cut points. Вызови `video_editor_render`.
-5. Прочитай каждый seam transcript. Mechanical clean не заменяет смысловую проверку. Затем визуально проверь спорные seam через `video_editor_timeline_view(target="cut")`; tool сам ставит кадры непосредственно до и после seam. Исправляй jump cuts, обрубленные жесты, неудачное моргание и резкую смену framing. Только после `state=verified` переходи к enrichment.
+4. Составь EDL по смыслу и silence cut points. Вызови `video_editor_render`. Preview можно использовать для черновой проверки, но enrichment разрешён только после full render.
+5. После механически чистого full render job переходит в `needs_visual_qa`. Обязательно вызови `video_editor_director_qa(stage="cut")`. Он сам выберет opening и самые рискованные seams и вложит несколько visual windows в контекст. Прочитай каждый seam transcript и посмотри ВСЕ приложенные окна.
+6. Вызови `video_editor_director_approve`. `verdict=pass` переводит точный SHA cut в `verified`. При `verdict=fix` укажи структурированные issues, исправь EDL и повтори render → Director QA. После двух неудачных visual QA циклов остановись и покажи проблему владельцу, не зацикливайся.
 
 ## Enrichment
 
-6. `video_editor_captions`: получи черновые титры. Прочитай каждый chunk.
-7. `video_editor_caption_approve`: исправь ASR, имена, продуктовые термины и акценты. Не объединяй соседние caption chunks и держи каждую correction-фразу максимум в 4 словах, чтобы не ломать тайминг. Нельзя идти в master с `proofread=false`.
-8. `video_editor_cards`: расставь смысловые cards так, чтобы кадр регулярно менялся. Card объясняет, но не доказывает реальный факт.
-9. Если речь называет реальный сайт/репозиторий/продукт, используй `video_editor_capture`, затем `video_editor_proof`. Показывай реальную страницу, а не мокап.
-10. `video_editor_look`: сначала preview lighting/colour correction, проверь before/after, затем apply. Исходный cut остаётся нетронутым.
-11. `video_editor_sound`: спланируй SFX. Если master сообщает слабый/слишком громкий звук, скорректируй `gain_scale` и повтори.
-12. `video_editor_master`: запускает beat gate, offline-pinned HyperFrames, SFX audibility check, optional music ducking, variants и thumbnails.
-13. Перед выдачей результата используй `video_editor_timeline_view(target="master")` на opening и на моменте выбранного thumbnail, если нужно проверить лицо/глаза/жест или читаемость композиции.
+7. Только после `state=verified` начинай enrichment. `video_editor_captions`: получи черновые титры и прочитай каждый chunk.
+8. `video_editor_caption_approve`: исправь ASR, имена, продуктовые термины и акценты. Не объединяй соседние chunks, correction максимум 4 слова.
+9. `video_editor_cards`: расставь смысловые cards. Card объясняет, но не подменяет proof. Если звучит проверяемый сайт/репозиторий/продукт, используй `video_editor_capture` → `video_editor_proof`.
+10. `video_editor_look`: сначала preview, затем apply. `video_editor_sound`: спланируй и проверь SFX. Любое изменение enrichment автоматически аннулирует старый final visual approval.
+11. `video_editor_master` строит master candidate, запускает beat/sound/media gates, variants и thumbnails. Для новых jobs успешный render возвращает `needs_final_visual_qa`, а НЕ `mastered`.
+12. Обязательно вызови `video_editor_director_qa(stage="master")`, посмотри ВСЕ приложенные окна: opening, transitions/cards/proof, risky seams и thumbnail/face sample. Затем `video_editor_director_approve(stage="master")`. Только `verdict=pass` по текущему artifact SHA даёт `state=mastered` и разрешает выдачу. При `fix` исправь enrichment/master и повтори, максимум два автоматических correction loops.
 
 ## Visual reasoning
 
@@ -39,12 +38,12 @@ description: Full transcript-first talking-head editing with on-demand native vi
 - OpenRouter Turbo является latency-first primary. Local Whisper остаётся offline fallback; `transcription_quality` относится только к local fallback.
 - Не режь внутри слова или незавершённой мысли. Аудио является источником истины по времени.
 - Не принимай визуальные решения по одному transcript, если вопрос зависит от жеста, взгляда, framing, моргания или jump cut; используй timeline view.
-- Не строй captions/cards/sound поверх неутверждённого базового cut.
+- Не строй captions/cards/sound поверх cut без действующего Director QA receipt. Approval привязан к SHA/размеру артефакта и автоматически становится недействительным после rerender.
 - Не придумывай скриншоты. `video_editor_capture` работает только с публичным HTTPS и блокирует private/local network.
 - Не запускай произвольный shell для proofread/capture/render. Все разрешённые операции уже завернуты в tools.
 - Музыку бери только из profile-owned audio path или отдельно утверждённой общей лицензированной библиотеки. Не скачивай случайную музыку из сети.
 - Если пользователь меняет вкус монтажа, вызывай `video_editor_feedback` и сохраняй его исходную формулировку в `said`.
-- Перед выдачей финала проверь visual continuity, beat gate, sound gate и manifest. Выбери thumbnail с человеком без mid-blink, если это talking-head.
+- Никогда не выдавай `needs_final_visual_qa` как готовый ролик. Перед выдачей нужен `state=mastered`, действующий final Director receipt, beat/sound/media gates и manifest. Выбери thumbnail без mid-blink.
 
 ## Что считать готовым
 

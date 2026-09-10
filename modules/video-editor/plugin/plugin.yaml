@@ -1,11 +1,12 @@
 name: video-editor
-version: 0.3.0
+version: 0.4.0
 kind: standalone
-description: Safe transcript-first talking-head editor with enrichment and verified master rendering.
+description: Safe transcript-first talking-head editor with on-demand native visual reasoning, enrichment and verified master rendering.
 author: ProAI
 provides_tools:
   - video_editor_prepare
   - video_editor_takes
+  - video_editor_timeline_view
   - video_editor_render
   - video_editor_status
   - video_editor_feedback

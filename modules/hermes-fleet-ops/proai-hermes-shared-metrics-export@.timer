@@ -1,0 +1,12 @@
+[Unit]
+Description=Schedule privacy-safe Hermes SharedMetrics export for %i
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=1h
+RandomizedDelaySec=15min
+Persistent=true
+Unit=proai-hermes-shared-metrics-export@%i.service
+
+[Install]
+WantedBy=timers.target

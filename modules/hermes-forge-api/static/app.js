@@ -4,6 +4,8 @@
   let current = null;
   let catalog = null;
   let capabilityStates = new Map();
+  let kitchenAgent = null;
+  let kitchenOptional = new Set();
 
   const $ = (id) => document.getElementById(id);
   const text = (id, value) => { $(id).textContent = value == null ? "—" : String(value); };
@@ -131,6 +133,67 @@
     return button;
   }
 
+  function catalogCapability(id) {
+    return ((catalog&&catalog.capabilities)||[]).find(item=>item.id===id) || null;
+  }
+
+  function openKitchen(agentId) {
+    const agent=((catalog&&catalog.agents)||[]).find(item=>item.id===agentId);
+    if (!agent) { result("kitchen-result","Роль не найдена в текущем каталоге",true); return; }
+    kitchenAgent=agent; kitchenOptional=new Set();
+    text("kitchen-agent-name", agent.name||agent.id);
+    text("kitchen-agent-summary", agent.summary||"");
+    const required=$("kitchen-required"); required.textContent="";
+    for (const id of agent.required_capabilities||[]) {
+      const cap=catalogCapability(id); const chip=document.createElement("span"); chip.className="chip";
+      chip.textContent="Обязательно: "+(cap&&cap.name||id); required.append(chip);
+    }
+    const options=$("kitchen-options"); options.textContent="";
+    const optional=agent.optional_capabilities||[];
+    if (!optional.length) { const note=document.createElement("p"); note.className="muted"; note.textContent="У этой роли нет дополнительных возможностей."; options.append(note); }
+    for (const id of optional) {
+      const cap=catalogCapability(id); const button=document.createElement("button");
+      button.type="button"; button.className="secondary kitchen-option"; button.dataset.kitchenCapability=id;
+      button.setAttribute("aria-pressed","false"); button.textContent="+ "+(cap&&cap.name||id); options.append(button);
+    }
+    $("kitchen-preview-button").disabled=false; $("kitchen-preview").textContent=""; $("kitchen-preview").classList.add("hidden");
+    result("kitchen-result",""); selectTab("kitchen");
+  }
+
+  function kitchenConnectionLabel(connection) {
+    if (!connection) return "Без подключения";
+    if (connection.secret_required) return "Нужен личный ключ";
+    if ((connection.oauth_scopes||[]).length) return "Нужен OAuth";
+    return ({platform:"Через платформу",telegram:"Telegram",none:"Без подключения"})[connection.mode] || "Подключение: "+String(connection.mode||"none");
+  }
+
+  function renderKitchenPreview(data) {
+    const root=$("kitchen-preview"); root.textContent=""; root.classList.remove("hidden");
+    const summary=document.createElement("div"); summary.className="card catalog-card";
+    const top=document.createElement("div"); top.className="catalog-top";
+    const wrap=document.createElement("div"); const title=document.createElement("h2"); title.textContent=data.agent.name||data.agent.id;
+    const subtitle=document.createElement("div"); subtitle.className="muted"; subtitle.textContent="План "+String(data.plan_sha256||"").slice(0,12)+" · каталог "+String(data.catalog_sha256||"").slice(0,12);
+    wrap.append(title,subtitle); const state=document.createElement("span"); pill(state,"Ничего не применено","warn"); top.append(wrap,state);
+    const meta=document.createElement("div"); meta.className="catalog-capabilities";
+    for (const value of ["Runtime "+data.effective_runtime,"Пакет v"+(data.agent.version||""),"Модель "+(data.models&&data.models.primary||"platform/default")]) { const chip=document.createElement("span"); chip.className="chip"; chip.textContent=value; meta.append(chip); }
+    summary.append(top,meta); root.append(summary);
+    for (const item of data.capabilities||[]) {
+      const card=catalogCard(item,item.required?"Обязательно":"Опционально",item.required?"ok":"warn");
+      const chips=document.createElement("div"); chips.className="catalog-capabilities";
+      const labels=[kitchenConnectionLabel(item.connection),"Действия: "+String(item.permissions&&item.permissions.action_default||"observe")];
+      if (item.metering && item.metering!=="none") labels.push("Учёт использования");
+      for (const value of labels) { const chip=document.createElement("span"); chip.className="chip"; chip.textContent=value; chips.append(chip); }
+      card.append(chips); root.append(card);
+    }
+  }
+
+  async function loadKitchenPreview() {
+    if (!kitchenAgent) throw new Error("Сначала выбери AI-сотрудника");
+    result("kitchen-result","Собираю безопасный рецепт…");
+    const data=await request("/v1/kitchen/preview",{method:"POST",body:JSON.stringify({agent_id:kitchenAgent.id,optional_capabilities:[...kitchenOptional].sort()})});
+    renderKitchenPreview(data); result("kitchen-result","Рецепт готов. Ничего не установлено и не изменено.");
+  }
+
   function renderCatalog(data) {
     const capabilities=(data&&data.capabilities)||[];
     const agents=(data&&data.agents)||[];
@@ -162,7 +225,9 @@
       const chips=document.createElement("div"); chips.className="catalog-capabilities";
       for (const id of item.required_capabilities||[]) { const chip=document.createElement("span"); chip.className="chip"; chip.textContent="✓ "+(nameById.get(id)||id); chips.append(chip); }
       for (const id of item.optional_capabilities||[]) { const chip=document.createElement("span"); chip.className="chip"; chip.textContent="+ "+(nameById.get(id)||id); chips.append(chip); }
-      card.append(chips); employeesRoot.append(card);
+      const actions=document.createElement("div"); actions.className="actions";
+      const kitchen=document.createElement("button"); kitchen.type="button"; kitchen.className="secondary"; kitchen.dataset.kitchenAgent=item.id; kitchen.textContent="Собрать рецепт"; actions.append(kitchen);
+      card.append(chips,actions); employeesRoot.append(card);
     }
   }
 
@@ -210,6 +275,22 @@
   document.addEventListener("click", async (event) => {
     const tab=event.target.closest(".tab");
     if (tab) { selectTab(tab.dataset.tab); return; }
+    const kitchenAgentButton=event.target.closest("button[data-kitchen-agent]");
+    if (kitchenAgentButton) { openKitchen(kitchenAgentButton.dataset.kitchenAgent); return; }
+    const kitchenOption=event.target.closest("button[data-kitchen-capability]");
+    if (kitchenOption) {
+      const id=kitchenOption.dataset.kitchenCapability;
+      if (kitchenOptional.has(id)) kitchenOptional.delete(id); else kitchenOptional.add(id);
+      const selected=kitchenOptional.has(id); kitchenOption.setAttribute("aria-pressed",selected?"true":"false");
+      kitchenOption.classList.toggle("selected",selected); return;
+    }
+    const kitchenPreviewButton=event.target.closest("#kitchen-preview-button");
+    if (kitchenPreviewButton) {
+      kitchenPreviewButton.disabled=true;
+      try { await loadKitchenPreview(); } catch (err) { result("kitchen-result",String(err&&err.message||err),true); }
+      finally { kitchenPreviewButton.disabled=!kitchenAgent; }
+      return;
+    }
     if (!current) return;
     const button=event.target.closest("button"); if (!button) return;
     if (button.dataset.capabilitySettings === "maton") { selectTab("secrets"); return; }

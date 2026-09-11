@@ -4722,16 +4722,52 @@ class TelegramAdapter(BasePlatformAdapter):
                     ):
                         raise MediaPermanentError("too_large")
                     temp_path = spool.create_private_temp(job["job_id"])
-                    await asyncio.wait_for(
-                        telegram_file.download_to_drive(
-                            custom_path=temp_path,
-                            read_timeout=60.0,
-                            write_timeout=60.0,
-                            connect_timeout=5.0,
-                            pool_timeout=5.0,
-                        ),
-                        timeout=90.0,
-                    )
+                    ingress = self._telegram_local_ingress_settings()
+                    if ingress is not None:
+                        raw_file_path = str(getattr(telegram_file, "file_path", "") or "")
+                        if not raw_file_path:
+                            raise LocalTelegramPathError("Telegram local file path is missing")
+                        mount_root, tenant_hash, server_root = ingress
+                        try:
+                            source_bot = telegram_file.get_bot()
+                            trusted_base_file_url = str(getattr(source_bot, "base_file_url", "") or "")
+                        except (AttributeError, RuntimeError):
+                            trusted_base_file_url = ""
+                        normalized_file_path = strip_trusted_bot_file_url(
+                            raw_file_path, trusted_base_file_url=trusted_base_file_url
+                        )
+                        relative = tenant_relative_path(
+                            normalized_file_path,
+                            expected_tenant_sha256=tenant_hash,
+                            server_root=server_root,
+                            allow_private_mount_relative=True,
+                        )
+                        expected_bytes = (
+                            reported_size
+                            if isinstance(reported_size, int)
+                            and not isinstance(reported_size, bool)
+                            and reported_size > 0
+                            else int(job.get("declared_file_size") or 0)
+                        )
+                        await asyncio.to_thread(
+                            copy_from_private_mount,
+                            mount_root,
+                            relative,
+                            temp_path,
+                            max_bytes=MAX_MEDIA_FILE_BYTES,
+                            expected_bytes=expected_bytes,
+                        )
+                    else:
+                        await asyncio.wait_for(
+                            telegram_file.download_to_drive(
+                                custom_path=temp_path,
+                                read_timeout=60.0,
+                                write_timeout=60.0,
+                                connect_timeout=5.0,
+                                pool_timeout=5.0,
+                            ),
+                            timeout=90.0,
+                        )
                 except asyncio.CancelledError:
                     raise
                 except MediaPermanentError:
@@ -4782,10 +4818,12 @@ class TelegramAdapter(BasePlatformAdapter):
             spool.put_result(result)
             spool.acknowledge_job(job)
             return True
-        except MediaTransientError:
+        except MediaTransientError as exc:
             logger.warning(
-                "[%s] Telegram passive media job retained after transient failure",
+                "[%s] Telegram passive media job retained after transient failure: status=%s cause=%s",
                 self.name,
+                str(exc),
+                type(exc.__cause__).__name__ if exc.__cause__ is not None else "none",
             )
             return False
         except Exception as exc:

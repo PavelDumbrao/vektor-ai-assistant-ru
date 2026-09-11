@@ -145,3 +145,44 @@ async def test_async_runtime_failure_walks_to_next_configured_fallback():
     assert fb1_async.chat.completions.create.await_count == 1
     assert fb2_async.chat.completions.create.await_count == 1
     assert chain.call_count >= 2
+
+
+@pytest.mark.asyncio
+async def test_async_vision_timeout_skips_same_provider_retry():
+    class VisionTimeout(Exception):
+        pass
+    VisionTimeout.__name__ = "APITimeoutError"
+
+    primary = MagicMock()
+    primary.base_url = "https://primary.example/v1"
+    primary.chat.completions.create = AsyncMock(
+        side_effect=VisionTimeout("Request timed out.")
+    )
+    fallback_sync = MagicMock()
+    fallback_sync.base_url = "https://fallback.example/v1"
+    fallback_async = MagicMock()
+    fallback_async.base_url = "https://fallback.example/v1"
+    fallback_async.chat.completions.create = AsyncMock(
+        return_value=response("timeout-fallback-ok")
+    )
+    with patch(
+        "agent.auxiliary_client._resolve_task_provider_model",
+        return_value=("primary-vision", "gpt-5.6-sol", None, None, None),
+    ), patch(
+        "agent.auxiliary_client.resolve_vision_provider_client",
+        return_value=("primary-vision", primary, "gpt-5.6-sol"),
+    ), patch(
+        "agent.auxiliary_client._try_configured_fallback_chain",
+        return_value=(fallback_sync, "gpt-5.6-terra", "fallback-provider"),
+    ), patch(
+        "agent.auxiliary_client._to_async_client",
+        return_value=(fallback_async, "gpt-5.6-terra"),
+    ):
+        result = await async_call_llm(
+            task="vision",
+            messages=[{"role": "user", "content": "read image"}],
+        )
+
+    assert result.choices[0].message.content == "timeout-fallback-ok"
+    assert primary.chat.completions.create.await_count == 1
+    assert fallback_async.chat.completions.create.await_count == 1

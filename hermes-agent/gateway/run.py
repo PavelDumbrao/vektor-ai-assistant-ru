@@ -21414,10 +21414,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         Auto-analyze user-attached images with the vision tool and prepend
         the descriptions to the message text.
 
-        Each image is analyzed with a general-purpose prompt.  The resulting
-        description *and* the local cache path are injected so the model can:
-          1. Immediately understand what the user sent (no extra tool call).
-          2. Re-examine the image with vision_analyze if it needs more detail.
+        Each image is analyzed before the main agent turn. The prompt includes
+        the user's accompanying request so the first vision pass captures the
+        evidence needed for that turn. A successful description is marked as
+        complete to avoid paying for a duplicate vision tool call.
 
         Args:
             user_text:   The user's original caption / message text.
@@ -21432,8 +21432,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         analysis_prompt = (
             "Describe everything visible in this image in thorough detail. "
             "Include any text, code, data, objects, people, layout, colors, "
-            "and any other notable visual information."
+            "and any other notable visual information. Prioritize visual "
+            "evidence needed to answer the user's accompanying request."
         )
+        if user_text:
+            analysis_prompt += f"\n\nAccompanying user request: {user_text[:1500]}"
 
         enriched_parts = []
         for path in image_paths:
@@ -21449,8 +21452,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     description = sanitize_context(description)
                     enriched_parts.append(
                         f"[The user sent an image~ Here's what I can see:\n{description}]\n"
-                        f"[If you need a closer look, use vision_analyze with "
-                        f"image_url: {path} ~]"
+                        f"[Vision preprocessing for this image is complete for this turn. "
+                        f"Use the description above as the visual evidence. Do not call "
+                        f"vision_analyze on the same image again unless the description "
+                        f"explicitly reports uncertainty/failure, or the user asks for a "
+                        f"specific region or detail not covered above. If that exception "
+                        f"applies, image_url: {path}]"
                     )
                 else:
                     enriched_parts.append(

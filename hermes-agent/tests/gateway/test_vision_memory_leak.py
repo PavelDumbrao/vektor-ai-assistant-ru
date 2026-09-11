@@ -52,3 +52,22 @@ class TestEnrichMessageWithVision:
         assert "photograph of a dog" in out
         assert "fenced leak" not in out
         assert "<memory-context>" not in out
+
+
+
+def test_successful_preanalysis_discourages_duplicate_vision(gateway_runner):
+    fake_result = json.dumps({
+        "success": True,
+        "analysis": "Alexandra is visible in the chat header.",
+    })
+    vision = AsyncMock(return_value=fake_result)
+    with patch("tools.vision_tools.vision_analyze_tool", new=vision):
+        out = _run(gateway_runner._enrich_message_with_vision(
+            "Назови имя в заголовке", ["/tmp/img.jpg"]
+        ))
+
+    prompt = vision.await_args.kwargs["user_prompt"]
+    assert "Назови имя в заголовке" in prompt
+    assert "Vision preprocessing for this image is complete" in out
+    assert "Do not call vision_analyze on the same image again" in out
+    assert "If you need a closer look" not in out

@@ -9507,11 +9507,11 @@ async def async_call_llm(
             # See call_llm(): compression is on the critical preflight path,
             # so skip the same-provider retry on a full-budget timeout and
             # fall straight through to fallback (issue #54465).
-            if task == "compression" and _is_timeout_error(transient_err):
+            if task in {"compression", "vision"} and _is_timeout_error(transient_err):
                 logger.info(
-                    "Auxiliary compression (async): timeout on the critical "
+                    "Auxiliary %s (async): full-budget timeout on the critical "
                     "path; skipping same-provider retry and falling back: %s",
-                    transient_err,
+                    task, transient_err,
                 )
                 raise
             logger.info(

@@ -6,7 +6,7 @@
       "owner_label": "pavel",
       "hermes_home": "/home/pavel/.hermes",
       "service": "pavel-hermes.service",
-      "release_id": "hermes-0.21.0-29112bef-vektor3-pavel-tglf2-vtm1-tgrel8",
+      "release_id": "hermes-0.21.0-29112bef-vektor3-pavel-tglf2-vtm1-tgrel8-pmfix2",
       "variant": "modern",
       "config_template": "profiles/pavel/config.yaml.example",
       "plugins": [
@@ -20,7 +20,7 @@
       "owner_label": "baysangur",
       "hermes_home": "/home/baysangur/.hermes",
       "service": "baysangur-hermes.service",
-      "release_id": "hermes-0.21.0-29112bef-vektor3-baysangur-tglf1-vtm1-tgrel2",
+      "release_id": "hermes-0.21.0-29112bef-vektor3-baysangur-tglf1-vtm1-tgrel2-pmfix2",
       "variant": "legacy",
       "config_template": "profiles/baysangur/config.yaml.example",
       "plugins": [
@@ -33,7 +33,7 @@
       "owner_label": "vyacheslav",
       "hermes_home": "/home/vyacheslav/.hermes",
       "service": "vyacheslav-hermes.service",
-      "release_id": "hermes-0.21.0-29112bef-vektor3-vyacheslav-tglf1-vtm1-tgrel2",
+      "release_id": "hermes-0.21.0-29112bef-vektor3-vyacheslav-tglf1-vtm1-tgrel2-pmfix2",
       "variant": "modern",
       "config_template": "profiles/vyacheslav/config.yaml.example",
       "plugins": [
@@ -46,20 +46,22 @@
       "owner_label": "bebov",
       "hermes_home": "/home/bebov/.hermes",
       "service": "bebov-hermes.service",
-      "release_id": "hermes-0.21.0-29112bef-vektor4-modern-tglf1-vtm1-tgrel2",
+      "release_id": "hermes-0.21.0-29112bef-vektor4-modern-tglf1-vtm1-tgrel2-pmfix2",
       "variant": "modern",
       "config_template": "profiles/bebov/config.yaml.example",
       "plugins": [
         "maton-onboarding",
         "passive-secretary",
-        "video-editor"
+        "video-editor",
+        "zoom-assistant",
+        "fathom-assistant"
       ]
     },
     {
       "owner_label": "salavat",
       "hermes_home": "/home/salavat/.hermes",
       "service": "salavat-hermes.service",
-      "release_id": "hermes-0.21.0-29112bef-vektor3-vyacheslav-tglf1-vtm1-tgrel2",
+      "release_id": "hermes-0.21.0-29112bef-vektor3-vyacheslav-tglf1-vtm1-tgrel2-pmfix2",
       "variant": "modern",
       "config_template": "profiles/salavat/config.yaml.example",
       "plugins": [
@@ -100,5 +102,20 @@
     "max_file_bytes": 1073741824,
     "isolation": "tenant ACL + systemd read-only bind mount; shared root hidden",
     "ram_buffering": false
+  },
+  "passive_media_local_ingress": {
+    "status": "rolled_out",
+    "profiles": [
+      "pavel",
+      "baysangur",
+      "vyacheslav",
+      "bebov",
+      "salavat"
+    ],
+    "transport": "tenant-private local Bot API mount",
+    "asr": "openrouter/openai/whisper-large-v3-turbo",
+    "pending_jobs_after_rollout": 0,
+    "pending_results_after_rollout": 0,
+    "source_pr": 73
   }
 }

@@ -1550,6 +1550,15 @@ DEFAULT_CONFIG = {
             "model": "",  # empty = first stt-tagged model from the live catalog
             # "base_url": "",  # override DEEPINFRA_BASE_URL for STT only
         },
+        "openrouter": {
+            "model": "openai/whisper-large-v3-turbo",
+            "fallback_models": [
+                "microsoft/mai-transcribe-2",
+                "openai/whisper-large-v3",
+            ],
+            "timeout": 30,  # per cloud model attempt before moving to the next one
+            "language": "",
+        },
     },
 
     "voice": {

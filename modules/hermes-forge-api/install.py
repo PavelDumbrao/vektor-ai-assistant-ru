@@ -11,6 +11,7 @@ import time
 from pathlib import Path
 
 SOURCE = Path(__file__).resolve().parent
+KITCHEN_SOURCE = SOURCE.parent / "hermes-forge-kitchen" / "kitchen.py"
 TARGET = Path("/opt/proai-hermes-forge-api")
 SYSTEMD = Path("/etc/systemd/system")
 BACKUPS = Path("/opt/backups")
@@ -43,7 +44,10 @@ def install() -> Path:
     if os.geteuid() != 0:
         raise RuntimeError("root_required")
     pwd.getpwnam("www-data")
-    run("/usr/bin/python3", "-m", "py_compile", str(SOURCE / "control.py"), str(SOURCE / "api.py"))
+    run(
+        "/usr/bin/python3", "-m", "py_compile",
+        str(SOURCE / "control.py"), str(SOURCE / "api.py"), str(KITCHEN_SOURCE),
+    )
     backup = BACKUPS / f"hermes-forge-api-install-{time.time_ns()}"
     backup.mkdir(parents=True, mode=0o700)
     os.chmod(backup, 0o700)
@@ -58,6 +62,7 @@ def install() -> Path:
     os.chmod(TARGET, 0o755)
     for name in FILES:
         atomic_copy(SOURCE / name, TARGET / name, 0o644)
+    atomic_copy(KITCHEN_SOURCE, TARGET / "kitchen.py", 0o644)
     static = TARGET / "static"
     static.mkdir(exist_ok=True, mode=0o755)
     os.chown(static, 0, 0)

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import importlib.util
+import json
+import shutil
 from pathlib import Path
 
 import pytest
@@ -10,6 +12,19 @@ spec = importlib.util.spec_from_file_location("forge_api", MODULE)
 api = importlib.util.module_from_spec(spec)
 assert spec.loader is not None
 spec.loader.exec_module(api)
+
+
+def _write_installed_catalog(tmp_path: Path) -> Path:
+    catalog = api.KITCHEN._catalog_module()
+    payload = catalog.public_catalog()
+    digest = catalog.catalog_digest()
+    path = tmp_path / "catalog.json"
+    path.write_text(
+        json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "catalog.sha256").write_text(digest + "\n", encoding="utf-8")
+    return path
 
 
 def test_auth_route_forwards_only_init_data(monkeypatch):
@@ -143,3 +158,97 @@ def test_capability_action_route_forwards_only_bounded_action(monkeypatch):
     }]
     with pytest.raises(api.ApiError, match="not_found"):
         api.route("POST", "/v1/hermes/pavel/capabilities/web-search/install", {}, headers)
+
+
+def test_kitchen_preview_is_public_read_only_and_redacted(monkeypatch, tmp_path):
+    catalog = _write_installed_catalog(tmp_path)
+    monkeypatch.setattr(api, "CATALOG_PATH", catalog)
+    monkeypatch.setattr(
+        api, "call_control",
+        lambda payload: (_ for _ in ()).throw(AssertionError("preview must not use root control")),
+    )
+    status, result = api.route(
+        "POST", "/v1/kitchen/preview",
+        {"agent_id": "personal-hermes", "optional_capabilities": ["maton", "image-studio"]},
+        {},
+    )
+    assert status == 200
+    assert result["schema"] == "hermes.kitchen-preview/v1"
+    assert result["agent"]["id"] == "personal-hermes"
+    assert result["selected_optional"] == ["image-studio", "maton"]
+    assert len(result["catalog_sha256"]) == 64
+    assert len(result["plan_sha256"]) == 64
+    serialized = json.dumps(result, sort_keys=True)
+    for forbidden in (
+        "MCP_MATON_API_KEY", "secret_names", "ensure-maton",
+        "disable-maton", "maton-connections", "health_operation", '"execution"',
+    ):
+        assert forbidden not in serialized
+
+
+def test_kitchen_preview_is_public_but_body_is_bounded(monkeypatch, tmp_path):
+    catalog = _write_installed_catalog(tmp_path)
+    monkeypatch.setattr(api, "CATALOG_PATH", catalog)
+    status, result = api.route(
+        "POST", "/v1/kitchen/preview", {"agent_id": "personal-hermes"}, {}
+    )
+    assert status == 200
+    assert result["agent"]["id"] == "personal-hermes"
+    with pytest.raises(api.ApiError, match="kitchen_request_invalid"):
+        api.route(
+            "POST", "/v1/kitchen/preview",
+            {"agent_id": "personal-hermes", "command": "install"}, {},
+        )
+    with pytest.raises(api.ApiError, match="optional_capability_not_declared:github") as exc:
+        api.route(
+            "POST", "/v1/kitchen/preview",
+            {"agent_id": "personal-hermes", "optional_capabilities": ["github"]}, {},
+        )
+    assert exc.value.status == 400
+
+
+def test_kitchen_preview_rejects_catalog_digest_drift(monkeypatch, tmp_path):
+    catalog = _write_installed_catalog(tmp_path)
+    (tmp_path / "catalog.sha256").write_text("0" * 64 + "\n", encoding="utf-8")
+    monkeypatch.setattr(api, "CATALOG_PATH", catalog)
+    with pytest.raises(api.ApiError, match="catalog_digest_mismatch") as exc:
+        api.route(
+            "POST", "/v1/kitchen/preview",
+            {"agent_id": "personal-hermes", "optional_capabilities": []}, {},
+        )
+    assert exc.value.status == 503
+
+
+def test_forge_api_installer_bundles_shared_kitchen_compiler():
+    install_path = MODULE.parent / "install.py"
+    spec = importlib.util.spec_from_file_location("forge_api_install", install_path)
+    installer = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(installer)
+    assert installer.KITCHEN_SOURCE == MODULE.parent.parent / "hermes-forge-kitchen" / "kitchen.py"
+    assert installer.KITCHEN_SOURCE.is_file()
+    source = install_path.read_text(encoding="utf-8")
+    assert 'TARGET / "kitchen.py"' in source
+
+
+def test_deployed_layout_loads_bundled_kitchen_without_repo_dependency(monkeypatch, tmp_path):
+    catalog = _write_installed_catalog(tmp_path)
+    deployed = tmp_path / "deployed"
+    deployed.mkdir()
+    shutil.copy2(MODULE, deployed / "api.py")
+    shutil.copy2(
+        MODULE.parent.parent / "hermes-forge-kitchen" / "kitchen.py",
+        deployed / "kitchen.py",
+    )
+    monkeypatch.setenv("FORGE_CATALOG_PATH", str(catalog))
+    spec = importlib.util.spec_from_file_location("forge_api_deployed_layout", deployed / "api.py")
+    deployed_api = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(deployed_api)
+    status, result = deployed_api.route(
+        "POST", "/v1/kitchen/preview",
+        {"agent_id": "personal-hermes", "optional_capabilities": ["video-editor"]}, {},
+    )
+    assert status == 200
+    assert result["schema"] == "hermes.kitchen-preview/v1"
+    assert result["selected_optional"] == ["video-editor"]

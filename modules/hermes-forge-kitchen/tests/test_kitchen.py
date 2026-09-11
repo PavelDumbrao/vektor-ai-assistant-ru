@@ -112,7 +112,7 @@ def test_planned_capability_cannot_be_smuggled_into_package(tmp_path):
     payload = yaml.safe_load(path.read_text())
     payload["capabilities"]["optional"].append("github")
     path.write_text(yaml.safe_dump(payload, sort_keys=False))
-    with pytest.raises(kitchen.CATALOG.CatalogError, match="capability_reference_not_available:github"):
+    with pytest.raises(kitchen.KitchenError, match="catalog_invalid:capability_reference_not_available:github"):
         kitchen.compile_plan("personal-hermes", ["github"], root=root)
 
 
@@ -164,3 +164,30 @@ def test_kitchen_source_has_no_execution_or_network_surface():
         "os.system(",
     ):
         assert forbidden not in source
+
+
+def test_installed_catalog_document_compiles_same_plan_as_source_catalog():
+    catalog = kitchen._catalog_module()
+    payload = catalog.public_catalog()
+    digest = catalog.catalog_digest()
+    installed = kitchen.compile_catalog_document(
+        payload, digest, "personal-hermes", ["maton", "video-editor"]
+    )
+    source = kitchen.compile_plan("personal-hermes", ["video-editor", "maton"])
+    assert installed == source
+
+
+def test_installed_catalog_digest_and_shape_fail_closed():
+    catalog = kitchen._catalog_module()
+    payload = catalog.public_catalog()
+    digest = catalog.catalog_digest()
+    tampered = copy.deepcopy(payload)
+    tampered["agents"][0]["summary"] = "tampered"
+    with pytest.raises(kitchen.KitchenError, match="catalog_digest_mismatch"):
+        kitchen.compile_catalog_document(tampered, digest, "personal-hermes")
+
+    duplicate = copy.deepcopy(payload)
+    duplicate["agents"].append(copy.deepcopy(duplicate["agents"][0]))
+    duplicate_digest = kitchen._sha256(duplicate)
+    with pytest.raises(kitchen.KitchenError, match="catalog_document_invalid"):
+        kitchen.compile_catalog_document(duplicate, duplicate_digest, "personal-hermes")

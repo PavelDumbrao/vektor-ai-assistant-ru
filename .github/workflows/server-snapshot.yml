@@ -54,10 +54,14 @@ jobs:
         run: |
           python -m pytest modules/video-editor/tests -q
           python -m compileall -q modules/video-editor
-      - name: Hermes Forge catalog and Kitchen
+      - name: Hermes Forge
         run: |
-          python -m pytest modules/hermes-forge-catalog/tests modules/hermes-forge-kitchen/tests -q
-          python -m py_compile modules/hermes-forge-catalog/catalog.py modules/hermes-forge-kitchen/kitchen.py
+          python -m pytest modules/hermes-forge-catalog/tests modules/hermes-forge-kitchen/tests modules/hermes-forge-api/tests -q
+          python -m py_compile \
+            modules/hermes-forge-catalog/catalog.py \
+            modules/hermes-forge-kitchen/kitchen.py \
+            modules/hermes-forge-api/api.py \
+            modules/hermes-forge-api/install.py
       - name: Telegram large-file ingress
         env:
           PYTHONPATH: hermes-agent

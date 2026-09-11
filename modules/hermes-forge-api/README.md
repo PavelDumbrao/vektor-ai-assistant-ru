@@ -14,6 +14,7 @@ The Mini App sends Telegram `WebApp.initData` once to `/v1/auth/telegram`. Only 
 ## MVP API
 
 - `POST /v1/auth/telegram`
+- `POST /v1/kitchen/preview` — public, read-only Agent Package + capability selection preview compiled from the verified installed catalog
 - `GET /v1/hermes`
 - `GET /v1/hermes/{profile}`
 - `GET /v1/hermes/{profile}/health`
@@ -27,6 +28,8 @@ The Mini App sends Telegram `WebApp.initData` once to `/v1/auth/telegram`. Only 
 - `POST /v1/hermes/{profile}/connections/maton/test`
 
 Secrets are write-only. Read endpoints return only presence and optional `last4`; no endpoint returns a stored value. Maton is validated with a read-only request before storage. Secret/config changes get a private per-profile backup and use atomic replacement.
+
+Public Kitchen preview never calls the root control daemon and cannot install, enable, disable, restart or provision anything. The API verifies the immutable installed catalog digest before compiling the redacted preview.
 
 `restart` is bounded: it is refused while `active_agents` or persisted active-session entries are non-zero, and it succeeds only after the same profile returns active with Telegram connected.
 

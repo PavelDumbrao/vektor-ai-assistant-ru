@@ -1,12 +1,12 @@
 {
-  "snapshot_date": "2026-09-10",
+  "snapshot_date": "2026-09-11",
   "code_release": "../modules/shared-runtime/releases/v0.21.0/vektor3.json",
   "profiles": [
     {
       "owner_label": "pavel",
       "hermes_home": "/home/pavel/.hermes",
       "service": "pavel-hermes.service",
-      "release_id": "hermes-0.21.0-29112bef-vektor3-pavel-tglf2-vtm1",
+      "release_id": "hermes-0.21.0-29112bef-vektor3-pavel-tglf2-vtm1-tgrel8",
       "variant": "modern",
       "config_template": "profiles/pavel/config.yaml.example",
       "plugins": [
@@ -20,7 +20,7 @@
       "owner_label": "baysangur",
       "hermes_home": "/home/baysangur/.hermes",
       "service": "baysangur-hermes.service",
-      "release_id": "hermes-0.21.0-29112bef-vektor3-baysangur-tglf1-vtm1",
+      "release_id": "hermes-0.21.0-29112bef-vektor3-baysangur-tglf1-vtm1-tgrel2",
       "variant": "legacy",
       "config_template": "profiles/baysangur/config.yaml.example",
       "plugins": [
@@ -33,7 +33,7 @@
       "owner_label": "vyacheslav",
       "hermes_home": "/home/vyacheslav/.hermes",
       "service": "vyacheslav-hermes.service",
-      "release_id": "hermes-0.21.0-29112bef-vektor3-vyacheslav-tglf1-vtm1",
+      "release_id": "hermes-0.21.0-29112bef-vektor3-vyacheslav-tglf1-vtm1-tgrel2",
       "variant": "modern",
       "config_template": "profiles/vyacheslav/config.yaml.example",
       "plugins": [
@@ -46,7 +46,7 @@
       "owner_label": "bebov",
       "hermes_home": "/home/bebov/.hermes",
       "service": "bebov-hermes.service",
-      "release_id": "hermes-0.21.0-29112bef-vektor4-modern-tglf1-vtm1",
+      "release_id": "hermes-0.21.0-29112bef-vektor4-modern-tglf1-vtm1-tgrel2",
       "variant": "modern",
       "config_template": "profiles/bebov/config.yaml.example",
       "plugins": [
@@ -59,7 +59,7 @@
       "owner_label": "salavat",
       "hermes_home": "/home/salavat/.hermes",
       "service": "salavat-hermes.service",
-      "release_id": "hermes-0.21.0-29112bef-vektor3-vyacheslav-tglf1-vtm1",
+      "release_id": "hermes-0.21.0-29112bef-vektor3-vyacheslav-tglf1-vtm1-tgrel2",
       "variant": "modern",
       "config_template": "profiles/salavat/config.yaml.example",
       "plugins": [

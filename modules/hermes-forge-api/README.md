@@ -31,6 +31,8 @@ Secrets are write-only. Read endpoints return only presence and optional `last4`
 
 Public Kitchen preview never calls the root control daemon and cannot install, enable, disable, restart or provision anything. The API verifies the immutable installed catalog digest before compiling the redacted preview.
 
+The Mini App exposes the same preview through Hermes Kitchen. A customer can select an Agent Package and only that package's declared optional capabilities even before a Hermes profile exists. The UI renders the returned plan with DOM `textContent`, shows a shortened plan/catalog digest and has no Apply/Install/Create control in v1.
+
 `restart` is bounded: it is refused while `active_agents` or persisted active-session entries are non-zero, and it succeeds only after the same profile returns active with Telegram connected.
 
 The API binds loopback only. HTTPS/reverse-proxy publication and BotFather Mini App URL configuration are separate deployment gates.

@@ -28,6 +28,7 @@
         <button class="tab" data-tab="secrets" data-requires-hermes>Секреты</button>
         <button class="tab" data-tab="tools">Инструменты</button>
         <button class="tab" data-tab="employees">AI-сотрудники</button>
+        <button class="tab" data-tab="kitchen">Kitchen</button>
       </nav>
 
       <section class="panel" data-panel="hermes" data-requires-hermes>
@@ -100,6 +101,32 @@
         </div>
         <p class="muted">Роли состоят из управляемого Hermes Runtime, памяти, прав и набора проверенных capabilities.</p>
         <div id="employees-list" class="stack catalog-list"></div>
+      </section>
+
+      <section class="panel hidden" data-panel="kitchen">
+        <div class="section-head">
+          <div>
+            <div class="muted">Hermes Kitchen</div>
+            <h2>Собери AI-сотрудника</h2>
+          </div>
+          <span class="pill warn">Preview only</span>
+        </div>
+        <p class="muted">Это только рецепт. Здесь ничего не устанавливается, не включается и не меняется.</p>
+        <div class="card kitchen-builder">
+          <div class="muted">Выбранная роль</div>
+          <h2 id="kitchen-agent-name">Выбери AI-сотрудника из каталога</h2>
+          <p id="kitchen-agent-summary" class="catalog-summary">Сначала открой карточку роли и нажми «Собрать рецепт».</p>
+          <div id="kitchen-required" class="catalog-capabilities kitchen-required"></div>
+        </div>
+        <div class="card kitchen-builder">
+          <div class="muted">Дополнительные возможности</div>
+          <div id="kitchen-options" class="kitchen-options"></div>
+        </div>
+        <div class="actions">
+          <button id="kitchen-preview-button" class="secondary" disabled>Показать рецепт</button>
+        </div>
+        <p id="kitchen-result" class="result"></p>
+        <div id="kitchen-preview" class="stack hidden"></div>
       </section>
     </section>
   </main>

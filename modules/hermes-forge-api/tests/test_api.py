@@ -113,13 +113,51 @@ def test_catalog_ui_exposes_read_only_tools_and_employees_tabs():
     js = (root / "static" / "app.js").read_text(encoding="utf-8")
     assert 'data-tab="tools"' in html
     assert 'data-tab="employees"' in html
+    assert 'data-tab="kitchen"' in html
+    assert 'data-panel="kitchen"' in html
     assert 'id="tools-list"' in html
     assert 'id="employees-list"' in html
+    assert 'id="kitchen-preview-button"' in html
     assert 'request("/v1/catalog")' in js
+    assert 'request("/v1/kitchen/preview"' in js
     assert '/v1/catalog/install' not in js
     assert '/v1/catalog/enable' not in js
     assert 'install-capability' not in html
     assert 'enable-capability' not in html
+
+
+def test_kitchen_ui_is_preview_only_safe_and_available_without_existing_hermes():
+    root = MODULE.parent
+    html = (root / "static" / "index.html").read_text(encoding="utf-8")
+    js = (root / "static" / "app.js").read_text(encoding="utf-8")
+    assert "Это только рецепт" in html
+    assert "Preview only" in html
+    assert 'dataset.kitchenAgent=item.id' in js
+    assert 'dataset.kitchenCapability=id' in js
+    assert 'optional_capabilities:[...kitchenOptional].sort()' in js
+    assert 'renderKitchenPreview(data)' in js
+    assert "innerHTML" not in js
+    assert "/v1/kitchen/apply" not in js
+    assert "/v1/kitchen/install" not in js
+    assert "kitchen-apply" not in html
+    assert "kitchen-install" not in html
+    handler = js.index('const kitchenAgentButton=event.target.closest("button[data-kitchen-agent]")')
+    preview = js.index('const kitchenPreviewButton=event.target.closest("#kitchen-preview-button")')
+    current_guard = js.index("if (!current) return;", handler)
+    assert handler < current_guard
+    assert preview < current_guard
+
+
+def test_kitchen_ui_preview_does_not_render_internal_contract_names():
+    js = (MODULE.parent / "static" / "app.js").read_text(encoding="utf-8")
+    kitchen_start = js.index("function renderKitchenPreview")
+    kitchen_end = js.index("async function loadKitchenPreview", kitchen_start)
+    renderer = js[kitchen_start:kitchen_end]
+    for forbidden in (
+        "secret_names", "health_operation", "execution",
+        "ensure-maton", "disable-maton", "MCP_MATON_API_KEY",
+    ):
+        assert forbidden not in renderer
 
 
 def test_capabilities_route_is_authenticated_and_forwards_owner_scope(monkeypatch):

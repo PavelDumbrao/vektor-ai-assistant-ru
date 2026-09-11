@@ -2,6 +2,7 @@
 """Unprivileged stdlib HTTP API and Mini App static server for Hermes Forge."""
 from __future__ import annotations
 
+import importlib.util
 import json
 import mimetypes
 import os
@@ -20,6 +21,7 @@ CATALOG_PATH = Path(os.environ.get("FORGE_CATALOG_PATH", "/opt/proai-hermes-forg
 MAX_CATALOG_BYTES = 512 * 1024
 PROFILE_RE = re.compile(r"^[a-z0-9_-]{2,40}$")
 SECRET_RE = re.compile(r"^[A-Z][A-Z0-9_]{2,80}$")
+CATALOG_DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
 class ApiError(RuntimeError):
@@ -27,6 +29,24 @@ class ApiError(RuntimeError):
         super().__init__(code)
         self.code = code
         self.status = status
+
+
+def _load_kitchen_module() -> Any:
+    local = Path(__file__).resolve().with_name("kitchen.py")
+    source = Path(__file__).resolve().parents[1] / "hermes-forge-kitchen" / "kitchen.py"
+    for candidate in (local, source):
+        if candidate.is_symlink() or not candidate.is_file():
+            continue
+        spec = importlib.util.spec_from_file_location("hermes_forge_kitchen_api", candidate)
+        if spec is None or spec.loader is None:
+            continue
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+    raise RuntimeError("kitchen_compiler_unavailable")
+
+
+KITCHEN = _load_kitchen_module()
 
 
 def call_control(payload: dict[str, Any]) -> dict[str, Any]:
@@ -73,6 +93,44 @@ def _session(headers: Any) -> str:
     if not token or len(token) > 128:
         raise ApiError("session_invalid", 401)
     return token
+
+
+def _verified_catalog_document(path: Path | None = None) -> tuple[dict[str, Any], str]:
+    path = CATALOG_PATH if path is None else path
+    marker = path.with_name("catalog.sha256")
+    if path.is_symlink() or not path.is_file() or marker.is_symlink() or not marker.is_file():
+        raise ApiError("catalog_unavailable", 503)
+    size = path.stat().st_size
+    if size <= 0 or size > MAX_CATALOG_BYTES or marker.stat().st_size > 128:
+        raise ApiError("catalog_invalid", 503)
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        digest = marker.read_text(encoding="utf-8").strip()
+    except Exception:
+        raise ApiError("catalog_invalid", 503) from None
+    if not isinstance(payload, dict) or not CATALOG_DIGEST_RE.fullmatch(digest):
+        raise ApiError("catalog_invalid", 503)
+    return payload, digest
+
+
+def _kitchen_preview(body: dict[str, Any]) -> dict[str, Any]:
+    allowed = {"agent_id", "optional_capabilities"}
+    if not isinstance(body, dict) or set(body) - allowed:
+        raise ApiError("kitchen_request_invalid", 400)
+    agent_id = body.get("agent_id")
+    optional = body.get("optional_capabilities", [])
+    if not isinstance(agent_id, str) or not isinstance(optional, list) or len(optional) > 32:
+        raise ApiError("kitchen_request_invalid", 400)
+    if any(not isinstance(item, str) for item in optional):
+        raise ApiError("kitchen_request_invalid", 400)
+    payload, digest = _verified_catalog_document()
+    try:
+        plan = KITCHEN.compile_catalog_document(payload, digest, agent_id, optional)
+        return KITCHEN.public_preview(plan)
+    except KITCHEN.KitchenError as exc:
+        code = str(exc)[:100]
+        client_error = code.startswith(("agent_id_", "agent_not_found", "optional_capability_"))
+        raise ApiError(code, 400 if client_error else 503) from None
 
 
 def _public_catalog(path: Path | None = None) -> dict[str, Any]:
@@ -145,6 +203,8 @@ def route(method: str, path: str, body: dict[str, Any], headers: Any) -> tuple[i
         return 200, call_control({"op": "authenticate", "init_data": str(body.get("init_data") or "")})
     if method == "GET" and path == "/v1/catalog":
         return 200, _public_catalog()
+    if method == "POST" and path == "/v1/kitchen/preview":
+        return 200, _kitchen_preview(body)
     session = _session(headers)
     if method == "GET" and path == "/v1/hermes":
         return 200, call_control({"op": "list_hermes", "session": session})

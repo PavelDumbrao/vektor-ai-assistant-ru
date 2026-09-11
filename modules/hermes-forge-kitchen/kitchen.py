@@ -33,7 +33,14 @@ def _load_catalog_module() -> ModuleType:
     return module
 
 
-CATALOG = _load_catalog_module()
+_CATALOG: ModuleType | None = None
+
+
+def _catalog_module() -> ModuleType:
+    global _CATALOG
+    if _CATALOG is None:
+        _CATALOG = _load_catalog_module()
+    return _CATALOG
 
 
 def _canonical_json(value: Any) -> str:
@@ -108,27 +115,29 @@ def _capability_plan(capability: dict[str, Any], *, required: bool) -> dict[str,
     }
 
 
-def compile_plan(
+def compile_catalog(
+    catalog: dict[str, Any],
+    catalog_sha256: str,
     agent_id: str,
     selected_optional: Iterable[str] = (),
-    *,
-    root: Path = DEFAULT_FORGE_ROOT,
 ) -> dict[str, Any]:
+    if not isinstance(catalog_sha256, str) or not re.fullmatch(r"[0-9a-f]{64}", catalog_sha256):
+        raise KitchenError("catalog_digest_invalid")
     if not isinstance(agent_id, str) or not ID_RE.fullmatch(agent_id):
         raise KitchenError("agent_id_invalid")
-    catalog = CATALOG.load_catalog(root)
     package = catalog["agents"].get(agent_id)
     if package is None:
         raise KitchenError("agent_not_found")
 
     selected = _normalize_selection(selected_optional)
     required_ids = sorted(package["capabilities"]["required"])
+    required_set = set(required_ids)
     optional_ids = set(package["capabilities"]["optional"])
     undeclared = [item for item in selected if item not in optional_ids]
     if undeclared:
         raise KitchenError(f"optional_capability_not_declared:{undeclared[0]}")
 
-    chosen_ids = sorted(set(required_ids) | set(selected))
+    chosen_ids = sorted(required_set | set(selected))
     rows: list[dict[str, Any]] = []
     runtime_contracts = [package["runtime"]]
     for capability_id in chosen_ids:
@@ -138,16 +147,11 @@ def compile_plan(
         if capability["availability"] != "available":
             raise KitchenError(f"capability_not_available:{capability_id}")
         runtime_contracts.append(capability["runtime"])
-        rows.append(
-            _capability_plan(
-                capability,
-                required=capability_id in set(required_ids),
-            )
-        )
+        rows.append(_capability_plan(capability, required=capability_id in required_set))
 
     core: dict[str, Any] = {
         "schema": PLAN_SCHEMA,
-        "catalog_sha256": CATALOG.catalog_digest(root),
+        "catalog_sha256": catalog_sha256,
         "agent": {
             key: package[key]
             for key in ("id", "name", "version", "publisher", "role", "summary")
@@ -162,6 +166,64 @@ def compile_plan(
         "onboarding": {"questions": list(package["onboarding"]["questions"])},
     }
     return {**core, "plan_sha256": _sha256(core)}
+
+
+def _catalog_document_index(payload: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(payload, dict) or payload.get("schema") != "hermes.catalog/v1":
+        raise KitchenError("catalog_document_invalid")
+    capabilities = payload.get("capabilities")
+    agents = payload.get("agents")
+    if not isinstance(capabilities, list) or not isinstance(agents, list):
+        raise KitchenError("catalog_document_invalid")
+
+    def index(items: list[Any]) -> dict[str, dict[str, Any]]:
+        result: dict[str, dict[str, Any]] = {}
+        for item in items:
+            if not isinstance(item, dict):
+                raise KitchenError("catalog_document_invalid")
+            item_id = item.get("id")
+            if not isinstance(item_id, str) or not ID_RE.fullmatch(item_id) or item_id in result:
+                raise KitchenError("catalog_document_invalid")
+            result[item_id] = item
+        return result
+
+    return {
+        "schema": "hermes.catalog/v1",
+        "capabilities": index(capabilities),
+        "agents": index(agents),
+    }
+
+
+def compile_catalog_document(
+    payload: dict[str, Any],
+    catalog_sha256: str,
+    agent_id: str,
+    selected_optional: Iterable[str] = (),
+) -> dict[str, Any]:
+    if not isinstance(catalog_sha256, str) or not re.fullmatch(r"[0-9a-f]{64}", catalog_sha256):
+        raise KitchenError("catalog_digest_invalid")
+    if _sha256(payload) != catalog_sha256:
+        raise KitchenError("catalog_digest_mismatch")
+    catalog = _catalog_document_index(payload)
+    try:
+        return compile_catalog(catalog, catalog_sha256, agent_id, selected_optional)
+    except (KeyError, TypeError, AttributeError):
+        raise KitchenError("catalog_document_invalid") from None
+
+
+def compile_plan(
+    agent_id: str,
+    selected_optional: Iterable[str] = (),
+    *,
+    root: Path = DEFAULT_FORGE_ROOT,
+) -> dict[str, Any]:
+    module = _catalog_module()
+    try:
+        catalog = module.load_catalog(root)
+        digest = module.catalog_digest(root)
+    except module.CatalogError as exc:
+        raise KitchenError(f"catalog_invalid:{str(exc)[:80]}") from None
+    return compile_catalog(catalog, digest, agent_id, selected_optional)
 
 
 def verify_plan(plan: dict[str, Any]) -> None:
@@ -243,7 +305,7 @@ def main() -> int:
             args.optional_capabilities,
             root=args.root,
         )
-    except (KitchenError, CATALOG.CatalogError) as exc:
+    except KitchenError as exc:
         parser.error(str(exc))
     payload = plan if args.action == "plan" else public_preview(plan)
     print(json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2))

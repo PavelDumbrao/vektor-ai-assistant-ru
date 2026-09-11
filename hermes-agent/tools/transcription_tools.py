@@ -116,6 +116,11 @@ DEFAULT_GROQ_STT_MODEL = os.getenv("STT_GROQ_MODEL", "whisper-large-v3-turbo")
 DEFAULT_MISTRAL_STT_MODEL = os.getenv("STT_MISTRAL_MODEL", "voxtral-mini-latest")
 DEFAULT_ELEVENLABS_STT_MODEL = os.getenv("STT_ELEVENLABS_MODEL", "scribe_v2")
 DEFAULT_OPENROUTER_STT_MODEL = "openai/whisper-large-v3-turbo"
+DEFAULT_OPENROUTER_STT_FALLBACK_MODELS = (
+    "microsoft/mai-transcribe-2",
+    "openai/whisper-large-v3",
+)
+DEFAULT_OPENROUTER_STT_TIMEOUT = 30.0
 OPENROUTER_STT_ENDPOINT = "https://openrouter.ai/api/v1/audio/transcriptions"
 LOCAL_STT_COMMAND_ENV = "HERMES_LOCAL_STT_COMMAND"
 LOCAL_STT_LANGUAGE_ENV = "HERMES_LOCAL_STT_LANGUAGE"
@@ -2367,64 +2372,72 @@ def _transcribe_deepinfra(file_path: str, model_name: str) -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-def _transcribe_openrouter(file_path: str, model_name: str) -> Dict[str, Any]:
-    """Transcribe through OpenRouter's fixed dedicated STT endpoint."""
-    if model_name != DEFAULT_OPENROUTER_STT_MODEL:
-        return {
-            "success": False,
-            "transcript": "",
-            "provider": "openrouter",
-            "allow_local_fallback": False,
-            "error": "OpenRouter STT model must be Whisper Large V3 Turbo",
-        }
-    api_key = _resolve_provider_key("OPENROUTER_API_KEY", "openrouter")
-    if not api_key:
-        return {
-            "success": False,
-            "transcript": "",
-            "provider": "openrouter",
-            "allow_local_fallback": False,
-            "error": "OPENROUTER_API_KEY not set",
-        }
+def _openrouter_stt_models(
+    stt_config: Dict[str, Any],
+    primary_model: Optional[str] = None,
+) -> tuple[list[str], float]:
+    """Return ordered OpenRouter STT models and per-attempt timeout."""
+    cfg = _get_stt_section(stt_config, "openrouter")
+    primary = str(primary_model or cfg.get("model") or DEFAULT_OPENROUTER_STT_MODEL).strip()
+    raw_fallbacks = cfg.get("fallback_models")
+    if raw_fallbacks is None:
+        raw_fallbacks = list(DEFAULT_OPENROUTER_STT_FALLBACK_MODELS)
+    elif isinstance(raw_fallbacks, str):
+        raw_fallbacks = [raw_fallbacks]
+    elif not isinstance(raw_fallbacks, (list, tuple)):
+        raw_fallbacks = []
 
+    models: list[str] = []
+    for candidate in [primary, *raw_fallbacks]:
+        value = str(candidate or "").strip()
+        if value and value not in models:
+            models.append(value)
+
+    try:
+        timeout = float(cfg.get("timeout", DEFAULT_OPENROUTER_STT_TIMEOUT))
+    except (TypeError, ValueError):
+        timeout = DEFAULT_OPENROUTER_STT_TIMEOUT
+    timeout = max(5.0, min(timeout, 180.0))
+    return models or [DEFAULT_OPENROUTER_STT_MODEL], timeout
+
+
+def _transcribe_openrouter_once(
+    file_path: str,
+    model_name: str,
+    *,
+    api_key: str,
+    timeout: float,
+    stt_config: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Run one OpenRouter transcription model without cross-model fallback."""
     suffix = Path(file_path).suffix.lower().lstrip(".")
     audio_format = {
-        "oga": "ogg",
-        "opus": "ogg",
-        "mpeg": "mp3",
-        "mpga": "mp3",
-        "mp4": "m4a",
+        "oga": "ogg", "opus": "ogg", "mpeg": "mp3",
+        "mpga": "mp3", "mp4": "m4a",
     }.get(suffix, suffix)
     if audio_format not in {"wav", "mp3", "flac", "m4a", "ogg", "webm", "aac"}:
         return {
-            "success": False,
-            "transcript": "",
-            "provider": "openrouter",
-            "allow_local_fallback": False,
+            "success": False, "transcript": "", "provider": "openrouter",
+            "model": model_name, "error_type": "format",
             "error": "Audio format is not supported by OpenRouter STT",
         }
 
     try:
         audio_bytes = Path(file_path).read_bytes()
         payload: Dict[str, Any] = {
-            "model": model_name or DEFAULT_OPENROUTER_STT_MODEL,
+            "model": model_name,
             "input_audio": {
                 "data": base64.b64encode(audio_bytes).decode("ascii"),
                 "format": audio_format,
             },
             "temperature": 0,
         }
-        language = _resolve_stt_language("openrouter", _load_stt_config())
+        language = _resolve_stt_language("openrouter", stt_config)
         if language:
             payload["language"] = language
 
         import httpx
-
-        with httpx.Client(
-            timeout=90,
-            follow_redirects=False,
-            trust_env=False,
-        ) as client:
+        with httpx.Client(timeout=timeout, follow_redirects=False, trust_env=False) as client:
             response = client.post(
                 OPENROUTER_STT_ENDPOINT,
                 headers={
@@ -2435,48 +2448,90 @@ def _transcribe_openrouter(file_path: str, model_name: str) -> Dict[str, Any]:
             )
         if response.status_code != 200:
             return {
-                "success": False,
-                "transcript": "",
-                "provider": "openrouter",
-                "allow_local_fallback": False,
+                "success": False, "transcript": "", "provider": "openrouter",
+                "model": model_name, "status_code": int(response.status_code),
+                "error_type": "http",
                 "error": f"OpenRouter STT API error (HTTP {response.status_code})",
             }
         if len(response.content) > 2 * 1024 * 1024:
             return {
-                "success": False,
-                "transcript": "",
-                "provider": "openrouter",
-                "allow_local_fallback": False,
+                "success": False, "transcript": "", "provider": "openrouter",
+                "model": model_name, "error_type": "response_size",
                 "error": "OpenRouter STT response exceeded the size limit",
             }
         result = response.json()
         transcript = result.get("text") if isinstance(result, dict) else None
         if not isinstance(transcript, str) or not transcript.strip():
             return {
-                "success": False,
-                "transcript": "",
-                "provider": "openrouter",
-                "allow_local_fallback": False,
-                "no_speech": True,
+                "success": False, "transcript": "", "provider": "openrouter",
+                "model": model_name, "no_speech": True, "error_type": "empty",
                 "error": "OpenRouter STT returned empty transcript",
             }
         return {
-            "success": True,
-            "transcript": transcript.strip(),
-            "provider": "openrouter",
+            "success": True, "transcript": transcript.strip(),
+            "provider": "openrouter", "model": model_name,
             "allow_local_fallback": False,
         }
     except PermissionError:
-        error = f"Permission denied: {file_path}"
-    except Exception:
-        logger.exception("OpenRouter STT transcription failed")
-        error = "OpenRouter STT transcription failed"
+        return {
+            "success": False, "transcript": "", "provider": "openrouter",
+            "model": model_name, "error_type": "permission",
+            "error": f"Permission denied: {file_path}",
+        }
+    except Exception as exc:
+        logger.warning(
+            "OpenRouter STT model %s failed: %s", model_name, type(exc).__name__
+        )
+        return {
+            "success": False, "transcript": "", "provider": "openrouter",
+            "model": model_name, "error_type": "transport",
+            "error": f"OpenRouter STT request failed ({type(exc).__name__})",
+        }
+
+
+def _transcribe_openrouter(file_path: str, model_name: str) -> Dict[str, Any]:
+    """Transcribe via an ordered OpenRouter cloud chain, then permit local recovery."""
+    api_key = _resolve_provider_key("OPENROUTER_API_KEY", "openrouter")
+    if not api_key:
+        return {
+            "success": False, "transcript": "", "provider": "openrouter",
+            "allow_local_fallback": True,
+            "error": "OPENROUTER_API_KEY not set",
+        }
+
+    stt_config = _load_stt_config()
+    models, timeout = _openrouter_stt_models(stt_config, model_name)
+    failures: list[str] = []
+    for index, candidate in enumerate(models):
+        started = time.monotonic()
+        result = _transcribe_openrouter_once(
+            file_path, candidate, api_key=api_key, timeout=timeout,
+            stt_config=stt_config,
+        )
+        elapsed = time.monotonic() - started
+        if result.get("success"):
+            if index:
+                logger.info(
+                    "OpenRouter STT recovered with fallback model %s after %d failed model(s) (%.2fs)",
+                    candidate, index, elapsed,
+                )
+            return result
+
+        failures.append(f"{candidate}: {result.get('error', 'failed')}")
+        status = result.get("status_code")
+        logger.warning(
+            "OpenRouter STT model %s failed after %.2fs; trying next route",
+            candidate, elapsed,
+        )
+        # Authentication/authorization applies to the same OpenRouter key for
+        # every cloud model; do not waste time trying sibling models.
+        if status in {401, 403}:
+            break
+
     return {
-        "success": False,
-        "transcript": "",
-        "provider": "openrouter",
-        "allow_local_fallback": False,
-        "error": error,
+        "success": False, "transcript": "", "provider": "openrouter",
+        "allow_local_fallback": True,
+        "error": "OpenRouter STT cloud chain exhausted: " + " | ".join(failures),
     }
 
 
@@ -2590,7 +2645,9 @@ def _transcribe_prepared_audio(file_path: str, model: Optional[str] = None) -> D
         return _transcribe_deepinfra(file_path, model_name)
 
     if provider == "openrouter_whisper":
-        return _transcribe_openrouter(file_path, DEFAULT_OPENROUTER_STT_MODEL)
+        or_cfg = _get_stt_section(stt_config, "openrouter")
+        model_name = model or or_cfg.get("model") or DEFAULT_OPENROUTER_STT_MODEL
+        return _transcribe_openrouter(file_path, model_name)
 
     # User-declared command-type provider
     # (``stt.providers.<name>: type: command``). Fires after the built-in

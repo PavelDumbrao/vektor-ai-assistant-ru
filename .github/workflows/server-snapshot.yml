@@ -54,6 +54,10 @@ jobs:
         run: |
           python -m pytest modules/video-editor/tests -q
           python -m compileall -q modules/video-editor
+      - name: Hermes Living Memory
+        run: |
+          python -m pytest modules/living-memory/tests -q
+          python -m compileall -q modules/living-memory
       - name: Hermes Forge
         run: |
           python -m pytest modules/hermes-forge-catalog/tests modules/hermes-forge-kitchen/tests modules/hermes-forge-api/tests -q

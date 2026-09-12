@@ -1,5 +1,5 @@
 {
-  "snapshot_date": "2026-09-11",
+  "snapshot_date": "2026-09-12",
   "code_release": "../modules/shared-runtime/releases/v0.21.0/vektor3.json",
   "profiles": [
     {
@@ -72,7 +72,7 @@
     }
   ],
   "shared_video_editor": {
-    "version": "0.4.0",
+    "version": "0.6.0",
     "primary_asr": "openrouter/openai/whisper-large-v3-turbo",
     "fallback_asr": "whisper.cpp v1.9.2",
     "broker": "loopback per-profile auth",
@@ -87,7 +87,36 @@
     "timeline_view_max_frames": 8,
     "timeline_view_max_window_seconds": 30,
     "seam_aware_visual_sampling": true,
-    "visual_context_transport": "native multimodal tool result"
+    "visual_context_transport": "native multimodal tool result",
+    "rollout_profiles": [
+      "pavel",
+      "baysangur",
+      "vyacheslav",
+      "bebov"
+    ],
+    "deferred_profiles": {
+      "salavat": "0.4.0"
+    },
+    "mandatory_director_qa": true,
+    "director_qa_stages": [
+      "cut",
+      "master"
+    ],
+    "director_receipt_binding": "artifact sha256",
+    "max_automatic_correction_loops": 2,
+    "native_video_critic": {
+      "provider": "lingsuan.top",
+      "protocol": "OpenAI-compatible video_url",
+      "model": "gemini-3.8-flash-medium",
+      "fallback_models": [
+        "gemini-3.8-flash-low",
+        "gemini-3.8-flash-high"
+      ],
+      "broker": "root-owned localhost per-profile capability auth",
+      "policy": "cut+master on rollout profiles; fail-open when cloud unavailable",
+      "pass_gate": "cloud fix verdict or medium/high issue blocks local pass",
+      "proxy": "full timeline+audio; 480p/2fps; 360p/1fps fallback; 24 MB max"
+    }
   },
   "telegram_large_file_ingress": {
     "status": "rolled_out",

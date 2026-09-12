@@ -33,7 +33,19 @@ from core import (
     sync_compiled_user_memory,
     validate_operations,
 )
-from provider import curate_batch, probe_routes, resolve_routes
+from provider import curate_batch, curate_batch_fallback, probe_routes, resolve_routes
+
+CONTRACT_RETRYABLE_REASONS = frozenset({
+    "invalid_enum_or_confidence", "no_valid_user_evidence",
+    "pattern_needs_two_user_messages", "memory_id_not_active", "merge_ids_invalid",
+})
+
+
+def _should_contract_retry(accepted: list[dict], rejected: list[dict]) -> bool:
+    return (
+        not accepted
+        and any(str(item.get("reason")) in CONTRACT_RETRYABLE_REASONS for item in rejected)
+    )
 
 
 def _assert_owner(owner: str) -> tuple[pwd.struct_passwd, Path]:
@@ -128,6 +140,7 @@ def run(owner: str, *, apply: bool, initial_hours: int = 24, max_batches: int = 
         applied_total: list[dict] = []
         routes: list[dict] = []
         primary_failures = 0
+        contract_retries = 0
         snapshot_path: Path | None = None
 
         expired = expire_temporary(working)
@@ -137,6 +150,13 @@ def run(owner: str, *, apply: bool, initial_hours: int = 24, max_batches: int = 
             if primary_error:
                 primary_failures += 1
             accepted, rejected = validate_operations(proposal, working, batch)
+            if _should_contract_retry(accepted, rejected):
+                retry_proposal, retry_route = curate_batch_fallback(home, config, working, batch, system_prompt)
+                routes.append(retry_route); contract_retries += 1
+                retry_accepted, retry_rejected = validate_operations(retry_proposal, working, batch)
+                if _should_contract_retry(retry_accepted, retry_rejected):
+                    raise RuntimeError("living_memory_contract_validation_failed")
+                accepted, rejected = retry_accepted, retry_rejected
             accepted_total.extend(accepted)
             rejected_total.extend(rejected)
             if apply:
@@ -170,6 +190,7 @@ def run(owner: str, *, apply: bool, initial_hours: int = 24, max_batches: int = 
             "rejection_reasons": dict(reason_counts),
             "expired_temporary": expired,
             "primary_failures": primary_failures,
+            "contract_retries": contract_retries,
             "routes": routes,
             "before": before_metrics,
             "after": after_metrics,
@@ -186,6 +207,7 @@ def run(owner: str, *, apply: bool, initial_hours: int = 24, max_batches: int = 
             "changes_accepted": len([x for x in accepted_total if x.get("action") != "noop"]),
             "changes_rejected": len(rejected_total),
             "primary_failures": primary_failures,
+            "contract_retries": contract_retries,
             "memory": after_metrics,
         }, ensure_ascii=False, separators=(",", ":")))
         return 0

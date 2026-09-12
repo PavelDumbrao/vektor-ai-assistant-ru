@@ -96,3 +96,20 @@ def test_call_route_requests_high_reasoning(monkeypatch,tmp_path):
     provider._call_route(tmp_path,route,system_prompt="s",user_prompt="u")
     assert captured["reasoning_config"] == {"enabled":True,"effort":"high"}
     assert captured["tools"][0]["function"]["name"] == provider.TOOL_NAME
+
+
+def test_curate_batch_fallback_uses_configured_fallback(monkeypatch,tmp_path):
+    routes=(
+        {"provider":"custom","model":"gpt-5.6-sol","base_url":"https://primary","api_key":"p"},
+        {"provider":"openrouter","model":"openai/gpt-5.6-sol","base_url":"https://openrouter.ai/api/v1","api_key":"f"},
+    )
+    monkeypatch.setattr(provider,"resolve_routes",lambda home,config:routes)
+    seen={}
+    def fake_call(home,route,**kwargs):
+        seen.update(route)
+        return {"summary":"ok","operations":[]}
+    monkeypatch.setattr(provider,"_call_route",fake_call)
+    out,meta=provider.curate_batch_fallback(tmp_path,{}, {"memories":[],"tombstones":[]}, [], "sys")
+    assert out["operations"] == []
+    assert seen["provider"] == "openrouter"
+    assert meta["route"] == "fallback_contract_retry"

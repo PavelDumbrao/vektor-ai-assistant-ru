@@ -26,6 +26,12 @@ The visual drill-down pattern is conceptually inspired by `browser-use/video-use
 
 Legacy jobs remain readable. The hard Director protocol activates when a job is rerendered under v0.5+, which stamps `director_protocol_version`.
 
+## Native full-video critic
+
+Video Editor v0.6 can add a second-director pass using Lingsuan `https://lingsuan.top/v1` and Gemini 3.8 Flash. The root-owned critic broker binds only to `127.0.0.1:8778`; profile agents receive a separate capability token and never receive the Lingsuan API key. A profile policy explicitly controls whether cloud video review is disabled, final-only, or enabled for both cut and master.
+
+The broker accepts only an exact profile-owned Video Editor job artifact plus its SHA-256. It transcodes the complete timeline and audio to a bounded low-bitrate proxy (normally 480p/2fps, max 24 MB), then uses OpenAI-compatible `video_url` input. `gemini-3.8-flash-medium` is the latency-first critic tier with same-family fallback. The local Director windows remain authoritative for micro-cut continuity. If the cloud critic is disabled or unavailable, Director QA continues fail-open; when a cloud report is present Hermes must explicitly acknowledge reading it before approval.
+
 ## ASR
 
 Primary latency path: root-owned local broker → OpenRouter `openai/whisper-large-v3-turbo` with word/segment timestamps. Profiles receive only a capability token; the OpenRouter key never enters a client home.

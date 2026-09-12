@@ -153,7 +153,7 @@ def test_plugin_registers_only_video_editor_tools(monkeypatch):
     timeline = next(x for x in seen if x["name"] == "video_editor_timeline_view")
     assert timeline["timeout_seconds"] == 120
     director_qa = next(x for x in seen if x["name"] == "video_editor_director_qa")
-    assert director_qa["timeout_seconds"] == 180
+    assert director_qa["timeout_seconds"] == 420
     master = next(x for x in seen if x["name"] == "video_editor_master")
     assert master["timeout_seconds"] == 1200
 

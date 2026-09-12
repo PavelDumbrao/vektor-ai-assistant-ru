@@ -9,7 +9,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from . import engine, visual
+from . import critic_client, engine, visual
 
 PROTOCOL_VERSION = 1
 MAX_WINDOWS = 4
@@ -20,7 +20,7 @@ VALID_VERDICTS = {"pass", "fix"}
 VALID_SEVERITIES = {"low", "medium", "high"}
 VALID_CATEGORIES = {
     "jump_cut", "gesture", "blink", "framing", "caption", "overlay",
-    "composition", "proof", "thumbnail", "audio_visual_sync", "other",
+    "composition", "proof", "thumbnail", "audio_visual_sync", "pacing", "hook", "other",
 }
 
 
@@ -393,6 +393,29 @@ def _failure_count(meta: dict[str, Any], stage: str) -> int:
         return 0
 
 
+def _native_video_critic(artifact: Path, stage: str, fingerprint: dict[str, Any]) -> dict[str, Any]:
+    health = critic_client.health()
+    if not health.get("ok"):
+        return {"status": "unavailable", "error": str(health.get("error") or "broker_unavailable")[:120]}
+    if not health.get("enabled") or stage not in (health.get("stages") or []):
+        return {"status": "disabled", "model": health.get("model")}
+    try:
+        result = critic_client.critique(artifact, stage, str(fingerprint["sha256"]))
+    except critic_client.CriticError as exc:
+        return {"status": "unavailable", "error": str(exc)[:120], "model": health.get("model")}
+    report = result.get("report") if isinstance(result, dict) else None
+    if not isinstance(report, dict):
+        return {"status": "unavailable", "error": "critic_report_invalid", "model": health.get("model")}
+    return {
+        "status": "ok",
+        "model": result.get("model") or health.get("model"),
+        "provider": result.get("provider") or health.get("upstream"),
+        "elapsed_seconds": result.get("elapsed_seconds"),
+        "proxy_bytes": result.get("proxy_bytes"),
+        "report": report,
+    }
+
+
 def qa(job_id: str, stage: str = "cut") -> dict[str, Any]:
     stage = str(stage or "cut").strip().lower()
     if stage not in VALID_STAGES:
@@ -434,6 +457,16 @@ def qa(job_id: str, stage: str = "cut") -> dict[str, Any]:
         content.append({"type": "text", "text": f"Window {index}/{len(windows)} · {window['kind']} · {window['start']:.2f}-{window['end']:.2f}s · {window['reason']}"})
         content.append(image_part)
         views.append({**window, "image_path": (view.get("meta") or {}).get("image_path"), "sample_times": (view.get("meta") or {}).get("sample_times") or []})
+    cloud_critic = _native_video_critic(artifact, stage, fingerprint)
+    if cloud_critic.get("status") == "ok":
+        report = cloud_critic.get("report") or {}
+        content.append({"type": "text", "text": (
+            "Native full-video critic watched the entire current artifact via Gemini 3.8 Flash. "
+            "Treat this as a second-director opinion and explicitly acknowledge it in approval.\n"
+            + json.dumps(report, ensure_ascii=False, separators=(",", ":"))[:7000]
+        )})
+    elif cloud_critic.get("status") == "unavailable":
+        content.append({"type": "text", "text": "Native full-video critic is temporarily unavailable; local Director QA remains authoritative and the pipeline may continue fail-open."})
     pending_payload = {
         "schema_version": 1,
         "protocol_version": PROTOCOL_VERSION,
@@ -446,6 +479,7 @@ def qa(job_id: str, stage: str = "cut") -> dict[str, Any]:
         "target": target,
         "attempt": attempt,
         "windows": views,
+        "cloud_critic": cloud_critic,
         "created_at": int(time.time()),
     }
     engine._atomic_json(_pending_path(studio, stage), pending_payload)
@@ -465,6 +499,7 @@ def qa(job_id: str, stage: str = "cut") -> dict[str, Any]:
             "artifact_sha256": fingerprint["sha256"],
             "attempt": attempt,
             "windows": views,
+            "cloud_critic": cloud_critic,
             "automatic_correction_budget_remaining": max(0, MAX_AUTO_FIX_LOOPS - _failure_count(meta, stage)),
         },
     }
@@ -509,6 +544,7 @@ def approve(
     verdict: str,
     summary: str,
     issues: list[dict[str, Any]] | None = None,
+    cloud_critic_acknowledged: bool = False,
 ) -> dict[str, Any]:
     stage = str(stage or "").strip().lower()
     verdict = str(verdict or "").strip().lower()
@@ -534,6 +570,9 @@ def approve(
         raise engine.VideoEditorError("video_director_pending_token_mismatch")
     if pending.get("artifact_sha256") != fingerprint["sha256"] or int(pending.get("artifact_bytes") or -1) != fingerprint["bytes"]:
         raise engine.VideoEditorError("video_director_artifact_changed_since_review")
+    cloud_critic = pending.get("cloud_critic") if isinstance(pending.get("cloud_critic"), dict) else {}
+    if cloud_critic.get("status") == "ok" and not bool(cloud_critic_acknowledged):
+        raise engine.VideoEditorError("video_director_cloud_critic_ack_required")
     attempt = int(pending.get("attempt") or 1)
     receipt = {
         "schema_version": 1,
@@ -547,6 +586,8 @@ def approve(
         "artifact_bytes": fingerprint["bytes"],
         "artifact_name": artifact.name,
         "attempt": attempt,
+        "cloud_critic": cloud_critic,
+        "cloud_critic_acknowledged": bool(cloud_critic_acknowledged),
         "qa_token_sha256": hashlib.sha256(token.encode("utf-8")).hexdigest(),
         "reviewed_by": "hermes",
         "reviewed_at": int(time.time()),

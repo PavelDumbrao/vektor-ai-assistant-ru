@@ -8,6 +8,10 @@ Shared execution data under `/opt/vektor/video-editor` is root-owned and read-on
 
 The ASR broker listens on `127.0.0.1`, accepts audio bytes rather than server file paths, authenticates a profile capability token, limits request size/concurrency and never returns the provider secret.
 
+The native-video critic uses a separate root-owned secret (`private/lingsuan.env`, `0600`) and a separate per-profile `critic_token`. Its broker binds only to `127.0.0.1:8778`, runs with read-only `/home` access plus `CAP_DAC_READ_SEARCH`, and accepts only regular video artifacts inside the authenticated profile's own `~/.hermes/video_editor/jobs` tree. The caller must provide the current SHA-256; a mismatch is rejected before upload. Source videos are never read wholesale into RAM: ffmpeg first creates a complete low-bitrate proxy capped at 24 MB, and only that bounded proxy is base64-encoded for Lingsuan.
+
+Cloud video review is profile-policy gated (`off`, `final`, or `all`). It is intentionally fail-open: local artifact-bound Director QA remains mandatory even when Lingsuan is unavailable, and a cloud failure cannot silently convert into a pass. When a Gemini report is present, Hermes must explicitly acknowledge it before the artifact can be approved.
+
 ## Deliberately unavailable upstream surfaces
 
 - `proofread.py --llm` arbitrary shell command

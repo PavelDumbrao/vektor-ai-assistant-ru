@@ -69,10 +69,11 @@ DIRECTOR_APPROVE_SCHEMA = {
             "qa_token": {"type": "string", "minLength": 16, "maxLength": 256},
             "verdict": {"type": "string", "enum": ["pass", "fix"]},
             "summary": {"type": "string", "minLength": 8, "maxLength": 1200},
+            "cloud_critic_acknowledged": {"type": "boolean", "default": False, "description": "Set true only after reading the native Gemini full-video critic report when one was attached by Director QA."},
             "issues": {"type": "array", "maxItems": 12, "items": {
                 "type": "object",
                 "properties": {
-                    "category": {"type": "string", "enum": ["jump_cut", "gesture", "blink", "framing", "caption", "overlay", "composition", "proof", "thumbnail", "audio_visual_sync", "other"]},
+                    "category": {"type": "string", "enum": ["jump_cut", "gesture", "blink", "framing", "caption", "overlay", "composition", "proof", "thumbnail", "audio_visual_sync", "pacing", "hook", "other"]},
                     "severity": {"type": "string", "enum": ["low", "medium", "high"]},
                     "at": {"type": "number", "minimum": 0},
                     "detail": {"type": "string", "maxLength": 360},
@@ -189,7 +190,7 @@ def register(ctx: Any) -> None:
                       description="Look at sampled real frames plus waveform for a job-local time window.", emoji="👁️", timeout_seconds=120)
     ctx.register_tool(name="video_editor_director_qa", toolset="video_editor", schema=DIRECTOR_QA_SCHEMA,
                       handler=lambda args, **_: _director_guard(args), check_fn=engine.runtime_ready,
-                      description="Run mandatory artifact-bound visual Director QA.", emoji="🎬", timeout_seconds=180)
+                      description="Run mandatory artifact-bound visual Director QA plus optional native full-video critic.", emoji="🎬", timeout_seconds=420)
     ctx.register_tool(name="video_editor_director_approve", toolset="video_editor", schema=DIRECTOR_APPROVE_SCHEMA,
                       handler=lambda args, **_: _guard(director.approve, args), check_fn=engine.runtime_ready,
                       description="Approve or reject the exact visual artifact reviewed by Director QA.", emoji="🧿")

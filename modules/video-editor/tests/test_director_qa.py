@@ -240,3 +240,34 @@ def test_protocol_master_becomes_candidate_until_final_qa(tmp_path, monkeypatch)
     updated = engine._read_meta(job)
     assert updated["state"] == "needs_final_visual_qa"
     assert "mastered_at" not in updated
+
+
+def test_cloud_critic_requires_explicit_ack_before_pass(tmp_path, monkeypatch):
+    job, _studio = _job(tmp_path, monkeypatch)
+    _fake_visual(monkeypatch)
+    monkeypatch.setattr(director.critic_client, "health", lambda: {"ok": True, "enabled": True, "stages": ["cut"], "model": "gemini-3.8-flash-medium", "upstream": "lingsuan.top"})
+    monkeypatch.setattr(director.critic_client, "critique", lambda *_args, **_kwargs: {
+        "ok": True, "model": "gemini-3.8-flash-medium", "provider": "lingsuan.top", "elapsed_seconds": 1.2, "proxy_bytes": 1234,
+        "report": {"verdict": "pass", "summary": "Full video looks coherent", "issues": [], "structured": True},
+    })
+    packet = director.qa(JOB_ID, "cut")
+    assert packet["meta"]["cloud_critic"]["status"] == "ok"
+    with pytest.raises(engine.VideoEditorError, match="cloud_critic_ack_required"):
+        director.approve(JOB_ID, "cut", packet["meta"]["qa_token"], "pass", "Local and cloud review both look clean.", [])
+    result = director.approve(JOB_ID, "cut", packet["meta"]["qa_token"], "pass", "Local and cloud review both look clean.", [], cloud_critic_acknowledged=True)
+    assert result["state"] == "verified"
+    assert engine._read_meta(job)["state"] == "verified"
+
+
+def test_cloud_critic_unavailable_is_fail_open(tmp_path, monkeypatch):
+    _job(tmp_path, monkeypatch)
+    _fake_visual(monkeypatch)
+    monkeypatch.setattr(director.critic_client, "health", lambda: {"ok": True, "enabled": True, "stages": ["cut"], "model": "gemini-3.8-flash-medium"})
+    monkeypatch.setattr(director.critic_client, "critique", lambda *_args, **_kwargs: (_ for _ in ()).throw(director.critic_client.CriticError("temporary")))
+    packet = director.qa(JOB_ID, "cut")
+    assert packet["meta"]["cloud_critic"]["status"] == "unavailable"
+    result = director.approve(
+        JOB_ID, "cut", packet["meta"]["qa_token"], "pass",
+        "Local Director QA is clean while the optional cloud critic is unavailable.", [],
+    )
+    assert result["state"] == "verified"

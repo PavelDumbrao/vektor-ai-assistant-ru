@@ -1,6 +1,6 @@
 ---
 name: video-editor
-description: Full transcript-first talking-head editing with mandatory artifact-bound Director QA, native visual reasoning, cut selection, seam verification, captions, cards, proof B-roll, sound, delivery and durable taste memory.
+description: Full transcript-first talking-head editing with mandatory artifact-bound Director QA, optional native full-video Gemini 3.8 Flash critic, native visual reasoning, cut selection, seam verification, captions, cards, proof B-roll, sound, delivery and durable taste memory.
 ---
 
 # Hermes Video Editor
@@ -14,7 +14,7 @@ description: Full transcript-first talking-head editing with mandatory artifact-
 3. Используй `video_editor_timeline_view` только как visual drill-down, а не как frame dump. До EDL посмотри opening и спорные места, где жест, поза, движение, взгляд или пауза могут изменить решение о склейке. Для source передавай alias вроде `source_01`.
 4. Составь EDL по смыслу и silence cut points. Вызови `video_editor_render`. Preview можно использовать для черновой проверки, но enrichment разрешён только после full render.
 5. После механически чистого full render job переходит в `needs_visual_qa`. Обязательно вызови `video_editor_director_qa(stage="cut")`. Он сам выберет opening и самые рискованные seams и вложит несколько visual windows в контекст. Прочитай каждый seam transcript и посмотри ВСЕ приложенные окна.
-6. Вызови `video_editor_director_approve`. `verdict=pass` переводит точный SHA cut в `verified`. При `verdict=fix` укажи структурированные issues, исправь EDL и повтори render → Director QA. После двух неудачных visual QA циклов остановись и покажи проблему владельцу, не зацикливайся.
+6. Если `video_editor_director_qa` приложил блок `Native full-video critic`, Gemini 3.8 Flash посмотрел весь текущий ролик. Прочитай его verdict/issues как мнение второго режиссёра и только после этого передай `cloud_critic_acknowledged=true` в `video_editor_director_approve`. Если critic disabled/unavailable, local visual QA остаётся достаточным и pipeline идёт fail-open. `verdict=pass` переводит точный SHA cut в `verified`; при `fix` исправь EDL и повтори render → Director QA. После двух неудачных visual QA циклов остановись и покажи проблему владельцу.
 
 ## Enrichment
 
@@ -23,7 +23,7 @@ description: Full transcript-first talking-head editing with mandatory artifact-
 9. `video_editor_cards`: расставь смысловые cards. Card объясняет, но не подменяет proof. Если звучит проверяемый сайт/репозиторий/продукт, используй `video_editor_capture` → `video_editor_proof`.
 10. `video_editor_look`: сначала preview, затем apply. `video_editor_sound`: спланируй и проверь SFX. Любое изменение enrichment автоматически аннулирует старый final visual approval.
 11. `video_editor_master` строит master candidate, запускает beat/sound/media gates, variants и thumbnails. Для новых jobs успешный render возвращает `needs_final_visual_qa`, а НЕ `mastered`.
-12. Обязательно вызови `video_editor_director_qa(stage="master")`, посмотри ВСЕ приложенные окна: opening, transitions/cards/proof, risky seams и thumbnail/face sample. Затем `video_editor_director_approve(stage="master")`. Только `verdict=pass` по текущему artifact SHA даёт `state=mastered` и разрешает выдачу. При `fix` исправь enrichment/master и повтори, максимум два автоматических correction loops.
+12. Обязательно вызови `video_editor_director_qa(stage="master")`, посмотри ВСЕ приложенные окна и, если доступен, прочитай full-video Gemini critic. Затем `video_editor_director_approve(stage="master")`; при наличии cloud report передай `cloud_critic_acknowledged=true`. Только `verdict=pass` по текущему artifact SHA даёт `state=mastered` и разрешает выдачу. При `fix` исправь enrichment/master и повтори, максимум два automatic correction loops.
 
 ## Visual reasoning
 
@@ -31,6 +31,7 @@ description: Full transcript-first talking-head editing with mandatory artifact-
 - Окно visual tool ограничено 30 секундами и 3-8 кадрами. Для seam обычно достаточно 2-4 секунд вокруг точки.
 - Красные линии на waveform означают реальные cut seams. Для cut/master кадры около seam автоматически приоритетнее равномерных samples.
 - Pixels отвечают на вопросы «как выглядит», transcript/audio отвечают на «что и когда сказано». Не подменяй одно другим.
+- Native full-video critic через Lingsuan/Gemini 3.8 Flash видит весь bounded proxy с аудио и оценивает общую режиссуру, pacing и композицию. Он не заменяет локальный seam QA и может быть отключён политикой профиля.
 
 ## Жёсткие правила
 

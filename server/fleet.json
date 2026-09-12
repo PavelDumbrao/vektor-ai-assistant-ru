@@ -92,11 +92,9 @@
       "pavel",
       "baysangur",
       "vyacheslav",
-      "bebov"
+      "bebov",
+      "salavat"
     ],
-    "deferred_profiles": {
-      "salavat": "0.4.0"
-    },
     "mandatory_director_qa": true,
     "director_qa_stages": [
       "cut",
@@ -113,7 +111,7 @@
         "gemini-3.8-flash-high"
       ],
       "broker": "root-owned localhost per-profile capability auth",
-      "policy": "cut+master on rollout profiles; fail-open when cloud unavailable",
+      "policy": "cut+master on all five managed profiles; fail-open when cloud unavailable",
       "pass_gate": "cloud fix verdict or medium/high issue blocks local pass",
       "proxy": "full timeline+audio; 480p/2fps; 360p/1fps fallback; 24 MB max"
     }

@@ -271,3 +271,34 @@ def test_cloud_critic_unavailable_is_fail_open(tmp_path, monkeypatch):
         "Local Director QA is clean while the optional cloud critic is unavailable.", [],
     )
     assert result["state"] == "verified"
+
+def test_cloud_critic_blocking_fix_cannot_be_overridden_by_pass(tmp_path, monkeypatch):
+    job, _studio = _job(tmp_path, monkeypatch)
+    _fake_visual(monkeypatch)
+    monkeypatch.setattr(director.critic_client, "health", lambda: {"ok": True, "enabled": True, "stages": ["cut"], "model": "gemini-3.8-flash-medium", "upstream": "lingsuan.top"})
+    monkeypatch.setattr(director.critic_client, "critique", lambda *_args, **_kwargs: {
+        "ok": True,
+        "model": "gemini-3.8-flash-medium",
+        "provider": "lingsuan.top",
+        "report": {
+            "verdict": "fix",
+            "summary": "The opening needs a tighter hook.",
+            "issues": [{"category": "hook", "severity": "medium", "at": 0.0, "detail": "Dead opening pause", "action": "Trim the opening"}],
+            "structured": True,
+        },
+    })
+    packet = director.qa(JOB_ID, "cut")
+    with pytest.raises(engine.VideoEditorError, match="cloud_critic_blocking_issues"):
+        director.approve(
+            JOB_ID, "cut", packet["meta"]["qa_token"], "pass",
+            "Local windows look clean but cloud critic found a blocking issue.", [],
+            cloud_critic_acknowledged=True,
+        )
+    result = director.approve(
+        JOB_ID, "cut", packet["meta"]["qa_token"], "fix",
+        "Cloud critic found a blocking opening issue that must be corrected.",
+        [{"category": "hook", "severity": "medium", "at": 0.0, "detail": "Dead opening pause", "action": "Trim the opening"}],
+        cloud_critic_acknowledged=True,
+    )
+    assert result["state"] == "needs_fix"
+    assert engine._read_meta(job)["state"] == "needs_fix"

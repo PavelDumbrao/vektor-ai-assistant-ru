@@ -571,8 +571,14 @@ def approve(
     if pending.get("artifact_sha256") != fingerprint["sha256"] or int(pending.get("artifact_bytes") or -1) != fingerprint["bytes"]:
         raise engine.VideoEditorError("video_director_artifact_changed_since_review")
     cloud_critic = pending.get("cloud_critic") if isinstance(pending.get("cloud_critic"), dict) else {}
-    if cloud_critic.get("status") == "ok" and not bool(cloud_critic_acknowledged):
-        raise engine.VideoEditorError("video_director_cloud_critic_ack_required")
+    if cloud_critic.get("status") == "ok":
+        if not bool(cloud_critic_acknowledged):
+            raise engine.VideoEditorError("video_director_cloud_critic_ack_required")
+        cloud_report = cloud_critic.get("report") if isinstance(cloud_critic.get("report"), dict) else {}
+        cloud_issues = [item for item in (cloud_report.get("issues") or []) if isinstance(item, dict)]
+        cloud_blocking = [item for item in cloud_issues if str(item.get("severity") or "").lower() in {"medium", "high"}]
+        if verdict == "pass" and (str(cloud_report.get("verdict") or "").lower() == "fix" or cloud_blocking):
+            raise engine.VideoEditorError("video_director_cloud_critic_blocking_issues")
     attempt = int(pending.get("attempt") or 1)
     receipt = {
         "schema_version": 1,

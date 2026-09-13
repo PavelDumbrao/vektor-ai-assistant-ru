@@ -1,5 +1,5 @@
 {
-  "snapshot_date": "2026-09-12",
+  "snapshot_date": "2026-09-13",
   "code_release": "../modules/shared-runtime/releases/v0.21.0/vektor3.json",
   "profiles": [
     {
@@ -160,6 +160,13 @@
     "fallback": "openai/gpt-5.6-sol high via OpenRouter separate credential",
     "source_scope": "owner direct Telegram conversation only",
     "legacy_background_learning": "disabled; built-in memory reading retained",
-    "safety": "LLM proposal-only; deterministic evidence/privacy validation; rollback snapshots; forget tombstones"
+    "safety": "LLM proposal-only; deterministic evidence/privacy validation; rollback snapshots; forget tombstones",
+    "new_profile_default": {
+      "required": true,
+      "factory": "Hermes Forge bounded provisioner",
+      "activation_gate": "primary and reserve probes + Hermes/Telegram readiness + timer readiness",
+      "failure_cleanup": "new-tenant timer/service only",
+      "seed": "generic template; no cross-client memory cloning"
+    }
   }
 }

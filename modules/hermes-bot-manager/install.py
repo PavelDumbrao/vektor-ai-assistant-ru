@@ -39,7 +39,7 @@ def main() -> int:
     (TARGET / 'state').mkdir(parents=True, exist_ok=True, mode=0o700)
     for child in ('managed', 'instances', 'provisioning', 'jobs'):
         (TARGET / 'state' / child).mkdir(parents=True, exist_ok=True, mode=0o700)
-    for name in ('manager.py', 'configure.py', 'i18n.py', 'hermes_instance.py', 'provisioner.py', 'seed_platform_secrets.py'):
+    for name in ('manager.py', 'configure.py', 'i18n.py', 'hermes_instance.py', 'provisioner.py', 'living_memory_onboarding.py', 'seed_platform_secrets.py'):
         shutil.copy2(HERE / name, TARGET / name)
         os.chmod(TARGET / name, 0o600)
     for dirname in ('templates',):
@@ -49,7 +49,7 @@ def main() -> int:
         shutil.copytree(HERE / dirname, target, ignore=shutil.ignore_patterns('__pycache__', '*.pyc'))
     vendor = TARGET / 'vendor'
     vendor.mkdir(mode=0o700, exist_ok=True)
-    for module in ('passive-secretary-postgres', 'passive-secretary', 'maton-onboarding', 'grsai-image-provider'):
+    for module in ('passive-secretary-postgres', 'passive-secretary', 'maton-onboarding', 'grsai-image-provider', 'living-memory'):
         target = vendor / module
         if target.exists():
             shutil.rmtree(target)

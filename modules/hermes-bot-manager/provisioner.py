@@ -23,8 +23,11 @@ from pathlib import Path
 
 import yaml
 
+import living_memory_onboarding as living_memory
+
 from hermes_instance import HermesInstance, owner_for_telegram_id
 
+PROFILE_HOME_ROOT = Path("/home")
 ROOT = Path("/opt/vektor")
 MANAGER_ROOT = Path("/opt/proai-hermes-manager")
 PLATFORM_ENV = Path("/etc/proai-hermes-platform.env")
@@ -324,6 +327,33 @@ def _install_grsai(instance: HermesInstance, platform_values: dict[str, str]) ->
     _run([str(SYSTEM_PYTHON), str(script), "--owner", instance.owner_linux], timeout=60)
 
 
+def _prepare_living_memory(instance, entry, hermes: Path) -> None:
+    living_memory.validate_profile(instance, entry, hermes)
+    path = hermes / "config.yaml"
+    config = yaml.safe_load(path.read_text(encoding="utf-8"))
+    if not isinstance(config, dict) or not isinstance(config.get("memory", {}), dict):
+        raise ProvisionError("living_memory_config_invalid")
+    owners = config.get("platforms", {}).get("telegram", {}).get("extra", {}).get("business_owner_ids", [])
+    if [str(value) for value in owners] != [str(instance.owner_telegram_id)]:
+        raise ProvisionError("living_memory_owner_scope_invalid")
+    memory = config.setdefault("memory", {})
+    if memory.get("memory_enabled") is False or memory.get("user_profile_enabled") is False:
+        raise ProvisionError("living_memory_disabled_by_owner")
+    desired = dict(memory, memory_enabled=True, user_profile_enabled=True, nudge_interval=0)
+    if memory != desired:
+        backup_root = hermes / "backups"
+        _ensure_private_dir(backup_root, entry)
+        backup = backup_root / "living-memory-onboarding-config.yaml"
+        if backup.is_symlink():
+            raise ProvisionError("living_memory_backup_unsafe")
+        if not backup.exists():
+            _atomic_write(backup, path.read_text(), uid=entry.pw_uid, gid=entry.pw_gid)
+        config["memory"] = desired
+        _atomic_write(path, yaml.safe_dump(config, allow_unicode=True, sort_keys=False),
+                      uid=entry.pw_uid, gid=entry.pw_gid)
+    living_memory.prepare(instance, entry, hermes, MANAGER_ROOT / "vendor", _run)
+
+
 def _start_service(instance: HermesInstance) -> None:
     service = f"{instance.owner_linux}-hermes.service"
     _run([str(SYSTEMCTL), "daemon-reload"], timeout=30)
@@ -346,7 +376,7 @@ def _telegram_identity(token: str) -> str:
 
 def _wait_healthy(instance: HermesInstance, token: str, expected_version: str, timeout: int = 75) -> dict[str, object]:
     service = f"{instance.owner_linux}-hermes.service"
-    home = Path("/home") / instance.owner_linux / ".hermes"
+    home = PROFILE_HOME_ROOT / instance.owner_linux / ".hermes"
     deadline = time.monotonic() + timeout
     last_gateway: dict = {}
     while time.monotonic() < deadline:
@@ -361,7 +391,18 @@ def _wait_healthy(instance: HermesInstance, token: str, expected_version: str, t
             except Exception:
                 last_gateway = {}
         telegram = (last_gateway.get("platforms") or {}).get("telegram") or {}
-        if active and telegram.get("state") == "connected" and last_gateway.get("code_version") == expected_version:
+        pid_probe = subprocess.run(
+            [str(SYSTEMCTL), "show", service, "-p", "MainPID", "--value"],
+            capture_output=True, text=True, timeout=5, check=False,
+        )
+        try:
+            service_pid = int(pid_probe.stdout.strip()) if pid_probe.returncode == 0 else 0
+        except ValueError:
+            service_pid = 0
+        if (active and service_pid > 0 and service_pid == last_gateway.get("pid")
+                and last_gateway.get("gateway_state") == "running"
+                and telegram.get("state") == "connected"
+                and last_gateway.get("code_version") == expected_version):
             if _telegram_identity(token) != instance.bot_username:
                 raise ProvisionError("telegram_identity_mismatch")
             return {
@@ -420,7 +461,9 @@ def provision(instance: HermesInstance, token_file: Path | None = None) -> dict[
         instance.write_atomic(instance_path)
 
     _record(instance, "provisioning")
+    memory_prepared = False
     try:
+        living_memory.require_platform_keys(platform_values)
         entry = _ensure_account(instance.owner_linux)
         hermes = _render_profile(instance, entry)
         _ensure_profile_env(instance, entry, hermes, token, platform_values)
@@ -430,13 +473,24 @@ def provision(instance: HermesInstance, token_file: Path | None = None) -> dict[
         _install_passive_secretary(instance, entry, hermes)
         _install_maton(entry, hermes, release)
         _install_grsai(instance, platform_values)
+        _prepare_living_memory(instance, entry, hermes)
+        memory_prepared = True
+        memory_health = living_memory.check(instance, entry, hermes)
         _start_service(instance)
         health = _wait_healthy(instance, token, str(runtime.get("version") or ""))
+        memory_health.update(living_memory.activate(instance, _run))
+        health["living_memory"] = memory_health
+        _record(instance, "active", health=health)
     except Exception as exc:
-        code = str(exc) if isinstance(exc, ProvisionError) else type(exc).__name__
-        _record(instance, "failed", error_code=code[:120])
+        cleanup_failed = False
+        if memory_prepared:
+            try:
+                living_memory.abort(instance, _run)
+            except Exception:
+                cleanup_failed = True
+        code = str(exc) if isinstance(exc, (ProvisionError, living_memory.MemoryOnboardingError)) else type(exc).__name__
+        _record(instance, "failed", error_code=code[:120], living_memory_cleanup_failed=cleanup_failed)
         raise
-    _record(instance, "active", health=health)
     return {
         "instance_id": instance.instance_id,
         "owner": instance.owner_linux,

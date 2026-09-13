@@ -52,6 +52,7 @@ curator:
 kanban:
   dispatch_in_gateway: false
 memory:
+  nudge_interval: 0  # Living Memory performs the daily review.
   memory_enabled: true
   user_profile_enabled: true
   write_approval: true

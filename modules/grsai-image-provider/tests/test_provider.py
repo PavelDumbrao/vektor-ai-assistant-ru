@@ -3,9 +3,22 @@ from __future__ import annotations
 import base64
 import importlib.util
 from pathlib import Path
+import sys
+import types
 
 import pytest
-import requests
+
+requests = types.ModuleType("requests")
+class RequestException(Exception): pass
+class Timeout(RequestException): pass
+class ConnectTimeout(Timeout): pass
+class ReadTimeout(Timeout): pass
+requests.RequestException = RequestException
+requests.Timeout = Timeout
+requests.ConnectTimeout = ConnectTimeout
+requests.ReadTimeout = ReadTimeout
+requests.post = None
+sys.modules["requests"] = requests
 
 MODULE = Path(__file__).resolve().parents[1] / "plugin" / "__init__.py"
 spec = importlib.util.spec_from_file_location("grsai_image_provider_under_test", MODULE)

@@ -25,6 +25,14 @@ def run(*args: str, timeout: int = 60) -> None:
         raise RuntimeError(Path(args[0]).name + "_failed")
 
 
+def service_active(name: str) -> bool:
+    result = subprocess.run(
+        ["/usr/bin/systemctl", "is-active", "--quiet", name],
+        capture_output=True, text=True, timeout=10, check=False,
+    )
+    return result.returncode == 0
+
+
 def atomic_copy(source: Path, target: Path, mode: int) -> None:
     target.parent.mkdir(parents=True, exist_ok=True)
     fd, raw = tempfile.mkstemp(prefix=f".{target.name}.", dir=target.parent)
@@ -44,6 +52,10 @@ def install() -> Path:
     if os.geteuid() != 0:
         raise RuntimeError("root_required")
     pwd.getpwnam("www-data")
+    if service_active("proai-hermes-forge-api.service"):
+        raise RuntimeError("active_api_requires_versioned_upgrade")
+    if (TARGET / "releases").exists() or (TARGET / "current").is_symlink():
+        raise RuntimeError("versioned_api_requires_upgrade")
     run(
         "/usr/bin/python3", "-m", "py_compile",
         str(SOURCE / "control.py"), str(SOURCE / "api.py"), str(KITCHEN_SOURCE),

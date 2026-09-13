@@ -78,7 +78,7 @@ PATCHED_SHA256 = {
         "b9449f2360403ab961e8a39eda89b8a3744c63cd253d68d2fdfecbc890d437a6"
     ),
     "gateway/run.py": (
-        "68ffe24f1611a6894bafe78a8f4ea8a869b5884dde100b1525060ec98154b2af"
+        "6036dd45350296c2dc9c47a9e7a6590beb6bed104af17690234022587b813f85"
     ),
     "gateway/turn_context.py": (
         "58bed0055c3ba28ef0f6dbf3a4747301ca6597f07314a47cf1a35559bd61c427"

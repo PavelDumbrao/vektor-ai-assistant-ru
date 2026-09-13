@@ -57,3 +57,24 @@ Vietnamese, Polish, Ukrainian, Dutch, Persian, Hebrew, Thai, Bengali, Urdu, Mala
 
 Private profile data, memories, tokens, and tenant boundaries are independent
 of UI locale; changing language changes presentation only.
+
+## Living Memory is included for every new client
+
+The bounded provisioner installs Living Memory v0.1 automatically. It is a platform default, not an optional capability toggle. No client needs a separate memory setup step.
+
+Creation order:
+1. Validate platform primary and distinct OpenRouter reserve credentials before creating the Linux account.
+2. Render only the generic tenant template; do not clone any existing client's memory.
+3. Install the root-owned Living Memory release with that tenant's private storage. Keep its timer stopped during preparation.
+4. Keep built-in memory reading and write approval enabled; set `memory.nudge_interval=0` to avoid competing per-turn background learning.
+5. Run owner-scoped configuration checks and synthetic primary/reserve model probes, with no real conversation sent.
+6. Start Hermes and require current systemd/gateway PID agreement, running gateway and connected Telegram.
+7. Enable and verify the daily Living Memory timer, then publish `active` with a `health.living_memory` receipt.
+
+A failed model, gateway or timer check must not publish `active`. Scoped cleanup stops only the new tenant's memory timer/service. Retrying provisioning preserves existing user memory and uses the same installed release.
+
+Default schedule is 04:00 Europe/Moscow with up to 30 minutes of per-profile delay. Review scope remains only direct Telegram conversations between this owner and Hermes. GPT-5.6 Sol uses high reasoning; reserve is GPT-5.6 Sol through OpenRouter with a different credential. Missing reserve access blocks onboarding readiness rather than silently creating a reduced-quality memory agent.
+
+The installer vendors `modules/living-memory` and `living_memory_onboarding.py`. Deploying this factory change does not reinstall, restart or migrate existing tenants.
+
+Verification: automated factory/negative-path tests are part of Server snapshot CI. An isolated Linux canary additionally exercises the real installer, both provider routes, systemd timer/readiness, sandboxed empty scan and cross-tenant read denials without creating a public Telegram bot.

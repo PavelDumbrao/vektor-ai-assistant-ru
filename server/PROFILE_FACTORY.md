@@ -53,3 +53,12 @@ Layer 2, semantic memory:
 - lexical fallback whenever embedding provider or vector index is unavailable.
 
 Vector rollout must be a separate migration/PR because it changes the shared PostgreSQL image and storage schema. It must not weaken tenant DB isolation or send archive text to a new external provider without explicit configuration.
+
+
+## Living Memory: обязательная часть нового профиля
+
+Стандартный provisioner автоматически устанавливает Living Memory, проверяет отдельные основной и резервный доступы к ИИ, затем включает ночное расписание только после готовности Hermes/Telegram. До успешной проверки память не считается готовой, а профиль не получает статус active.
+
+Начальная память создаётся из общего шаблона, без копирования данных других клиентов. Личная переписка с владельцем является единственным источником автоматического обучения. Старое обучение каждые несколько сообщений отключено через memory.nudge_interval=0; чтение обычной памяти и подтверждение ручных записей сохранены.
+
+При ошибке завершающих проверок таймер нового клиента выключается. Повторный запуск сохраняет накопленную память. Для нового профиля необходим отдельный от основного ключ OPENROUTER_API_KEY; значения ключей не включаются в отчёты или Git.

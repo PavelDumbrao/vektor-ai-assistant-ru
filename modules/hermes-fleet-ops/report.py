@@ -55,6 +55,31 @@ def summary(store: AnalyticsStore) -> dict:
             GROUP BY service_state, telegram_state, error_code ORDER BY n DESC
         """).fetchall()
         rollouts = db.execute("SELECT * FROM rollout_state ORDER BY track, channel").fetchall()
+        observability = db.execute("""
+            SELECT o.*,
+                   COALESCE((SELECT MAX(m.ingested_at) FROM metric_packages m
+                             WHERE m.profile=o.profile), '') AS last_metric_package_at
+            FROM profile_observability o ORDER BY o.profile
+        """).fetchall()
+        living_24h = db.execute("""
+            SELECT COUNT(*) AS runs,
+                   COALESCE(SUM(messages_scanned),0) AS messages,
+                   COALESCE(SUM(accepted_operations),0) AS accepted,
+                   COALESCE(SUM(rejected_operations),0) AS rejected,
+                   COALESCE(SUM(primary_failures),0) AS primary_failures,
+                   COALESCE(SUM(contract_retries),0) AS contract_retries
+            FROM living_memory_runs
+            WHERE mode='apply' AND outcome='success'
+              AND julianday(observed_at) >= julianday('now','-1 day')
+        """).fetchone()
+        living_failed_7d = db.execute("""
+            SELECT COUNT(*) AS n FROM living_memory_runs
+            WHERE outcome='failed'
+              AND julianday(observed_at) >= julianday('now','-7 days')
+        """).fetchone()
+        living_profiles = db.execute(
+            "SELECT COUNT(DISTINCT profile) AS n FROM living_memory_runs"
+        ).fetchone()
     healthy = sum(1 for row in health if row["service_state"] == "active" and row["telegram_state"] == "connected" and not row["needs_attention"])
     degraded = len(health) - healthy
     tool_rows = []
@@ -68,6 +93,30 @@ def summary(store: AnalyticsStore) -> dict:
             "retry_count_bucket": dimensions.get("retry_count_bucket", "unknown"),
             "count": int(row["n"]),
         })
+    observability_rows = []
+    for raw in observability:
+        row = dict(raw)
+        for key in ("telemetry_enabled", "metrics_database_present"):
+            row[key] = bool(row[key])
+        observability_rows.append(row)
+    living_memory = {
+        "profiles_with_runs": int(living_profiles["n"] if living_profiles else 0),
+        "successful_runs_24h": int(living_24h["runs"] if living_24h else 0),
+        "failed_runs_7d": int(living_failed_7d["n"] if living_failed_7d else 0),
+        "messages_reviewed_24h": int(living_24h["messages"] if living_24h else 0),
+        "changes_accepted_24h": int(living_24h["accepted"] if living_24h else 0),
+        "changes_rejected_24h": int(living_24h["rejected"] if living_24h else 0),
+        "primary_failures_24h": int(living_24h["primary_failures"] if living_24h else 0),
+        "fallback_contract_retries_24h": int(living_24h["contract_retries"] if living_24h else 0),
+        "active_memories": sum(int(row["living_memory_active"]) for row in observability_rows),
+        "hypotheses": sum(int(row["living_memory_hypothesis"]) for row in observability_rows),
+    }
+    telemetry_delivery = {
+        "profiles_enabled": sum(1 for row in observability_rows if row["telemetry_enabled"]),
+        "exporters_active": sum(1 for row in observability_rows if row["exporter_timer_state"] == "active"),
+        "metrics_databases_present": sum(1 for row in observability_rows if row["metrics_database_present"]),
+    }
+
     return {
         "fleet": {"profiles": len(health), "healthy": healthy, "degraded": degraded},
         "versions": [{"release_id": row["release_id"], "profiles": int(row["n"])} for row in versions],
@@ -79,6 +128,9 @@ def summary(store: AnalyticsStore) -> dict:
         "updates": [{"outcome": row["outcome"], "count": int(row["n"])} for row in updates],
         "health_issues_7d": [dict(row) for row in issues],
         "rollouts": [dict(row) for row in rollouts],
+        "living_memory": living_memory,
+        "telemetry_delivery": telemetry_delivery,
+        "profiles": observability_rows,
     }
 
 

@@ -4,11 +4,15 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import pwd
 import re
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+import yaml
 
 from store import AnalyticsStore
 
@@ -20,6 +24,10 @@ UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{
 SAFE_ERROR_RE = re.compile(r"^[A-Za-z0-9_.:-]{0,80}$")
 SAFE_VERSION_RE = re.compile(r"^[A-Za-z0-9_.+-]{1,64}$")
 MAX_PACKAGE_BYTES = 1024 * 1024
+MAX_LIVING_AUDIT_BYTES = 4 * 1024 * 1024
+MAX_LIVING_AUDIT_LINE_BYTES = 64 * 1024
+LIVING_RUN_RE = re.compile(r"^lm-[0-9a-f]{12}$")
+OBSERVABILITY_STATES = {"active", "inactive", "failed", "activating", "deactivating", "unknown"}
 
 COUNT_BUCKETS = {"0", "1", "2", "3_to_5", "6_to_10", "gte_11"}
 DURATION_BUCKETS = {"lt_1s", "1s_to_5s", "5s_to_30s", "30s_to_2m", "2m_to_10m", "gte_10m"}
@@ -214,12 +222,7 @@ def ingest_outbox(store: AnalyticsStore, profile: str, home: Path) -> tuple[int,
 
 
 def service_state(owner: str) -> str:
-    result = subprocess.run(
-        ["/usr/bin/systemctl", "is-active", f"{owner}-hermes.service"],
-        capture_output=True, text=True, timeout=10, check=False,
-    )
-    value = result.stdout.strip().lower()
-    return value if value in {"active", "inactive", "failed", "activating", "deactivating"} else "unknown"
+    return unit_state(f"{owner}-hermes.service")
 
 
 def safe_error(value: Any) -> str:
@@ -253,8 +256,172 @@ def health_row(profile: dict[str, str]) -> dict[str, Any]:
     }
 
 
+
+def _bounded_count(value: Any) -> int:
+    try:
+        result = int(value or 0)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("living_memory_count_invalid") from exc
+    if result < 0 or result > 1_000_000_000:
+        raise ValueError("living_memory_count_invalid")
+    return result
+
+
+def _normalized_time(value: Any, fallback: str) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return fallback
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValueError("living_memory_timestamp_invalid") from exc
+    if parsed.tzinfo is None:
+        raise ValueError("living_memory_timestamp_invalid")
+    return parsed.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _profile_uid(owner: str) -> int:
+    try:
+        entry = pwd.getpwnam(owner)
+    except KeyError as exc:
+        raise ValueError("profile_account_missing") from exc
+    if entry.pw_uid <= 0 or Path(entry.pw_dir) != HOME_ROOT / owner:
+        raise ValueError("profile_account_invalid")
+    return entry.pw_uid
+
+
+def _private_regular(path: Path, uid: int, max_bytes: int) -> bool:
+    if not path.exists():
+        return False
+    if path.is_symlink() or not path.is_file():
+        raise ValueError("profile_telemetry_file_unsafe")
+    info = path.stat()
+    if info.st_uid != uid or info.st_mode & 0o077 or info.st_size > max_bytes:
+        raise ValueError("profile_telemetry_file_unsafe")
+    return True
+
+
+def _living_memory_record(profile: str, data: Any, fallback_time: str) -> dict[str, Any]:
+    if not isinstance(data, dict):
+        raise ValueError("living_memory_record_invalid")
+    run_id = str(data.get("run_id") or "")
+    if not LIVING_RUN_RE.fullmatch(run_id) or str(data.get("owner") or "") != profile:
+        raise ValueError("living_memory_identity_invalid")
+    mode = str(data.get("mode") or "")
+    if mode not in {"apply", "shadow"}:
+        raise ValueError("living_memory_mode_invalid")
+    failed = data.get("ok") is False or bool(data.get("error_type"))
+    after = data.get("after") if isinstance(data.get("after"), dict) else {}
+    return {
+        "profile": profile,
+        "run_id": run_id,
+        "mode": mode,
+        "outcome": "failed" if failed else "success",
+        "messages_scanned": _bounded_count(data.get("messages_scanned")) if not failed else 0,
+        "accepted_operations": _bounded_count(data.get("accepted_operations")) if not failed else 0,
+        "rejected_operations": _bounded_count(data.get("rejected_operations")) if not failed else 0,
+        "primary_failures": _bounded_count(data.get("primary_failures")) if not failed else 0,
+        "contract_retries": _bounded_count(data.get("contract_retries")) if not failed else 0,
+        "cursor_advanced": bool(data.get("cursor_advanced")) if not failed else False,
+        "active_memories": _bounded_count(after.get("active")) if not failed else 0,
+        "hypothesis_memories": _bounded_count(after.get("hypothesis")) if not failed else 0,
+        "observed_at": _normalized_time(data.get("observed_at"), fallback_time),
+    }
+
+
+def collect_living_memory(store: AnalyticsStore, profile: str, home: Path) -> tuple[int, int, dict[str, Any]]:
+    uid = _profile_uid(profile)
+    path = home / "living_memory" / "audit.jsonl"
+    empty = {"last_run_at": "", "last_outcome": "never", "active": 0, "hypothesis": 0}
+    if not _private_regular(path, uid, MAX_LIVING_AUDIT_BYTES):
+        return 0, 0, empty
+    fallback_time = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc).isoformat().replace("+00:00", "Z")
+    ingested = rejected = 0
+    latest = dict(empty)
+    latest_key = ""
+    with path.open("rb") as handle:
+        for raw in handle:
+            if len(raw) > MAX_LIVING_AUDIT_LINE_BYTES:
+                rejected += 1
+                continue
+            try:
+                row = _living_memory_record(profile, json.loads(raw.decode("utf-8")), fallback_time)
+                ingested += 1 if store.record_living_memory_run(row) else 0
+                if row["observed_at"] >= latest_key:
+                    latest_key = row["observed_at"]
+                    latest = {
+                        "last_run_at": row["observed_at"],
+                        "last_outcome": row["outcome"],
+                        "active": row["active_memories"],
+                        "hypothesis": row["hypothesis_memories"],
+                    }
+            except Exception:
+                rejected += 1
+    return ingested, rejected, latest
+
+
+def unit_state(unit: str) -> str:
+    result = subprocess.run(
+        ["/usr/bin/systemctl", "is-active", unit], capture_output=True,
+        text=True, timeout=10, check=False,
+    )
+    value = result.stdout.strip().lower()
+    return value if value in OBSERVABILITY_STATES else "unknown"
+
+
+def _telemetry_enabled(home: Path, uid: int) -> bool:
+    path = home / "config.yaml"
+    if not _private_regular(path, uid, 2 * 1024 * 1024):
+        return False
+    try:
+        config = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    except Exception as exc:
+        raise ValueError("profile_config_invalid") from exc
+    if not isinstance(config, dict):
+        raise ValueError("profile_config_invalid")
+    shared = (config.get("telemetry") or {}).get("shared_metrics") or {}
+    return isinstance(shared, dict) and shared.get("enabled") is True
+
+
+def _metrics_database_present(home: Path, uid: int) -> bool:
+    path = home / "telemetry" / "shared_metrics" / "metrics.sqlite3"
+    return _private_regular(path, uid, 512 * 1024 * 1024)
+
+
+def _video_editor_version(home: Path, uid: int) -> str:
+    path = home / "plugins" / "video-editor" / "plugin.yaml"
+    if not path.exists():
+        return "missing"
+    if not _private_regular(path, uid, 1024 * 1024):
+        return "unknown"
+    try:
+        payload = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        value = str(payload.get("version") or "")[:64]
+    except Exception:
+        return "unknown"
+    return value if SAFE_VERSION_RE.fullmatch(value) else "unknown"
+
+
+def observability_row(profile: dict[str, str], home: Path, living: dict[str, Any]) -> dict[str, Any]:
+    owner = profile["owner"]
+    uid = _profile_uid(owner)
+    return {
+        "profile": owner,
+        "telemetry_enabled": _telemetry_enabled(home, uid),
+        "metrics_database_present": _metrics_database_present(home, uid),
+        "exporter_timer_state": unit_state(f"proai-hermes-shared-metrics-export@{owner}.timer"),
+        "living_memory_timer_state": unit_state(f"vektor-living-memory@{owner}.timer"),
+        "living_memory_last_run_at": str(living.get("last_run_at") or ""),
+        "living_memory_last_outcome": str(living.get("last_outcome") or "never"),
+        "living_memory_active": _bounded_count(living.get("active")),
+        "living_memory_hypothesis": _bounded_count(living.get("hypothesis")),
+        "video_editor_version": _video_editor_version(home, uid),
+        "observed_at": utc_now(),
+    }
+
 def collect(store: AnalyticsStore, profile_root: Path = PROFILE_ROOT) -> dict[str, int]:
     packages = rejected = 0
+    living_runs = living_rejected = 0
     profiles = load_profiles(profile_root)
     for profile in profiles:
         owner = profile["owner"]
@@ -264,6 +431,13 @@ def collect(store: AnalyticsStore, profile_root: Path = PROFILE_ROOT) -> dict[st
         accepted, denied = ingest_outbox(store, owner, home)
         packages += accepted
         rejected += denied
+        living = {"last_run_at": "", "last_outcome": "never", "active": 0, "hypothesis": 0}
+        try:
+            accepted_lm, denied_lm, living = collect_living_memory(store, owner, home)
+            living_runs += accepted_lm
+            living_rejected += denied_lm
+        except Exception:
+            living_rejected += 1
         try:
             row = health_row(profile)
         except Exception:
@@ -274,7 +448,27 @@ def collect(store: AnalyticsStore, profile_root: Path = PROFILE_ROOT) -> dict[st
                 "code_version": "unknown", "active_agents": 0, "observed_at": utc_now(),
             }
         store.upsert_health(row)
-    return {"profiles": len(profiles), "packages_ingested": packages, "packages_rejected": rejected}
+        try:
+            store.upsert_observability(observability_row(profile, home, living))
+        except Exception:
+            store.upsert_observability({
+                "profile": owner, "telemetry_enabled": False,
+                "metrics_database_present": False,
+                "exporter_timer_state": "unknown",
+                "living_memory_timer_state": "unknown",
+                "living_memory_last_run_at": str(living.get("last_run_at") or ""),
+                "living_memory_last_outcome": str(living.get("last_outcome") or "never"),
+                "living_memory_active": _bounded_count(living.get("active")),
+                "living_memory_hypothesis": _bounded_count(living.get("hypothesis")),
+                "video_editor_version": "unknown", "observed_at": utc_now(),
+            })
+    return {
+        "profiles": len(profiles),
+        "packages_ingested": packages,
+        "packages_rejected": rejected,
+        "living_memory_runs_ingested": living_runs,
+        "living_memory_records_rejected": living_rejected,
+    }
 
 
 def main() -> int:

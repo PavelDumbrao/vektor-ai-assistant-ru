@@ -13,6 +13,7 @@ from agent.image_gen_provider import (
     ImageGenProvider,
     error_response,
     resolve_aspect_ratio,
+    save_b64_image,
     save_url_image,
     success_response,
 )
@@ -23,6 +24,13 @@ POLL_SECONDS = 2.0
 POLL_TIMEOUT = 180.0
 MAX_REFERENCE_IMAGES = 4
 MAX_REFERENCE_BYTES = 12 * 1024 * 1024
+MAX_FALLBACK_IMAGE_BYTES = 32 * 1024 * 1024
+LINGSUAN_BASE_DEFAULT = "https://lingsuan.top"
+LINGSUAN_FALLBACKS = (
+    ("gpt-image-2.5-sunburst", "LLM_API_KEY", "fallback_1"),
+    ("gpt-image-2.5-flare-firefly", "FALLBACK_LLM_API_KEY", "fallback_2"),
+)
+LINGSUAN_TIMEOUT = (15, 150)
 ASPECT_PIXELS = {
     "square": "1024x1024",
     "landscape": "1536x1024",
@@ -51,6 +59,126 @@ def _trusted_result_url(url: str) -> bool:
     return parsed.scheme == "https" and any(
         host == item or host.endswith("." + item) for item in TRUSTED_RESULT_DOMAINS
     )
+
+def _lingsuan_text_fallback(prompt: str, aspect: str) -> Optional[Dict[str, Any]]:
+    """Try bounded Lingsuan text-to-image fallbacks without exposing secrets."""
+    import requests
+
+    base = os.environ.get("LINGSUAN_IMAGE_BASE_URL", LINGSUAN_BASE_DEFAULT).strip().rstrip("/")
+    attempted = False
+    for model, key_env, stage in LINGSUAN_FALLBACKS:
+        key = os.environ.get(key_env, "").strip()
+        if not key:
+            continue
+        attempted = True
+        payload = {
+            "model": model,
+            "prompt": str(prompt or "").strip(),
+            "size": ASPECT_PIXELS.get(aspect, "1024x1024"),
+            "quality": "auto",
+            "output_format": "png",
+            "moderation": "auto",
+            "n": 1,
+            "response_format": "b64_json",
+        }
+        try:
+            response = requests.post(
+                base + "/v1/images/generations",
+                headers={"Authorization": "Bearer " + key, "Content-Type": "application/json"},
+                json=payload,
+                timeout=LINGSUAN_TIMEOUT,
+            )
+        except requests.ConnectTimeout:
+            continue
+        except requests.Timeout:
+            return error_response(
+                error="Lingsuan fallback submit timed out; not trying another paid route",
+                error_type="submit_uncertain",
+                provider="lingsuan",
+                model=model,
+                prompt=prompt,
+                aspect_ratio=aspect,
+            )
+        except requests.RequestException:
+            continue
+        if response.status_code != 200:
+            continue
+        try:
+            data = response.json()
+            items = data.get("data") if isinstance(data, dict) else None
+            item = items[0] if isinstance(items, list) and items and isinstance(items[0], dict) else {}
+            encoded = item.get("b64_json")
+        except (ValueError, TypeError, IndexError):
+            encoded = None
+        if not isinstance(encoded, str) or not encoded.strip():
+            return error_response(
+                error="Lingsuan fallback returned no inline image; not trying another paid route",
+                error_type="invalid_response",
+                provider="lingsuan",
+                model=model,
+                prompt=prompt,
+                aspect_ratio=aspect,
+            )
+        try:
+            raw = base64.b64decode(encoded, validate=True)
+        except Exception:
+            raw = b""
+        if (
+            not raw.startswith(b"\x89PNG\r\n\x1a\n")
+            or len(raw) <= 32
+            or len(raw) > MAX_FALLBACK_IMAGE_BYTES
+        ):
+            return error_response(
+                error="Lingsuan fallback returned an invalid PNG; not trying another paid route",
+                error_type="invalid_response",
+                provider="lingsuan",
+                model=model,
+                prompt=prompt,
+                aspect_ratio=aspect,
+            )
+        try:
+            saved = save_b64_image(encoded, prefix="lingsuan_image_fallback", extension="png")
+        except Exception:
+            return error_response(
+                error="Lingsuan fallback image could not be cached safely",
+                error_type="download_error",
+                provider="lingsuan",
+                model=model,
+                prompt=prompt,
+                aspect_ratio=aspect,
+            )
+        return success_response(
+            image=str(saved),
+            model=model,
+            prompt=prompt,
+            aspect_ratio=aspect,
+            provider="lingsuan",
+            modality="text",
+            extra={
+                "fallback_from": "grsai/gpt-image-2.5",
+                "fallback_stage": stage,
+                "quality": "auto",
+            },
+        )
+    if attempted:
+        return error_response(
+            error="GRSAI failed and the Lingsuan image fallback chain was exhausted",
+            error_type="fallback_exhausted",
+            provider="lingsuan",
+            model=MODEL,
+            prompt=prompt,
+            aspect_ratio=aspect,
+        )
+    return None
+
+
+def _fallback_or_error(*, prompt: str, aspect: str, refs: List[str], primary_error: Dict[str, Any]) -> Dict[str, Any]:
+    """Fail over only for text-to-image; reference edits stay single-submit safe."""
+    if refs:
+        return primary_error
+    fallback = _lingsuan_text_fallback(prompt, aspect)
+    return fallback if fallback is not None else primary_error
+
 
 def _reference_value(ref: str) -> Optional[str]:
     value = str(ref or "").strip()
@@ -84,7 +212,9 @@ class GrsaiImageProvider(ImageGenProvider):
         return "GRSAI GPT Image 2.5"
 
     def is_available(self) -> bool:
-        return bool(os.environ.get("GRSAI_API_KEY", "").strip())
+        return any(os.environ.get(name, "").strip() for name in (
+            "GRSAI_API_KEY", "LLM_API_KEY", "FALLBACK_LLM_API_KEY",
+        ))
 
     def capabilities(self) -> Dict[str, Any]:
         return {"modalities": ["text", "image"], "max_reference_images": MAX_REFERENCE_IMAGES}
@@ -93,7 +223,7 @@ class GrsaiImageProvider(ImageGenProvider):
         return [{
             "id": MODEL,
             "display": "GPT Image 2.5",
-            "strengths": "Low-cost GRSAI route; text-to-image and reference image editing",
+            "strengths": "GRSAI primary with bounded Lingsuan text-to-image fallbacks",
             "price": "600 credits/request",
         }]
 
@@ -120,8 +250,6 @@ class GrsaiImageProvider(ImageGenProvider):
         import requests
         key = os.environ.get("GRSAI_API_KEY", "").strip()
         base = os.environ.get("GRSAI_BASE_URL", BASE_DEFAULT).strip().rstrip("/")
-        if not key:
-            return error_response(error="GRSAI key is not configured", error_type="missing_api_key", provider=self.name, model=MODEL, prompt=prompt, aspect_ratio=aspect_ratio)
         selected = str(kwargs.get("model") or MODEL).strip()
         if selected != MODEL:
             return error_response(error="Only gpt-image-2.5 is allowed for this profile", error_type="model_not_allowed", provider=self.name, model=selected, prompt=prompt, aspect_ratio=aspect_ratio)
@@ -136,6 +264,14 @@ class GrsaiImageProvider(ImageGenProvider):
             value = _reference_value(ref)
             if value:
                 encoded_refs.append(value)
+        if not key:
+            primary_error = error_response(
+                error="GRSAI key is not configured", error_type="missing_api_key",
+                provider=self.name, model=MODEL, prompt=prompt, aspect_ratio=aspect,
+            )
+            return _fallback_or_error(
+                prompt=prompt, aspect=aspect, refs=encoded_refs, primary_error=primary_error,
+            )
         payload = {
             "model": MODEL,
             "prompt": str(prompt or "").strip(),
@@ -148,12 +284,26 @@ class GrsaiImageProvider(ImageGenProvider):
         headers = {"Authorization": "Bearer " + key, "Content-Type": "application/json"}
         try:
             response = requests.post(base + "/v1/draw/completions", headers=headers, json=payload, timeout=(15, 75))
+        except requests.ConnectTimeout:
+            primary_error = error_response(
+                error="GRSAI connect timed out", error_type="connection_error",
+                provider=self.name, model=MODEL, prompt=prompt, aspect_ratio=aspect,
+            )
+            return _fallback_or_error(
+                prompt=prompt, aspect=aspect, refs=encoded_refs, primary_error=primary_error,
+            )
         except requests.Timeout:
             return error_response(error="GRSAI submit timed out; not retrying automatically", error_type="submit_uncertain", provider=self.name, model=MODEL, prompt=prompt, aspect_ratio=aspect)
         except requests.RequestException:
             return error_response(error="GRSAI submit connection failed", error_type="connection_error", provider=self.name, model=MODEL, prompt=prompt, aspect_ratio=aspect)
         if response.status_code != 200:
-            return error_response(error=f"GRSAI submit failed with HTTP {response.status_code}", error_type="api_error", provider=self.name, model=MODEL, prompt=prompt, aspect_ratio=aspect)
+            primary_error = error_response(
+                error=f"GRSAI submit failed with HTTP {response.status_code}",
+                error_type="api_error", provider=self.name, model=MODEL, prompt=prompt, aspect_ratio=aspect,
+            )
+            return _fallback_or_error(
+                prompt=prompt, aspect=aspect, refs=encoded_refs, primary_error=primary_error,
+            )
         try:
             submitted = _unwrap(response.json())
         except ValueError:
@@ -184,7 +334,13 @@ class GrsaiImageProvider(ImageGenProvider):
             result = _unwrap(payload_result)
             state = str(result.get("status") or "").lower()
         if state not in {"succeeded", "success"}:
-            return error_response(error="GRSAI image generation failed", error_type="provider_failed", provider=self.name, model=MODEL, prompt=prompt, aspect_ratio=aspect)
+            primary_error = error_response(
+                error="GRSAI image generation failed", error_type="provider_failed",
+                provider=self.name, model=MODEL, prompt=prompt, aspect_ratio=aspect,
+            )
+            return _fallback_or_error(
+                prompt=prompt, aspect=aspect, refs=encoded_refs, primary_error=primary_error,
+            )
         results = result.get("results") or []
         result_url = results[0].get("url") if results and isinstance(results[0], dict) else None
         if not isinstance(result_url, str) or not _trusted_result_url(result_url):

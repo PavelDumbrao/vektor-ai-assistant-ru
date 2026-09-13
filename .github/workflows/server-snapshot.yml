@@ -64,6 +64,12 @@ jobs:
           python -m compileall -q modules/hermes-fleet-ops
       - name: Hermes new-client onboarding
         run: python -m pytest modules/hermes-bot-manager/tests -q
+      - name: Hermes image fallback provider
+        env:
+          PYTHONPATH: hermes-agent
+        run: |
+          python -m pytest modules/grsai-image-provider/tests -q
+          python -m py_compile modules/grsai-image-provider/plugin/__init__.py modules/grsai-image-provider/install.py
       - name: Hermes Forge
         run: |
           python -m pytest modules/hermes-forge-catalog/tests modules/hermes-forge-kitchen/tests modules/hermes-forge-api/tests -q

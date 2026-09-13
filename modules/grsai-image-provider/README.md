@@ -8,6 +8,8 @@
 
 - Provider: `grsai`.
 - Model: `gpt-image-2.5`.
+- Text-to-image fallback chain: `Lingsuan gpt-image-2.5-sunburst` via `LLM_API_KEY`, then `gpt-image-2.5-flare-firefly` via `FALLBACK_LLM_API_KEY`.
+- Reference-image edits stay on GRSAI only; ambiguous submit/poll timeouts never trigger another paid request.
 - Global API host: `https://grsaiapi.com`.
 - Submit: `POST /v1/draw/completions`.
 - Poll: `POST /v1/draw/result`.

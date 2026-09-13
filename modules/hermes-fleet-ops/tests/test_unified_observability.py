@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import pytest
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -10,6 +11,7 @@ MODULE = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(MODULE))
 import collector
 import report
+import store as store_module
 from store import AnalyticsStore
 
 
@@ -122,3 +124,17 @@ def test_store_deduplicates_living_memory_run(tmp_path):
     row = collector._living_memory_record("pavel", lm_record(), "2026-09-13T06:00:00Z")
     assert store.record_living_memory_run(row) is True
     assert store.record_living_memory_run(row) is False
+
+
+def test_production_analytics_root_still_requires_root(monkeypatch, tmp_path):
+    monkeypatch.setattr(store_module.os, "geteuid", lambda: 1001)
+    with pytest.raises(store_module.StoreError, match="analytics_root_requires_root"):
+        store_module._secure_root(tmp_path / "prod", root_owned=True)
+
+
+def test_explicit_diagnostic_store_does_not_chown_root(monkeypatch, tmp_path):
+    def forbidden_chown(*_args, **_kwargs):
+        raise AssertionError("explicit diagnostic DB must not chown root")
+    monkeypatch.setattr(store_module.os, "chown", forbidden_chown)
+    store = AnalyticsStore(tmp_path / "analytics" / "db.sqlite3")
+    assert store.path.is_file()

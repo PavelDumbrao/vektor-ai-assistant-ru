@@ -17,23 +17,28 @@ class StoreError(RuntimeError):
     pass
 
 
-def _secure_root(path: Path) -> None:
+def _secure_root(path: Path, *, root_owned: bool) -> None:
     path.mkdir(parents=True, exist_ok=True, mode=0o700)
     if path.is_symlink():
         raise StoreError("analytics_root_symlink")
-    os.chown(path, 0, 0)
+    if root_owned:
+        if os.geteuid() != 0:
+            raise StoreError("analytics_root_requires_root")
+        os.chown(path, 0, 0)
     os.chmod(path, 0o700)
 
 
 class AnalyticsStore:
     def __init__(self, path: Path = DEFAULT_DB) -> None:
         self.path = path
-        _secure_root(path.parent)
+        root_owned = path == DEFAULT_DB
+        _secure_root(path.parent, root_owned=root_owned)
         if not path.exists():
             path.touch(mode=0o600)
         if path.is_symlink():
             raise StoreError("analytics_db_symlink")
-        os.chown(path, 0, 0)
+        if root_owned:
+            os.chown(path, 0, 0)
         os.chmod(path, 0o600)
         self._ensure_schema()
 

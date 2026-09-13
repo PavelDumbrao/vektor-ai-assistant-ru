@@ -55,7 +55,7 @@ def test_primary_success_never_calls_lingsuan(monkeypatch, provider):
 
 def test_primary_http_error_uses_sunburst(monkeypatch, provider):
     calls = []
-    encoded = base64.b64encode(b"png-bytes").decode()
+    encoded = base64.b64encode(b"\x89PNG\r\n\x1a\n" + b"x" * 40).decode()
     def fake_post(url, **kwargs):
         calls.append((url, kwargs.get("json", {})))
         if url.endswith("/v1/draw/completions"):
@@ -75,7 +75,7 @@ def test_primary_http_error_uses_sunburst(monkeypatch, provider):
 
 def test_sunburst_failure_uses_flare_firefly(monkeypatch, provider):
     calls = []
-    encoded = base64.b64encode(b"png-bytes").decode()
+    encoded = base64.b64encode(b"\x89PNG\r\n\x1a\n" + b"x" * 40).decode()
 
     def fake_post(url, **kwargs):
         payload = kwargs.get("json", {})
@@ -125,7 +125,7 @@ def test_read_timeout_does_not_start_paid_fallback(monkeypatch, provider):
 
 def test_missing_grsai_key_can_use_lingsuan(monkeypatch, provider):
     monkeypatch.delenv("GRSAI_API_KEY")
-    encoded = base64.b64encode(b"png-bytes").decode()
+    encoded = base64.b64encode(b"\x89PNG\r\n\x1a\n" + b"x" * 40).decode()
     calls = []
 
     def fake_post(url, **kwargs):

@@ -24,6 +24,7 @@ POLL_SECONDS = 2.0
 POLL_TIMEOUT = 180.0
 MAX_REFERENCE_IMAGES = 4
 MAX_REFERENCE_BYTES = 12 * 1024 * 1024
+MAX_FALLBACK_IMAGE_BYTES = 32 * 1024 * 1024
 LINGSUAN_BASE_DEFAULT = "https://lingsuan.top"
 LINGSUAN_FALLBACKS = (
     ("gpt-image-2.5-sunburst", "LLM_API_KEY", "fallback_1"),
@@ -112,6 +113,23 @@ def _lingsuan_text_fallback(prompt: str, aspect: str) -> Optional[Dict[str, Any]
         if not isinstance(encoded, str) or not encoded.strip():
             return error_response(
                 error="Lingsuan fallback returned no inline image; not trying another paid route",
+                error_type="invalid_response",
+                provider="lingsuan",
+                model=model,
+                prompt=prompt,
+                aspect_ratio=aspect,
+            )
+        try:
+            raw = base64.b64decode(encoded, validate=True)
+        except Exception:
+            raw = b""
+        if (
+            not raw.startswith(b"\x89PNG\r\n\x1a\n")
+            or len(raw) <= 32
+            or len(raw) > MAX_FALLBACK_IMAGE_BYTES
+        ):
+            return error_response(
+                error="Lingsuan fallback returned an invalid PNG; not trying another paid route",
                 error_type="invalid_response",
                 provider="lingsuan",
                 model=model,

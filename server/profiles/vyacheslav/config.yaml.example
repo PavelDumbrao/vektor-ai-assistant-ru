@@ -5,11 +5,37 @@ model:
   default: gpt-5.6-sol
   api_key: ${LLM_API_KEY}
   context_length: 180000
+providers:
+  lingsuan-vision:
+    api: https://lingsuan.top/v1
+    key_env: LLM_API_KEY
+    transport: chat_completions
+    models:
+      gpt-5.6-sol:
+        supports_vision: true
+  lingsuan-terra-vision:
+    api: https://lingsuan.top/v1
+    key_env: FALLBACK_LLM_API_KEY
+    transport: chat_completions
+    models:
+      gpt-5.6-terra:
+        supports_vision: true
+  lingsuan-gemini-vision:
+    api: https://lingsuan.top/v1
+    key_env: GEMINI_LLM_API_KEY
+    transport: chat_completions
+    models:
+      gemini-3.8-flash-medium:
+        supports_vision: true
 fallback_providers:
 - provider: custom
-  model: gpt-5.6-sol
-  base_url: https://gengruihuan.cn/v1
+  model: gpt-5.6-terra
+  base_url: https://lingsuan.top/v1
   key_env: FALLBACK_LLM_API_KEY
+- provider: custom
+  model: gemini-3.8-flash-medium
+  base_url: https://lingsuan.top/v1
+  key_env: GEMINI_LLM_API_KEY
 image_gen:
   provider: grsai
   model: gpt-image-2.5
@@ -234,3 +260,15 @@ streaming:
     phrases:
     - ⏳ Думаю
     - ⌛ Разбираюсь
+auxiliary:
+  vision:
+    provider: lingsuan-vision
+    model: gpt-5.6-sol
+    timeout: 45
+    fallback_chain:
+    - provider: lingsuan-terra-vision
+      model: gpt-5.6-terra
+      timeout: 45
+    - provider: lingsuan-gemini-vision
+      model: gemini-3.8-flash-medium
+      timeout: 45

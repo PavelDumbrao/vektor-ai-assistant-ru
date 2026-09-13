@@ -112,8 +112,8 @@ async def test_async_runtime_failure_walks_to_next_configured_fallback():
     fb2_async.chat.completions.create = AsyncMock(return_value=response("fb2-ok"))
 
     chain_results = [
-        (fb1_sync, "gpt-5.6-terra", "fallback_chain[0](lingsuan-vision)"),
-        (fb2_sync, "gpt-5.6-sol", "fallback_chain[1](gengruihuan-vision)"),
+        (fb1_sync, "gpt-5.6-terra", "fallback_chain[0](lingsuan-terra-vision)"),
+        (fb2_sync, "gemini-3.8-flash-medium", "fallback_chain[1](lingsuan-gemini-vision)"),
         (None, None, ""),
     ]
 

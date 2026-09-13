@@ -20,6 +20,13 @@ approval:
   blocklist_message: "이 명령은 무조건 차단 목록에 있으며 승인할 수 없습니다."
 
 gateway:
+  lifecycle:
+    restarting: "⚠️ Hermes is restarting — Your current task will be interrupted. Send any message after restart and I’ll try to resume where you left off."
+    shutting_down: "⚠️ Hermes is shutting down — Your current task will be interrupted."
+    online: "♻️ Hermes is online again and ready."
+  scheduled_task:
+    header: "📅 Scheduled task: {task_name}"
+    footer: "To stop or change this task, just send me a new message. For example: \"stop reminder {task_name}\"."
   approval_expired: "⚠️ 승인이 만료되었습니다 (에이전트가 더 이상 대기하지 않습니다). 에이전트에게 다시 시도하도록 요청하세요."
   draining:         "⏳ 재시작 전에 활성 에이전트 {count}명을 정리하는 중..."
   goal_cleared:     "✓ 목표가 삭제되었습니다."

@@ -20,6 +20,13 @@ approval:
   blocklist_message: "Cette commande est sur la liste de blocage inconditionnel et ne peut pas être approuvée."
 
 gateway:
+  lifecycle:
+    restarting: "⚠️ Hermes is restarting — Your current task will be interrupted. Send any message after restart and I’ll try to resume where you left off."
+    shutting_down: "⚠️ Hermes is shutting down — Your current task will be interrupted."
+    online: "♻️ Hermes is online again and ready."
+  scheduled_task:
+    header: "📅 Scheduled task: {task_name}"
+    footer: "To stop or change this task, just send me a new message. For example: \"stop reminder {task_name}\"."
   approval_expired: "⚠️ Approbation expirée (l'agent n'attend plus). Demandez à l'agent de réessayer."
   draining:         "⏳ Vidage de {count} agent(s) actif(s) avant redémarrage..."
   goal_cleared:     "✓ Objectif effacé."

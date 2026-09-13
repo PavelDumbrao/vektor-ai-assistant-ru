@@ -49,6 +49,7 @@ from hermes_cli.config import (
 from hermes_cli.fallback_config import get_fallback_chain
 from hermes_time import now as _hermes_now
 from agent.interrupt_compat import request_hard_interrupt
+from agent.i18n import t
 
 logger = logging.getLogger(__name__)
 
@@ -1507,13 +1508,10 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
 
     if wrap_response:
         task_name = job.get("name", job["id"])
-        job_id = job.get("id", "")
         delivery_content = (
-            f"Cronjob Response: {task_name}\n"
-            f"(job_id: {job_id})\n"
-            f"-------------\n\n"
+            f"{t('gateway.scheduled_task.header', task_name=task_name)}\n\n"
             f"{content}\n\n"
-            f"To stop or manage this job, send me a new message (e.g. \"stop reminder {task_name}\")."
+            f"{t('gateway.scheduled_task.footer', task_name=task_name)}"
         )
     else:
         delivery_content = content

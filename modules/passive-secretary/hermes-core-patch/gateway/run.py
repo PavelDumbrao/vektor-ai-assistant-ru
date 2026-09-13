@@ -9293,14 +9293,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         active = self._snapshot_running_agents()
         restart_source = self._restart_command_source if self._restart_requested else None
 
-        action = "restarting" if self._restart_requested else "shutting down"
-        hint = (
-            "Your current task will be interrupted. "
-            "Send any message after restart and I'll try to resume where you left off."
+        msg = t(
+            "gateway.lifecycle.restarting"
             if self._restart_requested
-            else "Your current task will be interrupted."
+            else "gateway.lifecycle.shutting_down"
         )
-        msg = f"⚠️ Gateway {action} — {hint}"
 
         notified: set[tuple[str, str, Optional[str]]] = set()
         for session_key in active:
@@ -21171,7 +21168,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         """
         delivered: set[tuple[str, str, Optional[str]]] = set()
         skipped = skip_targets or set()
-        message = "♻️ Gateway online — Hermes is back and ready."
+        message = t("gateway.lifecycle.online")
 
         for platform, platform_cfg in self.config.platforms.items():
             home = platform_cfg.home_channel

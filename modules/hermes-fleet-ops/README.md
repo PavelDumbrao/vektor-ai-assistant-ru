@@ -62,3 +62,19 @@ Product telemetry stays on the Hermes native privacy boundary. Each enrolled pro
 The resulting `0600` JSON package remains in the tenant-local `~/.hermes/telemetry/shared_metrics/outbox`. The existing root Forge Collector reads and validates only these bounded v1/v2 packages, drops `install_id`, and stores aggregate counters centrally. No conversation text, prompts, model output, tool arguments/results, documents or secret values are part of this delivery path.
 
 A root-only enrollment timer periodically discovers validated profile registry entries and enables the fixed per-tenant exporter timer template. It never reads tenant metrics databases or package bodies. Product packages follow the Hermes native daily package cadence; fleet health and update collection remain on the existing five-minute interval.
+## Unified Fleet Telemetry
+
+The root-only analytics database is the single operational observation center for managed Hermes profiles. `report.py summary` combines four bounded layers:
+
+- Hermes service and Telegram health;
+- privacy-safe model, tool, approval, skill and task counters;
+- Living Memory run aggregates;
+- telemetry-delivery and capability status per profile.
+
+Living Memory ingestion reads only its profile-local `audit.jsonl`, requires the file to be tenant-owned/private, and stores only allowlisted counters/statuses: run outcome, messages reviewed, accepted/rejected operations, primary failures, fallback contract retries, cursor advance, and active/hypothesis counts. It never centralizes conversation text, memory text, routes, rejection prose, snapshots, prompts or model responses.
+
+The per-profile observation row also includes whether shared telemetry is enabled, whether the native metrics DB exists, exporter and Living Memory timer states, last Living Memory outcome/time, and Video Editor version. It does not contain media paths, critic reports, credentials or client content.
+
+SharedMetrics delivery is local-only: each tenant exporter runs as that Linux user with networking disabled and writes only to its own telemetry outbox. The root collector validates and ingests those bounded packages. The enrollment timer discovers new registered profiles and enables their fixed exporter timers automatically.
+
+Operator check: `python3 /opt/proai-hermes-fleet-ops/report.py summary`. A healthy rollout has all managed profiles enabled for shared telemetry, active exporter timers, active Living Memory timers, and no recent Living Memory failures.

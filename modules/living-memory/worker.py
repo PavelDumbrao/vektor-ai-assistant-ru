@@ -22,6 +22,7 @@ from core import (
     expire_temporary,
     extract_interactions,
     living_dir,
+    iso_now,
     load_config,
     load_cursor,
     load_state,
@@ -181,6 +182,8 @@ def run(owner: str, *, apply: bool, initial_hours: int = 24, max_batches: int = 
         after_metrics = state_metrics(working if apply else state)
         audit = {
             "run_id": run_id,
+            "ok": True,
+            "observed_at": iso_now(),
             "mode": mode,
             "owner": owner,
             "messages_scanned": len(messages),
@@ -215,7 +218,7 @@ def run(owner: str, *, apply: bool, initial_hours: int = 24, max_batches: int = 
         try:
             append_audit(home, {
                 "run_id": run_id, "mode": mode, "owner": owner,
-                "ok": False, "error_type": type(exc).__name__,
+                "ok": False, "observed_at": iso_now(), "error_type": type(exc).__name__,
             })
         except Exception:
             pass

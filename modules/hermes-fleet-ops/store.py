@@ -17,23 +17,28 @@ class StoreError(RuntimeError):
     pass
 
 
-def _secure_root(path: Path) -> None:
+def _secure_root(path: Path, *, root_owned: bool) -> None:
     path.mkdir(parents=True, exist_ok=True, mode=0o700)
     if path.is_symlink():
         raise StoreError("analytics_root_symlink")
-    os.chown(path, 0, 0)
+    if root_owned:
+        if os.geteuid() != 0:
+            raise StoreError("analytics_root_requires_root")
+        os.chown(path, 0, 0)
     os.chmod(path, 0o700)
 
 
 class AnalyticsStore:
     def __init__(self, path: Path = DEFAULT_DB) -> None:
         self.path = path
-        _secure_root(path.parent)
+        root_owned = path == DEFAULT_DB
+        _secure_root(path.parent, root_owned=root_owned)
         if not path.exists():
             path.touch(mode=0o600)
         if path.is_symlink():
             raise StoreError("analytics_db_symlink")
-        os.chown(path, 0, 0)
+        if root_owned:
+            os.chown(path, 0, 0)
         os.chmod(path, 0o600)
         self._ensure_schema()
 
@@ -118,6 +123,37 @@ class AnalyticsStore:
                 updated_at TEXT NOT NULL,
                 PRIMARY KEY(track, channel)
             );
+            CREATE TABLE IF NOT EXISTS living_memory_runs (
+                profile TEXT NOT NULL,
+                run_id TEXT NOT NULL,
+                mode TEXT NOT NULL,
+                outcome TEXT NOT NULL,
+                messages_scanned INTEGER NOT NULL CHECK(messages_scanned >= 0),
+                accepted_operations INTEGER NOT NULL CHECK(accepted_operations >= 0),
+                rejected_operations INTEGER NOT NULL CHECK(rejected_operations >= 0),
+                primary_failures INTEGER NOT NULL CHECK(primary_failures >= 0),
+                contract_retries INTEGER NOT NULL CHECK(contract_retries >= 0),
+                cursor_advanced INTEGER NOT NULL,
+                active_memories INTEGER NOT NULL CHECK(active_memories >= 0),
+                hypothesis_memories INTEGER NOT NULL CHECK(hypothesis_memories >= 0),
+                observed_at TEXT NOT NULL,
+                PRIMARY KEY(profile, run_id)
+            );
+            CREATE INDEX IF NOT EXISTS living_memory_runs_profile_time
+                ON living_memory_runs(profile, observed_at);
+            CREATE TABLE IF NOT EXISTS profile_observability (
+                profile TEXT PRIMARY KEY,
+                telemetry_enabled INTEGER NOT NULL,
+                metrics_database_present INTEGER NOT NULL,
+                exporter_timer_state TEXT NOT NULL,
+                living_memory_timer_state TEXT NOT NULL,
+                living_memory_last_run_at TEXT NOT NULL,
+                living_memory_last_outcome TEXT NOT NULL,
+                living_memory_active INTEGER NOT NULL,
+                living_memory_hypothesis INTEGER NOT NULL,
+                video_editor_version TEXT NOT NULL,
+                observed_at TEXT NOT NULL
+            );
             """)
 
     def package_seen(self, profile: str, package_id: str) -> bool:
@@ -181,6 +217,55 @@ class AnalyticsStore:
                 row["telegram_state"], row["error_code"],
                 1 if row["needs_attention"] else 0, row["code_version"],
                 int(row["active_agents"]), row["observed_at"],
+            ))
+
+    def record_living_memory_run(self, row: dict[str, Any]) -> bool:
+        with self.connect() as db:
+            cursor = db.execute("""
+                INSERT OR IGNORE INTO living_memory_runs(
+                    profile, run_id, mode, outcome, messages_scanned,
+                    accepted_operations, rejected_operations, primary_failures,
+                    contract_retries, cursor_advanced, active_memories,
+                    hypothesis_memories, observed_at
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """, (
+                row["profile"], row["run_id"], row["mode"], row["outcome"],
+                int(row["messages_scanned"]), int(row["accepted_operations"]),
+                int(row["rejected_operations"]), int(row["primary_failures"]),
+                int(row["contract_retries"]), 1 if row["cursor_advanced"] else 0,
+                int(row["active_memories"]), int(row["hypothesis_memories"]),
+                row["observed_at"],
+            ))
+            return cursor.rowcount > 0
+
+    def upsert_observability(self, row: dict[str, Any]) -> None:
+        with self.connect() as db:
+            db.execute("""
+                INSERT INTO profile_observability(
+                    profile, telemetry_enabled, metrics_database_present,
+                    exporter_timer_state, living_memory_timer_state,
+                    living_memory_last_run_at, living_memory_last_outcome,
+                    living_memory_active, living_memory_hypothesis,
+                    video_editor_version, observed_at
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?)
+                ON CONFLICT(profile) DO UPDATE SET
+                    telemetry_enabled=excluded.telemetry_enabled,
+                    metrics_database_present=excluded.metrics_database_present,
+                    exporter_timer_state=excluded.exporter_timer_state,
+                    living_memory_timer_state=excluded.living_memory_timer_state,
+                    living_memory_last_run_at=excluded.living_memory_last_run_at,
+                    living_memory_last_outcome=excluded.living_memory_last_outcome,
+                    living_memory_active=excluded.living_memory_active,
+                    living_memory_hypothesis=excluded.living_memory_hypothesis,
+                    video_editor_version=excluded.video_editor_version,
+                    observed_at=excluded.observed_at
+            """, (
+                row["profile"], 1 if row["telemetry_enabled"] else 0,
+                1 if row["metrics_database_present"] else 0,
+                row["exporter_timer_state"], row["living_memory_timer_state"],
+                row["living_memory_last_run_at"], row["living_memory_last_outcome"],
+                int(row["living_memory_active"]), int(row["living_memory_hypothesis"]),
+                row["video_editor_version"], row["observed_at"],
             ))
 
     def record_update_attempt(self, row: dict[str, str]) -> None:

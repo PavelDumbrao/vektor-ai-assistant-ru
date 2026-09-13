@@ -60,3 +60,20 @@ Persistent action metadata lives under systemd-managed `/var/lib/proai-hermes-fo
 Forge never uses bare `systemctl restart` for a healthy idle Hermes. Managed profiles expose `ExecReload=/bin/kill -USR1 $MAINPID`; Forge validates that contract plus `SuccessExitStatus=75` and `RestartForceExitStatus=75`, then asks systemd to reload the exact owner service. Hermes drains through its native SIGUSR1 restart path and exits with reserved code 75, which systemd treats as a successful planned exit and still relaunches.
 
 Existing profiles are migrated with `install_restart_contract.py`. Dry-run is the default; `--apply` writes only a root-owned systemd drop-in adding `SuccessExitStatus=75`, daemon-reloads, verifies every profile and rolls the whole migration back if verification fails. The migration does not restart Hermes. New Forge profiles inherit the directive from the canonical service template.
+## Versioned live API upgrades
+
+`install.py` is bootstrap-only. If `proai-hermes-forge-api.service` is already active it fails closed with `active_api_requires_versioned_upgrade`.
+
+Use `upgrade.py` for an active installation. Without `--apply` it is read-only and prints the deterministic release digest/path.
+
+The upgrader packages only the unprivileged API surface:
+
+- `api.py`;
+- the bundled Kitchen compiler;
+- Mini App static files.
+
+It does not package or restart root control, Hermes runtimes, tenant configuration, secrets or memory.
+
+On `--apply`, the release is created immutably under `/opt/proai-hermes-forge-api/releases/<sha256>/`, `current` is switched atomically and a systemd drop-in redirects only `proai-hermes-forge-api.service` to the versioned API.
+
+Activation requires successful loopback probes for `/healthz`, `/v1/catalog` and read-only `/v1/kitchen/preview`. Failure restores the previous `current` pointer/drop-in, restarts the previous API and verifies basic health before reporting rollback success.

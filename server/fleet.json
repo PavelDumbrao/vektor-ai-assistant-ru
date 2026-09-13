@@ -144,5 +144,22 @@
     "pending_jobs_after_rollout": 0,
     "pending_results_after_rollout": 0,
     "source_pr": 73
+  },
+  "living_memory": {
+    "version": "0.1.0",
+    "status": "rolled_out",
+    "profiles": [
+      "pavel",
+      "baysangur",
+      "vyacheslav",
+      "bebov",
+      "salavat"
+    ],
+    "schedule": "daily 04:00 Europe/Moscow + deterministic <=30m profile delay",
+    "primary": "gpt-5.6-sol high via profile primary route",
+    "fallback": "openai/gpt-5.6-sol high via OpenRouter separate credential",
+    "source_scope": "owner direct Telegram conversation only",
+    "legacy_background_learning": "disabled; built-in memory reading retained",
+    "safety": "LLM proposal-only; deterministic evidence/privacy validation; rollback snapshots; forget tombstones"
   }
 }

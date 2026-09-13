@@ -33,6 +33,9 @@ def _configure(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> tuple[Path, P
     monkeypatch.setattr(
         upgrade, "DROPIN", systemd / f"{upgrade.SERVICE}.d/30-versioned-release.conf"
     )
+    # Tests may simulate euid=0 on an unprivileged CI runner. Ownership is
+    # exercised by production root, not by the temporary pytest filesystem.
+    monkeypatch.setattr(upgrade.os, "chown", lambda *args: None)
     return source, target
 
 

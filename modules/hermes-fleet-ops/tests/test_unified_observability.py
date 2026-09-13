@@ -138,3 +138,21 @@ def test_explicit_diagnostic_store_does_not_chown_root(monkeypatch, tmp_path):
     monkeypatch.setattr(store_module.os, "chown", forbidden_chown)
     store = AnalyticsStore(tmp_path / "analytics" / "db.sqlite3")
     assert store.path.is_file()
+
+
+def test_scheduled_job_state_surfaces_failed_last_run(monkeypatch):
+    states = {"memory.timer": "active", "memory.service": "failed"}
+    monkeypatch.setattr(collector, "unit_state", lambda unit: states[unit])
+    assert collector.scheduled_job_state("memory.timer", "memory.service") == "failed"
+
+
+def test_scheduled_job_state_stays_green_after_successful_inactive_oneshot(monkeypatch):
+    states = {"memory.timer": "active", "memory.service": "inactive"}
+    monkeypatch.setattr(collector, "unit_state", lambda unit: states[unit])
+    assert collector.scheduled_job_state("memory.timer", "memory.service") == "active"
+
+
+def test_scheduled_job_state_respects_disabled_timer(monkeypatch):
+    states = {"memory.timer": "inactive", "memory.service": "failed"}
+    monkeypatch.setattr(collector, "unit_state", lambda unit: states[unit])
+    assert collector.scheduled_job_state("memory.timer", "memory.service") == "inactive"

@@ -178,3 +178,17 @@ def test_ready_requires_current_service_pid_and_running_gateway(monkeypatch, tmp
         with pytest.raises(provisioner.ProvisionError,match='profile_health_timeout'):
             provisioner._wait_healthy(i,'fixture','0.21.0')
         assert not identities
+
+
+def test_render_profile_precreates_private_shared_metrics_paths(monkeypatch, tmp_path):
+    import os
+    monkeypatch.setattr(provisioner, "MANAGER_ROOT", ROOT)
+    home = tmp_path / "h503899482"
+    entry = SimpleNamespace(
+        pw_uid=os.getuid(), pw_gid=os.getgid(), pw_dir=str(home), pw_name="h503899482")
+    hermes = provisioner._render_profile(instance(), entry)
+    for relative in ("telemetry", "telemetry/shared_metrics", "telemetry/shared_metrics/outbox"):
+        path = hermes / relative
+        assert path.is_dir() and not path.is_symlink()
+        assert path.stat().st_uid == os.getuid()
+        assert path.stat().st_mode & 0o077 == 0

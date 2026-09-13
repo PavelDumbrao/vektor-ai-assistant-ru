@@ -279,11 +279,11 @@ class TestDeliverResultWrapping:
 
         send_mock.assert_called_once()
         sent_content = send_mock.call_args.kwargs.get("content") or send_mock.call_args[0][-1]
-        assert "Cronjob Response: daily-report" in sent_content
-        assert "(job_id: test-job)" in sent_content
-        assert "-------------" in sent_content
+        assert "📅 Scheduled task: daily-report" in sent_content
+        assert "(job_id:" not in sent_content
+        assert "-------------" not in sent_content
         assert "Here is today's summary." in sent_content
-        assert "To stop or manage this job" in sent_content
+        assert "To stop or change this task" in sent_content
 
 
     def test_relay_fronted_home_uses_relay_config_and_live_adapter(self, monkeypatch, tmp_path):

@@ -17,6 +17,27 @@ OWNER_RE = re.compile(r"^[a-z][a-z0-9_-]{1,63}$")
 PROFILE_ROOT = Path("/opt/vektor/profiles")
 
 
+def _ensure_private_dir(path: Path, uid: int, gid: int) -> None:
+    if path.exists() or path.is_symlink():
+        info = path.lstat()
+        if path.is_symlink() or not path.is_dir() or info.st_uid != uid:
+            raise ValueError("telemetry_directory_unsafe")
+    else:
+        path.mkdir(mode=0o700)
+        os.chown(path, uid, gid)
+    os.chmod(path, 0o700)
+
+
+def _prepare_storage(home: Path, uid: int, gid: int) -> None:
+    info = home.lstat()
+    if home.is_symlink() or not home.is_dir() or info.st_uid != uid:
+        raise ValueError("profile_home_unsafe")
+    current = home
+    for relative in ("telemetry", "telemetry/shared_metrics", "telemetry/shared_metrics/outbox"):
+        current = home / relative
+        _ensure_private_dir(current, uid, gid)
+
+
 def configure(owner: str, enabled: bool) -> dict[str, object]:
     if os.geteuid() != 0 or not OWNER_RE.fullmatch(owner):
         raise ValueError("root_and_valid_owner_required")
@@ -39,6 +60,8 @@ def configure(owner: str, enabled: bool) -> dict[str, object]:
     if not isinstance(shared, dict):
         raise ValueError("shared_metrics_config_invalid")
     current = shared.get("enabled") is True
+    if enabled:
+        _prepare_storage(Path(entry.pw_dir) / ".hermes", entry.pw_uid, entry.pw_gid)
     if current == enabled:
         return {"owner": owner, "enabled": enabled, "changed": False, "restart_required": False}
     backup = Path(entry.pw_dir) / ".hermes" / "backups" / f"telemetry-config-{time.time_ns()}"

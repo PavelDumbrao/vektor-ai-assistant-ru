@@ -144,6 +144,7 @@ def _render_profile(instance: HermesInstance, entry: pwd.struct_passwd) -> Path:
     for relative in (
         ".", "bin", "plugins", "memories", "logs", "cron", "runtime",
         "skills", "tools", "hooks", "cache", "cache/audio", "backups",
+        "telemetry", "telemetry/shared_metrics", "telemetry/shared_metrics/outbox",
     ):
         _ensure_private_dir(hermes / relative, entry)
     for relative in ("workspace", "workspace/knowledge", "workspace/documents", "workspace/data"):

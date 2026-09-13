@@ -369,6 +369,16 @@ def unit_state(unit: str) -> str:
     return value if value in OBSERVABILITY_STATES else "unknown"
 
 
+def scheduled_job_state(timer_unit: str, service_unit: str) -> str:
+    timer = unit_state(timer_unit)
+    if timer != "active":
+        return timer
+    # A timer can stay active after its last oneshot failed. Surface that
+    # failure instead of reporting a false-green scheduled job.
+    service = unit_state(service_unit)
+    return "failed" if service == "failed" else "active"
+
+
 def _telemetry_enabled(home: Path, uid: int) -> bool:
     path = home / "config.yaml"
     if not _private_regular(path, uid, 2 * 1024 * 1024):
@@ -409,8 +419,14 @@ def observability_row(profile: dict[str, str], home: Path, living: dict[str, Any
         "profile": owner,
         "telemetry_enabled": _telemetry_enabled(home, uid),
         "metrics_database_present": _metrics_database_present(home, uid),
-        "exporter_timer_state": unit_state(f"proai-hermes-shared-metrics-export@{owner}.timer"),
-        "living_memory_timer_state": unit_state(f"vektor-living-memory@{owner}.timer"),
+        "exporter_timer_state": scheduled_job_state(
+            f"proai-hermes-shared-metrics-export@{owner}.timer",
+            f"proai-hermes-shared-metrics-export@{owner}.service",
+        ),
+        "living_memory_timer_state": scheduled_job_state(
+            f"vektor-living-memory@{owner}.timer",
+            f"vektor-living-memory@{owner}.service",
+        ),
         "living_memory_last_run_at": str(living.get("last_run_at") or ""),
         "living_memory_last_outcome": str(living.get("last_outcome") or "never"),
         "living_memory_active": _bounded_count(living.get("active")),

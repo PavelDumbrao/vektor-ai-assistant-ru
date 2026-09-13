@@ -7,10 +7,11 @@ import tempfile
 from pathlib import Path
 
 SOURCE = Path("/home/pavel/.hermes/.env")
+GEMINI_SOURCE = Path("/opt/vektor/video-editor/private/lingsuan.env")
 TARGET = Path("/etc/proai-hermes-platform.env")
 MAPPING = {
     "LLM_API_KEY": "PAVEL_LINGSUAN_KEY",
-    "FALLBACK_LLM_API_KEY": "PAVEL_GENGRUIHUAN_KEY",
+    "FALLBACK_LLM_API_KEY": "LINGSUAN_CXPRO_KEY",
     "OPENROUTER_API_KEY": "OPENROUTER_API_KEY",
     "TAVILY_API_KEY": "TAVILY_API_KEY",
     "GRSAI_API_KEY": "GRSAI_API_KEY",
@@ -34,13 +35,19 @@ def main() -> int:
         raise RuntimeError("root_required")
     if SOURCE.is_symlink() or not SOURCE.is_file():
         raise RuntimeError("source_env_missing")
+    if GEMINI_SOURCE.is_symlink() or not GEMINI_SOURCE.is_file():
+        raise RuntimeError("gemini_source_env_missing")
     source = read_env(SOURCE)
+    gemini_source = read_env(GEMINI_SOURCE)
     values = {}
     for target, origin in MAPPING.items():
         value = source.get(origin, "")
         if value:
             values[target] = value
-    for required in ("LLM_API_KEY", "FALLBACK_LLM_API_KEY"):
+    gemini_value = gemini_source.get("LINGSUAN_API_KEY", "")
+    if gemini_value:
+        values["GEMINI_LLM_API_KEY"] = gemini_value
+    for required in ("LLM_API_KEY", "FALLBACK_LLM_API_KEY", "GEMINI_LLM_API_KEY"):
         if not values.get(required):
             raise RuntimeError("required_platform_key_missing")
     if any("\n" in value or "\r" in value for value in values.values()):

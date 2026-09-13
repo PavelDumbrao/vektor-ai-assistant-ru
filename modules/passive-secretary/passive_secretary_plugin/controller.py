@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import logging
+import re
 import threading
 import time
 from datetime import datetime, timedelta, timezone
@@ -149,6 +150,66 @@ class PassiveSecretaryController:
         return bool(
             self.settings.postgres_configured()
             and importlib.util.find_spec("psycopg") is not None
+        )
+
+    @staticmethod
+    def _cron_context_active() -> bool:
+        try:
+            from gateway.session_context import get_session_env
+
+            value = get_session_env("HERMES_CRON_SESSION", "")
+        except Exception:
+            return False
+        return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+    @staticmethod
+    def _load_cron_job(job_id: str) -> dict[str, Any] | None:
+        try:
+            from cron.jobs import get_job
+
+            job = get_job(job_id)
+        except Exception:
+            return None
+        return job if isinstance(job, dict) else None
+
+    def _scheduled_read_owner_for(self, session_id: Any) -> str | None:
+        """Authorize read-only archive access for an owner-bound cron run.
+
+        Cron intentionally clears HERMES_SESSION_* so scheduled work cannot
+        impersonate a live inbound user.  We therefore accept a narrower
+        provenance path only when the current execution is a real cron context
+        and its canonical stored job proves it was created from the owner's
+        Telegram DM, is delivered back to that origin, and explicitly attaches
+        to that owner session.
+        """
+        session_key = str(session_id or "")
+        match = re.fullmatch(r"cron_([0-9a-f]{12})_\d{8}_\d{6}", session_key)
+        if match is None or not self._cron_context_active():
+            return None
+        job_id = match.group(1)
+        job = self._load_cron_job(job_id)
+        if not job or str(job.get("id") or "") != job_id:
+            return None
+        if job.get("attach_to_session") is not True:
+            return None
+        if str(job.get("deliver") or "").strip().lower() != "origin":
+            return None
+        origin = job.get("origin")
+        if not isinstance(origin, dict):
+            return None
+        if str(origin.get("platform") or "").strip().lower() != "telegram":
+            return None
+        owner_id = str(origin.get("user_id") or "").strip()
+        chat_id = str(origin.get("chat_id") or "").strip()
+        if not owner_id or owner_id not in self.settings.owner_ids:
+            return None
+        if chat_id != owner_id:
+            return None
+        return owner_id
+
+    def _read_owner_for(self, session_id: Any) -> str | None:
+        return self.authorizer.owner_for(session_id) or self._scheduled_read_owner_for(
+            session_id
         )
 
     def reply_tool_available(self) -> bool:
@@ -337,7 +398,7 @@ class PassiveSecretaryController:
         return {"context": context, "persist": False}
 
     def handle_exact_date(self, args: dict[str, Any], **kwargs: Any) -> str:
-        owner_id = self.authorizer.owner_for(kwargs.get("session_id"))
+        owner_id = self._read_owner_for(kwargs.get("session_id"))
         if owner_id is None:
             return json.dumps(
                 {
@@ -446,7 +507,7 @@ class PassiveSecretaryController:
             )
 
     def handle_recall(self, args: dict[str, Any], **kwargs: Any) -> str:
-        owner_id = self.authorizer.owner_for(kwargs.get("session_id"))
+        owner_id = self._read_owner_for(kwargs.get("session_id"))
         if owner_id is None:
             return json.dumps({
                 "ok": False,
@@ -469,7 +530,7 @@ class PassiveSecretaryController:
             }, ensure_ascii=False)
 
     def handle_sources(self, args: dict[str, Any], **kwargs: Any) -> str:
-        owner_id = self.authorizer.owner_for(kwargs.get("session_id"))
+        owner_id = self._read_owner_for(kwargs.get("session_id"))
         if owner_id is None:
             return json.dumps(
                 {

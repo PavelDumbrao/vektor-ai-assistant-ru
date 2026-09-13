@@ -16,12 +16,15 @@ from hermes_cli import __version__
 from .shared_metrics import SharedMetricsStore
 from .shared_metrics_contract import (
     MODEL_CALL_SCOPE,
+    PROVIDER_ERROR_METRIC,
     SCHEMA_KEY,
     SCHEMA_VERSION,
     SUBSCRIBER_NAME,
     TASK_SCOPE,
     model_call_fields,
+    counter_dimensions_are_valid,
     model_call_outcome,
+    provider_error_dimensions,
     task_start_fields,
     task_terminal_fields,
 )
@@ -327,6 +330,13 @@ class _Runtime:
                 request_id,
                 outcome or model_call_outcome(event),
             )
+
+    def record_provider_error(self, event: dict[str, Any]) -> None:
+        """Count one provider failure using only bounded, privacy-safe fields."""
+        dimensions = provider_error_dimensions(event)
+        if not counter_dimensions_are_valid(PROVIDER_ERROR_METRIC, dimensions):
+            return
+        self.subscriber.record_counter(PROVIDER_ERROR_METRIC, dimensions)
 
     def end_pending_model_calls(self, event: dict[str, Any]) -> None:
         session = self._task_session(event, allow_task_id_fallback=True)
@@ -686,6 +696,7 @@ def observe_lifecycle(hook_name: str, **kwargs: Any) -> None:
         elif hook_name == "post_api_request":
             runtime.end_model_call(kwargs, "success")
         elif hook_name == "api_request_error":
+            runtime.record_provider_error(kwargs)
             if kwargs.get("retryable") is False:
                 runtime.end_model_call(kwargs, "failed")
         elif hook_name == "on_session_end":

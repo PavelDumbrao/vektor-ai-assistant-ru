@@ -154,11 +154,16 @@ API hooks describe provider attempts inside the agent loop:
 
 - `api_duration`, `started_at`, `ended_at`
 - `status_code`, `retry_count`, `max_retries`, `retryable`, `reason`
+- bounded `fallback_stage` (`primary`, `fallback_1`, `fallback_2`, `fallback_3_plus`, `unknown`)
 - structured `error = {"type": ..., "message": ...}`
 - sanitized failed request payload: `request`
 
 The sanitized `request`, `response`, and `error` fields are the canonical
-observer inputs for new consumers.
+observer inputs for new consumers. Shared product telemetry never exports those
+payloads. Provider failures are reduced locally to `hermes.provider_error.count`
+with only allowlisted provider/model aliases, error category, HTTP class, and
+fallback stage; raw error text, request IDs, credentials, prompts, responses,
+and chat content are excluded.
 
 ### Tool Lifecycle
 

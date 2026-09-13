@@ -28,6 +28,7 @@ from hermes_cli.observability.shared_metrics_contract import (
     MODEL_LOCALITIES,
     MODEL_OUTCOMES,
     PRIMARY_MODEL_CALL_ROLE,
+    PROVIDER_ERROR_METRIC,
     PROVIDER_FAMILIES,
     TASK_END_REASONS,
     TASK_ENTRYPOINTS,
@@ -40,6 +41,8 @@ from hermes_cli.observability.shared_metrics_contract import (
     model_call_dimensions,
     model_family,
     model_locality,
+    provider_error_category,
+    provider_error_dimensions,
     provider_family,
     task_counter,
     task_start_fields,
@@ -356,3 +359,60 @@ def test_store_and_export_are_owner_only(tmp_path):
     assert stat.S_IMODE(outbox_directory.stat().st_mode) == 0o700
     assert stat.S_IMODE(database_path.stat().st_mode) == 0o600
     assert stat.S_IMODE(package_path.stat().st_mode) == 0o600
+
+@pytest.mark.parametrize(
+    ("event", "category"),
+    [
+        ({"status_code": 503, "error": {"message": "upstream unavailable"}}, "provider_unavailable"),
+        ({"status_code": 403, "error": {"message": "local:insufficient_quota secret-value"}}, "billing_exhausted"),
+        ({"status_code": 429, "error": {"message": "too many requests"}}, "rate_limited"),
+        ({"error": {"type": "TimeoutError", "message": "timed out"}}, "timeout"),
+        ({"status_code": 401, "error": {"message": "bad auth"}}, "auth_failed"),
+        ({"status_code": 422, "error": {"message": "validation error"}}, "invalid_request"),
+    ],
+)
+def test_provider_error_category_is_bounded(event, category):
+    assert provider_error_category(event) == category
+
+
+def test_provider_error_dimensions_export_only_allowlisted_route_metadata():
+    event = {
+        "provider": "custom",
+        "base_url": "https://lingsuan.top/v1",
+        "model": "gpt-5.6-terra",
+        "status_code": 403,
+        "fallback_stage": "fallback_1",
+        "error": {"type": "ProviderError", "message": "local:insufficient_quota sk-sensitive"},
+    }
+    dimensions = provider_error_dimensions(event)
+    assert dimensions == {
+        "provider": "lingsuan",
+        "model": "gpt-5.6-terra",
+        "error_category": "billing_exhausted",
+        "http_class": "4xx",
+        "fallback_stage": "fallback_1",
+    }
+    assert "sensitive" not in json.dumps(dimensions)
+
+
+def test_provider_error_unknown_model_is_not_exported_verbatim(tmp_path):
+    event = {
+        "provider": "custom",
+        "base_url": "https://private.example/v1",
+        "model": "gpt-sensitive-private-model",
+        "status_code": 503,
+        "fallback_stage": "primary",
+        "error": {"message": "private failure text"},
+    }
+    dimensions = provider_error_dimensions(event)
+    assert dimensions["model"] == "unknown"
+    store = SharedMetricsStore(tmp_path / "metrics.sqlite3", tmp_path / "outbox")
+    store.record_counter(PROVIDER_ERROR_METRIC, dimensions, "test-version")
+    paths = store.create_and_export_package()
+    assert len(paths) == 1
+    package = json.loads(paths[0].read_text(encoding="utf-8"))
+    _schema_validator().validate(package)
+    serialized = json.dumps(package)
+    assert "gpt-sensitive-private-model" not in serialized
+    assert "private failure text" not in serialized
+    assert package["metrics"][0]["name"] == PROVIDER_ERROR_METRIC

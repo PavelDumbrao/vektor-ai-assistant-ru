@@ -56,6 +56,13 @@ LEGACY_MODEL_CONTRACT = {
     "outcome": {"cancelled", "failed", "success"},
     "provider_family": {"aggregator", "custom", "direct", "local", "unknown"},
 }
+PROVIDER_ERROR_CONTRACT = {
+    "provider": {"lingsuan", "openrouter", "custom", "direct", "local", "unknown"},
+    "model": {"gpt-5.6-sol", "gpt-5.6-terra", "gemini-3.8-flash-medium", "unknown"},
+    "error_category": {"provider_unavailable", "billing_exhausted", "rate_limited", "auth_failed", "timeout", "invalid_request", "unknown"},
+    "http_class": {"2xx", "3xx", "4xx", "5xx", "none"},
+    "fallback_stage": {"primary", "fallback_1", "fallback_2", "fallback_3_plus", "unknown"},
+}
 TASK_STARTED_CONTRACT = {
     "entrypoint": TASK_ENTRYPOINTS,
     "execution_surface": EXECUTION_SURFACES,
@@ -74,6 +81,7 @@ TASK_FINISHED_CONTRACT = {
 
 V1_METRIC_DIMENSIONS = {
     "hermes.model_call.count": LEGACY_MODEL_CONTRACT,
+    "hermes.provider_error.count": PROVIDER_ERROR_CONTRACT,
     "hermes.task_run.started": TASK_STARTED_CONTRACT,
     "hermes.task_run.finished": TASK_FINISHED_CONTRACT,
     "hermes.tool_call.count": {
@@ -86,6 +94,7 @@ V1_METRIC_DIMENSIONS = {
 V2_METRIC_DIMENSIONS = {
     "hermes.client.active": {},
     "hermes.model_call.count": LEGACY_MODEL_CONTRACT,
+    "hermes.provider_error.count": PROVIDER_ERROR_CONTRACT,
     "hermes.task_run.started": TASK_STARTED_CONTRACT,
     "hermes.task_run.finished": TASK_FINISHED_CONTRACT,
     "hermes.tool_call.count": {

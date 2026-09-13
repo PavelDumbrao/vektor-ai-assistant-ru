@@ -209,6 +209,8 @@ def test_direct_runtime_records_without_enabling_a_plugin(direct_runtime, tmp_pa
         "api_request_error",
         **base,
         retryable=True,
+        status_code=503,
+        fallback_stage="primary",
         error={"message": "sensitive-error"},
     )
     lifecycle.invoke_hook(
@@ -283,8 +285,21 @@ def test_direct_runtime_records_without_enabling_a_plugin(direct_runtime, tmp_pa
     metrics = {metric["name"]: metric for metric in package["metrics"]}
     assert set(metrics) == {
         "hermes.model_call.count",
+        "hermes.provider_error.count",
         "hermes.task_run.finished",
         "hermes.task_run.started",
+    }
+    assert metrics["hermes.provider_error.count"] == {
+        "name": "hermes.provider_error.count",
+        "type": "counter",
+        "dimensions": {
+            "provider": "custom",
+            "model": "unknown",
+            "error_category": "provider_unavailable",
+            "http_class": "5xx",
+            "fallback_stage": "primary",
+        },
+        "value": 1,
     }
     assert metrics["hermes.model_call.count"]["dimensions"]["model_family"] == "claude"
     assert metrics["hermes.model_call.count"]["value"] == 1

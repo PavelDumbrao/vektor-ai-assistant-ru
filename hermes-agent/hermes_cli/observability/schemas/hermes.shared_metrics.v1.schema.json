@@ -60,6 +60,9 @@
             "$ref": "#/$defs/model_call_counter"
           },
           {
+            "$ref": "#/$defs/provider_error_counter"
+          },
+          {
             "$ref": "#/$defs/task_started_counter"
           },
           {
@@ -333,6 +336,88 @@
         "6_to_10",
         "gte_11"
       ]
+    },
+    "provider_error_counter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "type",
+        "dimensions",
+        "value"
+      ],
+      "properties": {
+        "name": {
+          "const": "hermes.provider_error.count"
+        },
+        "type": {
+          "const": "counter"
+        },
+        "dimensions": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "provider",
+            "model",
+            "error_category",
+            "http_class",
+            "fallback_stage"
+          ],
+          "properties": {
+            "provider": {
+              "enum": [
+                "lingsuan",
+                "openrouter",
+                "custom",
+                "direct",
+                "local",
+                "unknown"
+              ]
+            },
+            "model": {
+              "enum": [
+                "gpt-5.6-sol",
+                "gpt-5.6-terra",
+                "gemini-3.8-flash-medium",
+                "unknown"
+              ]
+            },
+            "error_category": {
+              "enum": [
+                "provider_unavailable",
+                "billing_exhausted",
+                "rate_limited",
+                "auth_failed",
+                "timeout",
+                "invalid_request",
+                "unknown"
+              ]
+            },
+            "http_class": {
+              "enum": [
+                "2xx",
+                "3xx",
+                "4xx",
+                "5xx",
+                "none"
+              ]
+            },
+            "fallback_stage": {
+              "enum": [
+                "primary",
+                "fallback_1",
+                "fallback_2",
+                "fallback_3_plus",
+                "unknown"
+              ]
+            }
+          }
+        },
+        "value": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
     }
   }
 }

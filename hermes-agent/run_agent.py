@@ -2863,6 +2863,7 @@ class AIAgent:
                 max_retries=max_retries,
                 retryable=retryable,
                 reason=reason,
+                fallback_stage=self._provider_fallback_stage(),
                 error={
                     "type": error_type,
                     "message": error_message,
@@ -6240,6 +6241,20 @@ class AIAgent:
         """Forwarder — see ``agent.chat_completion_helpers.try_activate_fallback``."""
         from agent.chat_completion_helpers import try_activate_fallback
         return try_activate_fallback(self, reason)
+
+    def _provider_fallback_stage(self) -> str:
+        """Return a bounded label for the provider route currently being attempted."""
+        try:
+            index = int(getattr(self, "_fallback_index", 0) or 0)
+        except (TypeError, ValueError):
+            return "unknown"
+        if index <= 0:
+            return "primary"
+        if index == 1:
+            return "fallback_1"
+        if index == 2:
+            return "fallback_2"
+        return "fallback_3_plus"
 
     def _has_pending_fallback(self) -> bool:
         """Whether a fallback provider is actually available to switch to.

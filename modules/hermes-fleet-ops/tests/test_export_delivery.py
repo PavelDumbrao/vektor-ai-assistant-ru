@@ -31,17 +31,32 @@ def test_exporter_refuses_root(monkeypatch):
         exporter.tenant_paths()
 
 
-def test_exporter_skips_missing_native_database_without_creating_state(monkeypatch, tmp_path):
+def test_exporter_bootstraps_empty_native_database_without_fake_metric(monkeypatch, tmp_path):
     hermes = tmp_path / ".hermes"
     hermes.mkdir()
     config = hermes / "config.yaml"
     database = hermes / "telemetry/shared_metrics/metrics.sqlite3"
-    monkeypatch.setattr(exporter, "tenant_paths", lambda: ("pavel", 1001, hermes, config, database))
+    monkeypatch.setattr(exporter, "tenant_paths", lambda: ("pavel", os.getuid(), hermes, config, database))
     monkeypatch.setattr(exporter, "telemetry_enabled", lambda *_: True)
-    monkeypatch.setattr(exporter, "database_ready", lambda *_: False)
+
+    shared = ModuleType("hermes_cli.observability.shared_metrics")
+    calls = []
+    class Store:
+        def __init__(self):
+            database.parent.mkdir(parents=True, exist_ok=True)
+            database.touch(mode=0o600)
+        def create_and_export_package_if_due(self):
+            calls.append("export")
+            return []
+    shared.SharedMetricsStore = Store
+    monkeypatch.setitem(sys.modules, "hermes_cli", ModuleType("hermes_cli"))
+    monkeypatch.setitem(sys.modules, "hermes_cli.observability", ModuleType("hermes_cli.observability"))
+    monkeypatch.setitem(sys.modules, "hermes_cli.observability.shared_metrics", shared)
+
     result = exporter.export_once()
-    assert result == {"status": "no_state", "created": False, "outbox_files": 0}
-    assert not database.exists()
+    assert database.is_file()
+    assert calls == ["export"]
+    assert result == {"status": "ok", "created": False, "outbox_files": 0}
 
 
 def test_exporter_calls_native_store_only_after_safety_gates(monkeypatch, tmp_path):
@@ -148,3 +163,34 @@ def test_fleet_installer_bundles_exporter_and_enrollment_timer():
     assert '"proai-hermes-shared-metrics-export@.timer"' in source
     assert '"proai-hermes-shared-metrics-enroll.timer"' in source
     assert 'atomic_copy(SOURCE / "export_shared_metrics.py", EXPORTER_TARGET / "export_shared_metrics.py", 0o644)' in source
+
+
+def test_exporter_rejects_unsafe_existing_database_before_store_import(monkeypatch, tmp_path):
+    hermes = tmp_path / ".hermes"
+    database = hermes / "telemetry/shared_metrics/metrics.sqlite3"
+    database.parent.mkdir(parents=True)
+    target = tmp_path / "foreign.sqlite3"
+    target.write_text("not a metrics db", encoding="utf-8")
+    database.symlink_to(target)
+    monkeypatch.setattr(exporter, "tenant_paths", lambda: ("pavel", os.getuid(), hermes, hermes / "config.yaml", database))
+    monkeypatch.setattr(exporter, "telemetry_enabled", lambda *_: True)
+    with pytest.raises(exporter.ExportError, match="metrics_database_unsafe"):
+        exporter.export_once()
+
+
+def test_exporter_fails_if_native_store_did_not_bootstrap_database(monkeypatch, tmp_path):
+    hermes = tmp_path / ".hermes"
+    hermes.mkdir()
+    database = hermes / "telemetry/shared_metrics/metrics.sqlite3"
+    monkeypatch.setattr(exporter, "tenant_paths", lambda: ("pavel", os.getuid(), hermes, hermes / "config.yaml", database))
+    monkeypatch.setattr(exporter, "telemetry_enabled", lambda *_: True)
+    shared = ModuleType("hermes_cli.observability.shared_metrics")
+    class Store:
+        def create_and_export_package_if_due(self):
+            raise AssertionError("export must not run without a verified DB")
+    shared.SharedMetricsStore = Store
+    monkeypatch.setitem(sys.modules, "hermes_cli", ModuleType("hermes_cli"))
+    monkeypatch.setitem(sys.modules, "hermes_cli.observability", ModuleType("hermes_cli.observability"))
+    monkeypatch.setitem(sys.modules, "hermes_cli.observability.shared_metrics", shared)
+    with pytest.raises(exporter.ExportError, match="metrics_database_bootstrap_failed"):
+        exporter.export_once()

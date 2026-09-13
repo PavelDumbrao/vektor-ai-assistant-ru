@@ -67,18 +67,25 @@ def export_once() -> dict[str, Any]:
     _, uid, hermes, config, database = tenant_paths()
     if not telemetry_enabled(config, uid):
         return {"status": "disabled", "created": False, "outbox_files": 0}
-    if not database_ready(database, uid):
-        return {"status": "no_state", "created": False, "outbox_files": 0}
+
+    # Validate any pre-existing state before importing/initializing the native
+    # store.  This prevents a symlink or foreign-owned file from being opened by
+    # SharedMetricsStore.  For a genuinely new/idle tenant, constructing the
+    # native store creates only its private DB/schema — it records no metric.
+    if database.exists():
+        database_ready(database, uid)
 
     from hermes_cli.observability.shared_metrics import SharedMetricsStore
 
     store = SharedMetricsStore()
-    created = store.create_and_export_package_if_due()
+    if not database_ready(database, uid):
+        raise ExportError("metrics_database_bootstrap_failed")
+    exported = store.create_and_export_package_if_due()
     outbox = hermes / "telemetry/shared_metrics/outbox"
     files = 0
     if outbox.is_dir() and not outbox.is_symlink():
         files = sum(1 for path in outbox.iterdir() if path.is_file() and not path.is_symlink())
-    return {"status": "ok", "created": created is not None, "outbox_files": files}
+    return {"status": "ok", "created": bool(exported), "outbox_files": files}
 
 
 def main() -> int:

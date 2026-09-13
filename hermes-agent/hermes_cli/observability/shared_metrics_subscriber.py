@@ -35,6 +35,20 @@ class SharedMetricsSubscriber:
         with self._lock:
             self._active = False
 
+    def record_counter(self, metric_name: str, dimensions: dict[str, str]) -> None:
+        """Persist one already-validated bounded counter."""
+        with self._lock:
+            if not self._active:
+                return
+            try:
+                self.store.record_counter(metric_name, dimensions, self._hermes_version)
+            except Exception:
+                logger.warning(
+                    "Unable to persist the Hermes shared metric: %s",
+                    metric_name,
+                    exc_info=True,
+                )
+
     def __call__(self, event: Any) -> None:
         if self._runtime_id is not None:
             metadata = getattr(event, "metadata", None)
@@ -50,18 +64,4 @@ class SharedMetricsSubscriber:
             if task_metric is None:
                 return
             metric_name, dimensions = task_metric
-        with self._lock:
-            if not self._active:
-                return
-            try:
-                self.store.record_counter(
-                    metric_name,
-                    dimensions,
-                    self._hermes_version,
-                )
-            except Exception:
-                logger.warning(
-                    "Unable to persist the Hermes shared metric: %s",
-                    metric_name,
-                    exc_info=True,
-                )
+        self.record_counter(metric_name, dimensions)

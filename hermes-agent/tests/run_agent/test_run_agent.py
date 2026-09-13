@@ -5924,3 +5924,31 @@ class TestMemoryContextSanitization:
         assert "stale observation" not in result
         assert "how is the honcho working" in result
 
+
+
+def test_provider_fallback_stage_is_bounded(agent):
+    agent._fallback_index = 0
+    assert agent._provider_fallback_stage() == "primary"
+    agent._fallback_index = 1
+    assert agent._provider_fallback_stage() == "fallback_1"
+    agent._fallback_index = 2
+    assert agent._provider_fallback_stage() == "fallback_2"
+    agent._fallback_index = 7
+    assert agent._provider_fallback_stage() == "fallback_3_plus"
+    agent._fallback_index = "invalid"
+    assert agent._provider_fallback_stage() == "unknown"
+
+
+def test_api_request_error_hook_includes_bounded_fallback_stage(agent, monkeypatch):
+    captured = {}
+    monkeypatch.setattr("hermes_cli.lifecycle.has_hook", lambda name: name == "api_request_error")
+    monkeypatch.setattr("hermes_cli.lifecycle.invoke_hook", lambda name, **kwargs: captured.update(kwargs) or [])
+    monkeypatch.setattr(agent, "_api_request_payload_for_hook", lambda _kwargs: {})
+    agent._fallback_index = 2
+    agent._invoke_api_request_error_hook(
+        task_id="task-1", turn_id="turn-1", api_request_id="api-1",
+        api_call_count=1, api_start_time=0.0, api_kwargs={},
+        error_type="ProviderError", error_message="private upstream text",
+        status_code=503, retry_count=0, max_retries=1, retryable=True,
+    )
+    assert captured["fallback_stage"] == "fallback_2"

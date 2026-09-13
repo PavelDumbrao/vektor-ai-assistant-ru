@@ -59,3 +59,26 @@ def test_summary_exposes_bounded_v2_product_metrics(tmp_path):
     assert "tool_result" not in serialized
     assert "prompt" not in serialized
     assert "response_text" not in serialized
+
+
+def test_summary_exposes_bounded_provider_errors(tmp_path):
+    store = AnalyticsStore(tmp_path / "analytics" / "db.sqlite3")
+    _ingest(store, "provider-error", {
+        "name": "hermes.provider_error.count", "type": "counter",
+        "dimensions": {
+            "provider": "lingsuan", "model": "gpt-5.6-terra",
+            "error_category": "billing_exhausted", "http_class": "4xx",
+            "fallback_stage": "fallback_1",
+        },
+        "value": 3,
+    })
+    rows = report.summary(store)["provider_errors"]
+    assert rows == [{
+        "provider": "lingsuan", "model": "gpt-5.6-terra",
+        "error_category": "billing_exhausted", "http_class": "4xx",
+        "fallback_stage": "fallback_1", "count": 3,
+    }]
+    serialized = json.dumps(rows, sort_keys=True)
+    assert "error_message" not in serialized
+    assert "request_id" not in serialized
+    assert "prompt" not in serialized

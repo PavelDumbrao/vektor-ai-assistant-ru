@@ -25,6 +25,12 @@ def summary(store: AnalyticsStore) -> dict:
             WHERE metric_name IN ('hermes.model_call.count','hermes.model_route.count')
             GROUP BY metric_name, dimensions_json ORDER BY n DESC
         """).fetchall()
+        provider_errors = db.execute("""
+            SELECT dimensions_json, SUM(value) AS n
+            FROM metric_counters
+            WHERE metric_name='hermes.provider_error.count'
+            GROUP BY dimensions_json ORDER BY n DESC
+        """).fetchall()
         approvals = db.execute("""
             SELECT dimensions_json, SUM(value) AS n
             FROM metric_counters
@@ -122,6 +128,7 @@ def summary(store: AnalyticsStore) -> dict:
         "versions": [{"release_id": row["release_id"], "profiles": int(row["n"])} for row in versions],
         "tool_usage": tool_rows,
         "model_usage": [{"metric": row["metric_name"], **json.loads(row["dimensions_json"]), "count": int(row["n"])} for row in models],
+        "provider_errors": [{**json.loads(row["dimensions_json"]), "count": int(row["n"])} for row in provider_errors],
         "tool_approvals": [{**json.loads(row["dimensions_json"]), "count": int(row["n"])} for row in approvals],
         "skill_activity": [{"metric": row["metric_name"], **json.loads(row["dimensions_json"]), "count": int(row["n"])} for row in skills],
         "task_outcomes": [{**json.loads(row["dimensions_json"]), "count": int(row["n"])} for row in tasks],

@@ -182,3 +182,37 @@ def test_v2_store_discards_install_identity_and_resource_details(tmp_path):
     assert "x86_64" not in serialized
     assert "linux" not in serialized
     assert "git" not in serialized
+
+
+def test_provider_error_metric_accepts_only_bounded_privacy_safe_dimensions():
+    good = package({
+        "name": "hermes.provider_error.count",
+        "type": "counter",
+        "dimensions": {
+            "provider": "lingsuan",
+            "model": "gpt-5.6-terra",
+            "error_category": "billing_exhausted",
+            "http_class": "4xx",
+            "fallback_stage": "fallback_1",
+        },
+        "value": 2,
+    })
+    collector.validate_package(good)
+    bad = package({
+        "name": "hermes.provider_error.count",
+        "type": "counter",
+        "dimensions": {
+            "provider": "lingsuan",
+            "model": "gpt-5.6-terra",
+            "error_category": "secret provider text",
+            "http_class": "4xx",
+            "fallback_stage": "fallback_1",
+        },
+        "value": 1,
+    })
+    try:
+        collector.validate_package(bad)
+    except ValueError as exc:
+        assert str(exc) == "metric_dimension_value_invalid"
+    else:
+        raise AssertionError("unbounded provider error text must fail")

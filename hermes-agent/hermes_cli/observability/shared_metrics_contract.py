@@ -15,8 +15,26 @@ TASK_SCOPE = "hermes.task_run"
 SUBSCRIBER_NAME = "hermes.nemo_relay.shared_metrics"
 PRIMARY_MODEL_CALL_ROLE = "primary"
 MODEL_CALL_METRIC = "hermes.model_call.count"
+PROVIDER_ERROR_METRIC = "hermes.provider_error.count"
 TASK_STARTED_METRIC = "hermes.task_run.started"
 TASK_FINISHED_METRIC = "hermes.task_run.finished"
+
+PROVIDER_ERROR_CATEGORIES: frozenset[str] = frozenset({
+    "provider_unavailable", "billing_exhausted", "rate_limited",
+    "auth_failed", "timeout", "invalid_request", "unknown",
+})
+PROVIDER_ERROR_ALIASES: frozenset[str] = frozenset({
+    "lingsuan", "openrouter", "custom", "direct", "local", "unknown",
+})
+PROVIDER_ERROR_MODELS: frozenset[str] = frozenset({
+    "gpt-5.6-sol", "gpt-5.6-terra", "gemini-3.8-flash-medium", "unknown",
+})
+PROVIDER_ERROR_HTTP_CLASSES: frozenset[str] = frozenset({
+    "2xx", "3xx", "4xx", "5xx", "none",
+})
+PROVIDER_ERROR_FALLBACK_STAGES: frozenset[str] = frozenset({
+    "primary", "fallback_1", "fallback_2", "fallback_3_plus", "unknown",
+})
 
 EXECUTION_SURFACES: frozenset[str] = frozenset({
     "api",
@@ -144,7 +162,7 @@ _COUNTER_DIMENSION_VALUES: dict[str, dict[str, frozenset[str]]] = {
         "tool_call_count_bucket": COUNT_BUCKETS,
     },
 }
-COUNTER_METRICS: frozenset[str] = frozenset(_COUNTER_DIMENSION_VALUES)
+COUNTER_METRICS: frozenset[str] = frozenset(_COUNTER_DIMENSION_VALUES) | {PROVIDER_ERROR_METRIC}
 
 _MODEL_FAMILY_PATTERN = re.compile(
     r"(?:^|[/_.:-])("
@@ -179,6 +197,20 @@ def counter_dimensions_are_valid(
     dimensions: dict[str, Any],
 ) -> bool:
     """Return whether dimensions match one closed shared-metric contract."""
+    if metric_name == PROVIDER_ERROR_METRIC:
+        if set(dimensions) != {"provider", "model", "error_category", "http_class", "fallback_stage"}:
+            return False
+        contracts = {
+            "provider": PROVIDER_ERROR_ALIASES,
+            "model": PROVIDER_ERROR_MODELS,
+            "error_category": PROVIDER_ERROR_CATEGORIES,
+            "http_class": PROVIDER_ERROR_HTTP_CLASSES,
+            "fallback_stage": PROVIDER_ERROR_FALLBACK_STAGES,
+        }
+        return all(
+            isinstance(dimensions[field], str) and dimensions[field] in allowed
+            for field, allowed in contracts.items()
+        )
     contract = _COUNTER_DIMENSION_VALUES.get(metric_name)
     if contract is None or set(dimensions) != set(contract):
         return False
@@ -437,6 +469,65 @@ def provider_family(kwargs: dict[str, Any]) -> str:
     if provider == "custom":
         return "custom"
     return "direct" if is_known else "unknown"
+
+
+def provider_error_dimensions(kwargs: dict[str, Any]) -> dict[str, str]:
+    """Reduce one provider failure to the privacy-safe bounded admin metric."""
+    base_url = str(kwargs.get("base_url") or "").strip().lower()
+    raw_provider = str(kwargs.get("provider") or "").strip().lower().replace("_", "-")
+    if any(host in base_url for host in ("lingsuan.top", "lingsuan.org")):
+        provider = "lingsuan"
+    elif "openrouter.ai" in base_url or raw_provider == "openrouter":
+        provider = "openrouter"
+    elif raw_provider in _LOCAL_CUSTOM_PROVIDER_ALIASES:
+        provider = "local"
+    elif raw_provider == "custom" or raw_provider.startswith(("custom-", "custom:")):
+        provider = "custom"
+    elif raw_provider:
+        provider = "direct"
+    else:
+        provider = "unknown"
+
+    raw_model = str(kwargs.get("response_model") or kwargs.get("model") or "").strip().lower()
+    model = raw_model if raw_model in PROVIDER_ERROR_MODELS else "unknown"
+    status = kwargs.get("status_code")
+    http_class = f"{status // 100}xx" if isinstance(status, int) and 200 <= status <= 599 else "none"
+    if http_class not in PROVIDER_ERROR_HTTP_CLASSES:
+        http_class = "none"
+    stage = str(kwargs.get("fallback_stage") or "unknown").strip().lower()
+    if stage not in PROVIDER_ERROR_FALLBACK_STAGES:
+        stage = "unknown"
+    return {
+        "provider": provider,
+        "model": model,
+        "error_category": provider_error_category(kwargs),
+        "http_class": http_class,
+        "fallback_stage": stage,
+    }
+
+
+def provider_error_category(kwargs: dict[str, Any]) -> str:
+    """Classify raw provider failures without persisting their text."""
+    error = kwargs.get("error")
+    if isinstance(error, dict):
+        error_text = " ".join(str(error.get(key) or "") for key in ("type", "message"))
+    else:
+        error_text = str(error or "")
+    text = " ".join((error_text, str(kwargs.get("reason") or ""))).lower()
+    status = kwargs.get("status_code") if isinstance(kwargs.get("status_code"), int) else None
+    if status == 402 or any(token in text for token in ("insufficient_quota", "insufficient quota", "billing", "credit exhausted", "credits exhausted")):
+        return "billing_exhausted"
+    if status == 429 or any(token in text for token in ("rate limit", "rate_limit", "too many requests")):
+        return "rate_limited"
+    if status in {408, 504} or any(token in text for token in ("timeout", "timed out", "deadline exceeded")):
+        return "timeout"
+    if status in {401, 403} or any(token in text for token in ("unauthorized", "authentication", "invalid api key", "forbidden")):
+        return "auth_failed"
+    if status in {400, 404, 405, 409, 413, 415, 422} or any(token in text for token in ("invalid_request", "invalid request", "bad request", "validation error")):
+        return "invalid_request"
+    if (status is not None and 500 <= status <= 599) or any(token in text for token in ("connection error", "connection refused", "service unavailable", "bad gateway", "overloaded", "server error")):
+        return "provider_unavailable"
+    return "unknown"
 
 
 def _provider_metadata(provider: str) -> tuple[str, bool, bool]:

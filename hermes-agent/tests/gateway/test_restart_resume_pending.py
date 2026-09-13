@@ -746,8 +746,8 @@ async def test_restart_notifies_home_channel_even_without_active_sessions():
     await runner._notify_active_sessions_of_shutdown()
 
     assert adapter.sent == [
-        "⚠️ Gateway restarting — Your current task will be interrupted. "
-        "Send any message after restart and I'll try to resume where you left off."
+        "⚠️ Hermes is restarting — Your current task will be interrupted. "
+        "Send any message after restart and I’ll try to resume where you left off."
     ]
 
 
@@ -941,7 +941,7 @@ async def test_auto_resume_runs_agent_exactly_once_through_full_path():
     # Count how many times an actual agent run is started for this session.
     agent_runs: list[str] = []
 
-    async def _fake_run(event, source, _quick_key, run_generation):
+    async def _fake_run(event, source, _quick_key, run_generation, **_kwargs):
         agent_runs.append(_quick_key)
         return "RESUMED OK"
 

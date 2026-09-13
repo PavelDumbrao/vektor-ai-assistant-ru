@@ -20,6 +20,13 @@ approval:
   blocklist_message: "此指令位於無條件封鎖清單中，無法被批准。"
 
 gateway:
+  lifecycle:
+    restarting: "⚠️ Hermes is restarting — Your current task will be interrupted. Send any message after restart and I’ll try to resume where you left off."
+    shutting_down: "⚠️ Hermes is shutting down — Your current task will be interrupted."
+    online: "♻️ Hermes is online again and ready."
+  scheduled_task:
+    header: "📅 Scheduled task: {task_name}"
+    footer: "To stop or change this task, just send me a new message. For example: \"stop reminder {task_name}\"."
   approval_expired: "⚠️ 批准已逾期（代理不再等待）。請讓代理重試。"
   draining:         "⏳ 正在等待 {count} 個活躍代理結束後重新啟動..."
   goal_cleared:     "✓ 目標已清除。"

@@ -30,6 +30,13 @@ approval:
   blocklist_message: "This command is on the unconditional blocklist and cannot be approved."
 
 gateway:
+  lifecycle:
+    restarting: "⚠️ Hermes is restarting — Your current task will be interrupted. Send any message after restart and I’ll try to resume where you left off."
+    shutting_down: "⚠️ Hermes is shutting down — Your current task will be interrupted."
+    online: "♻️ Hermes is online again and ready."
+  scheduled_task:
+    header: "📅 Scheduled task: {task_name}"
+    footer: "To stop or change this task, just send me a new message. For example: \"stop reminder {task_name}\"."
   # Messenger replies to slash commands and implicit state changes.
   approval_expired: "⚠️ Approval expired (agent is no longer waiting). Ask the agent to try again."
   draining:         "⏳ Draining {count} active agent(s) before restart..."
@@ -254,8 +261,8 @@ gateway:
     tip:                   "\n✦ Tip: {tip}"
 
   restart:
-    in_progress:           "⏳ Gateway restart already in progress..."
-    restarting:            "♻ Restarting gateway. If you aren't notified within 60 seconds, restart from the console with `hermes gateway restart`."
+    in_progress:           "⏳ Hermes restart is already in progress..."
+    restarting:            "♻ Hermes is restarting. If you aren't notified within 60 seconds, restart from the console with `hermes gateway restart`."
 
   resume:
     db_unavailable:        "Session database not available."

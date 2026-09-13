@@ -20,6 +20,13 @@ approval:
   blocklist_message: "Dieser Befehl steht auf der unbedingten Sperrliste und kann nicht genehmigt werden."
 
 gateway:
+  lifecycle:
+    restarting: "⚠️ Hermes is restarting — Your current task will be interrupted. Send any message after restart and I’ll try to resume where you left off."
+    shutting_down: "⚠️ Hermes is shutting down — Your current task will be interrupted."
+    online: "♻️ Hermes is online again and ready."
+  scheduled_task:
+    header: "📅 Scheduled task: {task_name}"
+    footer: "To stop or change this task, just send me a new message. For example: \"stop reminder {task_name}\"."
   approval_expired: "⚠️ Genehmigung abgelaufen (Agent wartet nicht mehr). Bitten Sie den Agenten, es erneut zu versuchen."
   draining:         "⏳ Warte auf {count} aktive(n) Agent(en) vor dem Neustart..."
   goal_cleared:     "✓ Ziel gelöscht."

@@ -4740,20 +4740,33 @@ class MessageSender:
     @staticmethod
     def strip_cron_wrapper(content: str) -> str:
         """Strip scheduler cron header/footer wrapper for cleaner Yuanbao output."""
+        # Current localized wrapper: one header paragraph, body, one footer paragraph.
+        header_prefixes = ("📅 Scheduled task: ", "📅 Задача по расписанию: ")
+        footer_prefixes = (
+            "To stop or change this task, just send me a new message.",
+            "Чтобы остановить или изменить эту задачу, просто напиши мне.",
+        )
+        if content.startswith(header_prefixes):
+            first_break = content.find("\n\n")
+            last_break = content.rfind("\n\n")
+            if first_break > 0 and last_break > first_break:
+                footer = content[last_break + 2:]
+                if footer.startswith(footer_prefixes):
+                    body = content[first_break + 2:last_break].strip()
+                    return body or content
+
+        # Legacy English wrapper kept for already queued/persisted deliveries.
         if not content.startswith("Cronjob Response: "):
             return content
-
         divider = "\n-------------\n\n"
         footer_prefix = '\n\nTo stop or manage this job, send me a new message (e.g. "stop reminder '
         divider_pos = content.find(divider)
         footer_pos = content.rfind(footer_prefix)
         if divider_pos < 0 or footer_pos < 0 or footer_pos <= divider_pos:
             return content
-
         header = content[:divider_pos]
         if "\n(job_id: " not in header:
             return content
-
         body_start = divider_pos + len(divider)
         body = content[body_start:footer_pos].strip()
         return body or content

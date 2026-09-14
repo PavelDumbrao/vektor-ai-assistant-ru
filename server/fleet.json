@@ -168,5 +168,38 @@
       "failure_cleanup": "new-tenant timer/service only",
       "seed": "generic template; no cross-client memory cloning"
     }
+  },
+  "fleet_telemetry": {
+    "status": "rolled_out",
+    "profiles": [
+      "pavel",
+      "baysangur",
+      "vyacheslav",
+      "bebov",
+      "salavat"
+    ],
+    "central_store": "root-only Forge analytics SQLite",
+    "collector_schedule": "every 5 minutes",
+    "shared_metrics_export": "hourly randomized per-profile local outbox export",
+    "delivery": {
+      "telemetry_enabled_profiles": 5,
+      "exporter_timers_healthy": 5,
+      "native_metrics_databases_present": 5
+    },
+    "observability": {
+      "hermes_telegram_health": true,
+      "model_tool_task_counters": true,
+      "living_memory_aggregate_runs": true,
+      "telemetry_delivery_health": true,
+      "video_editor_version": true,
+      "scheduled_job_last_failure_visible": true
+    },
+    "privacy": "aggregate counters/status only; no conversation or memory text, prompts, model responses, tool args/results, media paths, secrets or session ids",
+    "quiet_profile_semantics": "an enabled idle profile may have no metric package until a real counter occurs",
+    "source_prs": [
+      88,
+      89,
+      90
+    ]
   }
 }

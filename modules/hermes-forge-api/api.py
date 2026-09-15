@@ -206,6 +206,9 @@ def route(method: str, path: str, body: dict[str, Any], headers: Any) -> tuple[i
     if method == "POST" and path == "/v1/kitchen/preview":
         return 200, _kitchen_preview(body)
     session = _session(headers)
+    if method == "POST" and path.startswith("/v1/invites/") and path.endswith("/accept"):
+        token=path[len("/v1/invites/"):-len("/accept")].strip("/")
+        return 200, call_control({"op":"accept_workspace_invite","session":session,"token":token,"actor_name":str(body.get("actor_name") or "Участник")})
     if method == "GET" and path == "/v1/hermes":
         return 200, call_control({"op": "list_hermes", "session": session})
     match = re.fullmatch(r"/v1/hermes/([a-z0-9_-]{2,40})(?:/(.*))?", path)
@@ -223,6 +226,13 @@ def route(method: str, path: str, body: dict[str, Any], headers: Any) -> tuple[i
         return 200, call_control({"op": "health_check", **base})
     if method == "POST" and suffix == "restart":
         return 200, call_control({"op": "restart", **base})
+    if method == "GET" and suffix == "members": return 200, call_control({"op":"list_workspace_members",**base})
+    if method == "POST" and suffix == "members/invite": return 200, call_control({"op":"create_workspace_invite",**base})
+    m=re.fullmatch(r"members/(\d{5,20})",suffix)
+    if method == "DELETE" and m: return 200, call_control({"op":"remove_workspace_member",**base,"member_user_id":int(m.group(1))})
+    g=re.fullmatch(r"members/(\d{5,20})/grants",suffix)
+    if method == "POST" and g: return 200, call_control({"op":"grant_workspace_tool",**base,"member_user_id":int(g.group(1)),"tool_name":str(body.get("tool_name") or ""),"ttl_days":int(body.get("ttl_days") or 0)})
+    if method == "DELETE" and g: return 200, call_control({"op":"revoke_workspace_tool",**base,"member_user_id":int(g.group(1)),"tool_name":str(body.get("tool_name") or "")})
     if method == "GET" and suffix == "connections":
         return 200, call_control({"op": "list_connections", **base})
     if method == "GET" and suffix == "capabilities":

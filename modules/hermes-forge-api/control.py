@@ -57,6 +57,10 @@ ACTION_AUDIT_DIR = ACTION_STATE_ROOT / "audit"
 ACTION_AUDIT_FILE = ACTION_AUDIT_DIR / "capability-actions.jsonl"
 ACTION_AUDIT_MAX_BYTES = 8 * 1024 * 1024
 ACTION_ID_RE = re.compile(r"^[0-9a-f]{32}$")
+WORKSPACE_MEMBER_LIMIT=1
+WORKSPACE_STATE_DIR=ACTION_STATE_ROOT/"workspace-members"
+WORKSPACE_INVITE_DIR=ACTION_STATE_ROOT/"workspace-invites"
+INVITE_TOKEN_RE=re.compile(r"^[A-Za-z0-9_-]{24,96}$")
 _ACTION_LOCK = threading.RLock()
 CAPABILITY_HEALTH = frozenset({"healthy", "degraded", "unknown", "disabled", "planned"})
 CAPABILITY_REASONS = frozenset({
@@ -1151,6 +1155,51 @@ def _capability_action(actor_user_id: int, profile: str, capability_id: str, act
             raise ControlError("capability_action_failed", 500) from None
 
 
+def _ws_path(profile): return WORKSPACE_STATE_DIR/f"{profile}.json"
+def _ws_state(profile,owner):
+ p=_ws_path(profile); d=_safe_json(p) if p.is_file() else {}
+ if not d: d={"schema":"hermes.workspace-members/v1","profile":profile,"owner_user_id":int(owner),"members":[],"grants":[],"pending":[]}
+ if d.get("profile")!=profile or int(d.get("owner_user_id") or 0)!=int(owner): raise ControlError("workspace_state_invalid",409)
+ return d
+def _ws_write(profile,d):
+ WORKSPACE_STATE_DIR.mkdir(parents=True,exist_ok=True); _atomic_root_json(_ws_path(profile),d); entry,_,_=_profile_paths(profile); _atomic_text(Path(entry.pw_dir)/".hermes/workspace-members.json",json.dumps(d,ensure_ascii=False)+"\n",entry)
+def _ws_public(d):
+ out=copy.deepcopy(d); out["limit"]=1; now=int(time.time()); out["grants"]=[g for g in out.get("grants",[]) if int(g.get("expires_at") or 0)>now]; return out
+def _ws_sync_env(profile,member,add):
+ entry,env,_=_profile_paths(profile); vals=_read_env(env); ids=[x.strip() for x in vals.get("TELEGRAM_ALLOWED_USERS","").split(",") if x.strip()]; mid=str(int(member)); ids=[x for x in ids if x!=mid]+([mid] if add else []); lines=env.read_text().splitlines(); out=[]; found=False
+ for line in lines:
+  if line.startswith("TELEGRAM_ALLOWED_USERS="): out.append("TELEGRAM_ALLOWED_USERS="+",".join(ids)); found=True
+  else: out.append(line)
+ if not found: out.append("TELEGRAM_ALLOWED_USERS="+",".join(ids))
+ _atomic_text(env,"\n".join(out)+"\n",entry)
+ try: _restart(profile); return False
+ except ControlError as e:
+  if e.code=="profile_busy": return True
+  raise
+def _ws_invite(owner,profile):
+ d=_ws_state(profile,owner)
+ if len(d.get("members",[]))>=1: raise ControlError("workspace_member_limit",409)
+ WORKSPACE_INVITE_DIR.mkdir(parents=True,exist_ok=True); token=secrets.token_urlsafe(32); exp=int(time.time())+86400; _atomic_root_json(WORKSPACE_INVITE_DIR/f"{token}.json",{"schema":"hermes.workspace-invite/v1","profile":profile,"owner_user_id":owner,"expires_at":exp,"used":False}); return {"invite_url":f"https://t.me/ProAIHermesBot?startapp=invite_{token}","expires_at":exp}
+def _ws_accept(actor,name,token):
+ if not INVITE_TOKEN_RE.fullmatch(token): raise ControlError("invite_invalid",400)
+ p=WORKSPACE_INVITE_DIR/f"{token}.json"; inv=_safe_json(p)
+ if not inv or inv.get("used"): raise ControlError("invite_invalid",404)
+ if int(inv.get("expires_at") or 0)<int(time.time()): raise ControlError("invite_expired",410)
+ owner=int(inv["owner_user_id"]); profile=inv["profile"]; d=_ws_state(profile,owner)
+ if actor==owner: raise ControlError("invite_owner_invalid",409)
+ existing=next((m for m in d["members"] if int(m.get("user_id") or 0)==actor),None)
+ if d["members"] and not existing: raise ControlError("workspace_member_limit",409)
+ if not existing: d["members"].append({"user_id":actor,"name":name[:120],"role":"member","memory_access":"full","joined_at":int(time.time())})
+ _ws_write(profile,d); rr=_ws_sync_env(profile,actor,True); inv.update({"used":True,"used_by":actor}); _atomic_root_json(p,inv); return {"accepted":True,"profile":profile,"owner_user_id":owner,"restart_required":rr}
+def _ws_remove(owner,profile,member):
+ d=_ws_state(profile,owner); d["members"]=[m for m in d["members"] if int(m.get("user_id") or 0)!=member]; d["grants"]=[g for g in d["grants"] if int(g.get("member_user_id") or 0)!=member]; d["pending"]=[q for q in d["pending"] if int(q.get("member_user_id") or 0)!=member]; _ws_write(profile,d); return {"removed":True,"restart_required":_ws_sync_env(profile,member,False)}
+def _ws_grant(owner,profile,member,tool,days):
+ if days not in {1,7,30}: raise ControlError("grant_ttl_invalid",400)
+ if not re.fullmatch(r"[A-Za-z0-9_.:-]{1,160}",tool): raise ControlError("tool_name_invalid",400)
+ d=_ws_state(profile,owner); exp=int(time.time())+days*86400; d["grants"]=[g for g in d["grants"] if not(int(g.get("member_user_id") or 0)==member and g.get("tool_name")==tool)]; d["grants"].append({"member_user_id":member,"tool_name":tool,"expires_at":exp}); d["pending"]=[q for q in d["pending"] if not(int(q.get("member_user_id") or 0)==member and q.get("tool_name")==tool)]; _ws_write(profile,d); return {"granted":True,"expires_at":exp}
+def _ws_revoke(owner,profile,member,tool):
+ d=_ws_state(profile,owner); d["grants"]=[g for g in d["grants"] if not(int(g.get("member_user_id") or 0)==member and g.get("tool_name")==tool)]; _ws_write(profile,d); return {"revoked":True}
+
 def _connections(profile: str) -> list[dict[str, Any]]:
     health = _health(profile)
     return [
@@ -1181,6 +1230,7 @@ def dispatch(payload: dict[str, Any]) -> dict[str, Any]:
     user_id = _require_session(payload)
     if op == "list_hermes":
         return {"items": [_public_hermes(item) for item in _owned_items(user_id)]}
+    if op == "accept_workspace_invite": return _ws_accept(user_id,str(payload.get("actor_name") or "Участник"),str(payload.get("token") or ""))
     profile = str(payload.get("profile") or "")
     item = _owned_item(user_id, profile)
     if op == "get_hermes":
@@ -1192,6 +1242,11 @@ def dispatch(payload: dict[str, Any]) -> dict[str, Any]:
         return result
     if op == "restart":
         return _restart(profile)
+    if op == "list_workspace_members": return _ws_public(_ws_state(profile,user_id))
+    if op == "create_workspace_invite": return _ws_invite(user_id,profile)
+    if op == "remove_workspace_member": return _ws_remove(user_id,profile,int(payload.get("member_user_id") or 0))
+    if op == "grant_workspace_tool": return _ws_grant(user_id,profile,int(payload.get("member_user_id") or 0),str(payload.get("tool_name") or ""),int(payload.get("ttl_days") or 0))
+    if op == "revoke_workspace_tool": return _ws_revoke(user_id,profile,int(payload.get("member_user_id") or 0),str(payload.get("tool_name") or ""))
     if op == "list_connections":
         return {"items": _connections(profile)}
     if op == "list_capabilities":

@@ -282,6 +282,21 @@ def _provision_database(instance: HermesInstance, entry: pwd.struct_passwd, herm
     ], timeout=180)
 
 
+def _install_workspace_members(entry: pwd.struct_passwd, hermes: Path) -> None:
+    source = MANAGER_ROOT / "vendor" / "workspace-members" / "plugin"
+    target = hermes / "plugins" / "workspace-members"
+    if target.exists(): shutil.rmtree(target)
+    shutil.copytree(source, target, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+    for root, dirs, files in os.walk(target):
+        os.chown(root, entry.pw_uid, entry.pw_gid)
+        for name in files: os.chown(os.path.join(root, name), entry.pw_uid, entry.pw_gid)
+    config_path = hermes / "config.yaml"
+    cfg = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+    enabled = cfg.setdefault("plugins", {}).setdefault("enabled", [])
+    if "workspace-members" not in enabled: enabled.append("workspace-members")
+    config_path.write_text(yaml.safe_dump(cfg, allow_unicode=True, sort_keys=False), encoding="utf-8")
+    os.chown(config_path, entry.pw_uid, entry.pw_gid)
+
 def _install_passive_secretary(instance: HermesInstance, entry: pwd.struct_passwd, hermes: Path) -> None:
     script = MANAGER_ROOT / "vendor" / "passive-secretary" / "install_passive_secretary.py"
     _run([
@@ -472,6 +487,7 @@ def provision(instance: HermesInstance, token_file: Path | None = None) -> dict[
         _install_service(instance, entry)
         _provision_database(instance, entry, hermes)
         _install_passive_secretary(instance, entry, hermes)
+        _install_workspace_members(entry, hermes)
         _install_maton(entry, hermes, release)
         _install_grsai(instance, platform_values)
         _prepare_living_memory(instance, entry, hermes)

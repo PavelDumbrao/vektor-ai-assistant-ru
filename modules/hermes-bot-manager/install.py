@@ -49,7 +49,7 @@ def main() -> int:
         shutil.copytree(HERE / dirname, target, ignore=shutil.ignore_patterns('__pycache__', '*.pyc'))
     vendor = TARGET / 'vendor'
     vendor.mkdir(mode=0o700, exist_ok=True)
-    for module in ('passive-secretary-postgres', 'passive-secretary', 'maton-onboarding', 'grsai-image-provider', 'living-memory'):
+    for module in ('passive-secretary-postgres', 'passive-secretary', 'maton-onboarding', 'grsai-image-provider', 'living-memory', 'workspace-members'):
         target = vendor / module
         if target.exists():
             shutil.rmtree(target)

@@ -39,6 +39,8 @@
     tg.ready(); tg.expand();
     const auth = await request("/v1/auth/telegram", {method:"POST", body:JSON.stringify({init_data:tg.initData})});
     session = auth.session;
+    const sp=(tg.initDataUnsafe&&tg.initDataUnsafe.start_param)||"";
+    if(sp.startsWith("invite_")){await request(`/v1/invites/${sp.slice(7)}/accept`,{method:"POST",body:JSON.stringify({actor_name:(tg.initDataUnsafe.user&&tg.initDataUnsafe.user.first_name)||"Участник")}); text("auth-state","Приглашение принято. Теперь откройте Telegram-бот Hermes владельца."); return;}
     text("auth-state", "Безопасная сессия подключена");
     const [catalogData, hermesData] = await Promise.all([request("/v1/catalog"), request("/v1/hermes")]);
     catalog = catalogData;
@@ -53,7 +55,7 @@
     }
     current = items[0];
     renderHermes(current);
-    await Promise.all([loadConnections(), loadSecrets(), loadCapabilityStates()]);
+    await Promise.all([loadConnections(), loadSecrets(), loadCapabilityStates(), loadMembers()]);
   }
 
   function renderHermes(item) {
@@ -243,6 +245,9 @@
     }
   }
 
+
+  async function loadMembers(){if(!current)return;const d=await request(`/v1/hermes/${current.profile}/members`);text("member-count",`${(d.members||[]).length} / ${d.limit||1}`);const r=$("members-list");r.textContent="";for(const m of d.members||[]){const c=document.createElement("div");c.className="card";const grants=(d.grants||[]).filter(g=>g.member_user_id==m.user_id);const top=document.createElement("div");top.className="row-between";const info=document.createElement("div");const strong=document.createElement("strong");strong.textContent=m.name||String(m.user_id);const sub=document.createElement("div");sub.className="muted";sub.textContent="Участник · полная память";info.append(strong,sub);const remove=document.createElement("button");remove.className="danger-soft";remove.dataset.removeMember=m.user_id;remove.textContent="Удалить";top.append(info,remove);const ge=document.createElement("div");ge.className="muted grants";c.append(top,ge);if(grants.length){ge.textContent="";for(const g of grants){const row=document.createElement("div");row.className="row-between";const label=document.createElement("span");label.textContent=`${g.tool_name} · до ${new Date(g.expires_at*1000).toLocaleDateString()}`;const rb=document.createElement("button");rb.className="danger-soft";rb.dataset.revokeMember=m.user_id;rb.dataset.revokeTool=g.tool_name;rb.textContent="Отозвать";row.append(label,rb);ge.append(row)}}else ge.textContent="Инструменты: разрешений пока нет";r.append(c)}for(const q of d.pending||[]){const c=document.createElement("div");c.className="card";const t=document.createElement("strong");t.textContent=`${q.member_name||q.member_user_id} просит: ${q.tool_name}`;const a=document.createElement("div");a.className="actions";for(const days of [1,7,30]){const b=document.createElement("button");b.className="secondary";b.dataset.grantMember=q.member_user_id;b.dataset.grantTool=q.tool_name;b.dataset.grantDays=days;b.textContent=`Разрешить ${days} дн.`;a.append(b)}c.append(t,a);r.append(c)}$("create-invite").disabled=(d.members||[]).length>=(d.limit||1)}
+
   async function loadConnections() {
     if (!current) return;
     const data = await request(`/v1/hermes/${current.profile}/connections`);
@@ -293,10 +298,16 @@
     }
     if (!current) return;
     const button=event.target.closest("button"); if (!button) return;
+    if(button.id==="copy-invite"){await navigator.clipboard.writeText($("invite-url").value);result("team-result","Ссылка скопирована");return;}
+    if (!current) return;
     if (button.dataset.capabilitySettings === "maton") { selectTab("secrets"); return; }
     button.disabled=true;
     try {
-      if (button.dataset.capabilityId && button.dataset.capabilityAction) {
+      if(button.id==="create-invite"){const d=await request(`/v1/hermes/${current.profile}/members/invite`,{method:"POST",body:"{}"});$("invite-url").value=d.invite_url;$("invite-box").classList.remove("hidden");result("team-result","Приглашение создано");}
+      else if(button.dataset.removeMember){await request(`/v1/hermes/${current.profile}/members/${button.dataset.removeMember}`,{method:"DELETE",body:"{}"});await loadMembers();}
+      else if(button.dataset.grantMember){await request(`/v1/hermes/${current.profile}/members/${button.dataset.grantMember}/grants`,{method:"POST",body:JSON.stringify({tool_name:button.dataset.grantTool,ttl_days:Number(button.dataset.grantDays)})});await loadMembers();}
+      else if(button.dataset.revokeMember){await request(`/v1/hermes/${current.profile}/members/${button.dataset.revokeMember}/grants`,{method:"DELETE",body:JSON.stringify({tool_name:button.dataset.revokeTool})});await loadMembers();}
+      else if (button.dataset.capabilityId && button.dataset.capabilityAction) {
         const id=button.dataset.capabilityId; const action=button.dataset.capabilityAction;
         result("tools-result", action==="enable"?"Включаю и проверяю Hermes…":"Выключаю и проверяю Hermes…");
         const data=await request(`/v1/hermes/${current.profile}/capabilities/${id}/${action}`,{method:"POST",body:"{}"});

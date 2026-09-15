@@ -1,0 +1,8 @@
+name: workspace-members
+version: 0.1.0
+kind: standalone
+description: Multi-user Hermes workspace identity and owner-gated tool permissions.
+author: ProAI
+provides_hooks:
+  - pre_llm_call
+  - pre_tool_call

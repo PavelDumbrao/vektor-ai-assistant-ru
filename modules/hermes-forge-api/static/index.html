@@ -24,6 +24,7 @@
     <section id="app" class="hidden">
       <nav class="tabs" aria-label="Разделы">
         <button class="tab active" data-tab="hermes" data-requires-hermes>Мой Hermes</button>
+        <button class="tab" data-tab="team" data-requires-hermes>Команда</button>
         <button class="tab" data-tab="connections" data-requires-hermes>Подключения</button>
         <button class="tab" data-tab="secrets" data-requires-hermes>Секреты</button>
         <button class="tab" data-tab="tools">Инструменты</button>
@@ -51,6 +52,13 @@
           <button id="restart-button" class="danger-soft">Перезапустить</button>
         </div>
         <p id="hermes-result" class="result"></p>
+      </section>
+
+      <section class="panel hidden" data-panel="team" data-requires-hermes>
+        <div class="section-head"><div><div class="muted">Один Hermes, общий контекст</div><h2>Команда</h2></div><span id="member-count" class="pill">0 / 1</span></div>
+        <p class="muted">Можно пригласить одного человека. Он получает полный доступ к памяти. Инструменты разрешает владелец на срок до 30 дней.</p>
+        <div id="members-list" class="stack"></div><div class="actions"><button id="create-invite">Создать приглашение</button></div>
+        <div id="invite-box" class="card hidden"><div class="muted">Ссылка действует 24 часа</div><input id="invite-url" readonly><div class="actions"><button id="copy-invite" class="secondary">Скопировать ссылку</button></div></div><p id="team-result" class="result"></p>
       </section>
 
       <section class="panel hidden" data-panel="connections" data-requires-hermes>

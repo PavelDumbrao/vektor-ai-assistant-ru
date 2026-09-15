@@ -58,6 +58,7 @@ def test_provision_runs_bounded_steps_in_order(monkeypatch, tmp_path):
     monkeypatch.setattr(provisioner, "_install_service", lambda *_: calls.append("service"))
     monkeypatch.setattr(provisioner, "_provision_database", lambda *_: calls.append("database"))
     monkeypatch.setattr(provisioner, "_install_passive_secretary", lambda *_: calls.append("secretary"))
+    monkeypatch.setattr(provisioner, "_install_workspace_members", lambda *_: calls.append("workspace-members"))
     monkeypatch.setattr(provisioner, "_install_maton", lambda *_: calls.append("maton"))
     monkeypatch.setattr(provisioner, "_install_grsai", lambda *_: calls.append("grsai"))
     monkeypatch.setattr(provisioner, "_prepare_living_memory", lambda *_: calls.append("memory-prepare"))
@@ -71,7 +72,7 @@ def test_provision_runs_bounded_steps_in_order(monkeypatch, tmp_path):
     assert result["health"]["living_memory"]["timer_enabled"] is True
     assert calls == [
         "record:provisioning", "profile", "env", "runtime", "service",
-        "database", "secretary", "maton", "grsai", "memory-prepare", "memory-check", "start", "health", "memory-enable",
+        "database", "secretary", "workspace-members", "maton", "grsai", "memory-prepare", "memory-check", "start", "health", "memory-enable",
         "record:active",
     ]
 
@@ -119,7 +120,7 @@ def test_memory_or_startup_failure_never_publishes_ready(monkeypatch, tmp_path, 
     monkeypatch.setattr(provisioner, '_record', lambda _i, state, **kw: states.append((state, kw)))
     monkeypatch.setattr(provisioner, '_ensure_account', lambda *_: SimpleNamespace())
     for name in ('_render_profile', '_ensure_profile_env', '_bind_runtime', '_install_service',
-        '_provision_database', '_install_passive_secretary', '_install_maton', '_install_grsai', '_prepare_living_memory'):
+        '_provision_database', '_install_passive_secretary', '_install_workspace_members', '_install_maton', '_install_grsai', '_prepare_living_memory'):
         monkeypatch.setattr(provisioner, name, lambda *a: tmp_path)
     monkeypatch.setattr(provisioner, '_start_service', step('start'))
     monkeypatch.setattr(provisioner, '_wait_healthy', step('health', {}))

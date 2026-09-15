@@ -290,3 +290,14 @@ def test_deployed_layout_loads_bundled_kitchen_without_repo_dependency(monkeypat
     assert status == 200
     assert result["schema"] == "hermes.kitchen-preview/v1"
     assert result["selected_optional"] == ["video-editor"]
+def test_workspace_member_routes_forward_owner_scope(monkeypatch):
+    seen=[]; monkeypatch.setattr(api,"call_control",lambda payload: seen.append(payload) or {"members":[],"limit":1})
+    h={"Authorization":"Bearer session"}
+    status,_=api.route("GET","/v1/hermes/vyacheslav/members",{},h); assert status==200
+    status,_=api.route("POST","/v1/hermes/vyacheslav/members/invite",{},h); assert status==200
+    assert seen[0]["op"]=="list_workspace_members" and seen[1]["op"]=="create_workspace_invite"
+
+def test_invite_accept_route_uses_authenticated_session(monkeypatch):
+    seen=[]; monkeypatch.setattr(api,"call_control",lambda payload: seen.append(payload) or {"accepted":True})
+    token="a"*32; status,res=api.route("POST",f"/v1/invites/{token}/accept",{"actor_name":"Alex"},{"Authorization":"Bearer session"})
+    assert status==200 and res["accepted"] is True and seen[0]["op"]=="accept_workspace_invite"

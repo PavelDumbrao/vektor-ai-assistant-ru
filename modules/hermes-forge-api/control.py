@@ -1160,6 +1160,11 @@ def _ws_state(profile,owner):
  p=_ws_path(profile); d=_safe_json(p) if p.is_file() else {}
  if not d: d={"schema":"hermes.workspace-members/v1","profile":profile,"owner_user_id":int(owner),"members":[],"grants":[],"pending":[]}
  if d.get("profile")!=profile or int(d.get("owner_user_id") or 0)!=int(owner): raise ControlError("workspace_state_invalid",409)
+ # Runtime plugin records first-use permission requests in the tenant copy.
+ try:
+  entry,_,_=_profile_paths(profile); tenant=_safe_json(Path(entry.pw_dir)/".hermes/workspace-members.json")
+  if tenant.get("schema")=="hermes.workspace-members/v1" and isinstance(tenant.get("pending"),list): d["pending"]=tenant["pending"]
+ except Exception: pass
  return d
 def _ws_write(profile,d):
  WORKSPACE_STATE_DIR.mkdir(parents=True,exist_ok=True); _atomic_root_json(_ws_path(profile),d); entry,_,_=_profile_paths(profile); _atomic_text(Path(entry.pw_dir)/".hermes/workspace-members.json",json.dumps(d,ensure_ascii=False)+"\n",entry)

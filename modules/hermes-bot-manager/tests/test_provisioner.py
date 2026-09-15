@@ -72,7 +72,7 @@ def test_provision_runs_bounded_steps_in_order(monkeypatch, tmp_path):
     assert result["health"]["living_memory"]["timer_enabled"] is True
     assert calls == [
         "record:provisioning", "profile", "env", "runtime", "service",
-        "database", "secretary", "maton", "grsai", "memory-prepare", "memory-check", "start", "health", "memory-enable",
+        "database", "secretary", "workspace-members", "maton", "grsai", "memory-prepare", "memory-check", "start", "health", "memory-enable",
         "record:active",
     ]
 

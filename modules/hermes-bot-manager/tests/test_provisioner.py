@@ -119,7 +119,7 @@ def test_memory_or_startup_failure_never_publishes_ready(monkeypatch, tmp_path, 
     monkeypatch.setattr(provisioner, '_record', lambda _i, state, **kw: states.append((state, kw)))
     monkeypatch.setattr(provisioner, '_ensure_account', lambda *_: SimpleNamespace())
     for name in ('_render_profile', '_ensure_profile_env', '_bind_runtime', '_install_service',
-        '_provision_database', '_install_passive_secretary', '_install_maton', '_install_grsai', '_prepare_living_memory'):
+        '_provision_database', '_install_passive_secretary', '_install_workspace_members', '_install_maton', '_install_grsai', '_prepare_living_memory'):
         monkeypatch.setattr(provisioner, name, lambda *a: tmp_path)
     monkeypatch.setattr(provisioner, '_start_service', step('start'))
     monkeypatch.setattr(provisioner, '_wait_healthy', step('health', {}))

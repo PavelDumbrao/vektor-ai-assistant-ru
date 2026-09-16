@@ -1,0 +1,8 @@
+schema: hermes.capability-registry/v1
+id: long-media-ingestion
+status: deferred
+commercial: unknown
+reusable: true
+implementation_policy: adapter_only
+blocker: awaiting_pavel_existing_module
+forbidden_scope: do_not_build_new_transcription_engine

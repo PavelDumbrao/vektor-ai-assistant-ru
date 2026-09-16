@@ -1,0 +1,13 @@
+schema: hermes.capability-registry/v1
+id: meeting-intelligence
+status: research
+commercial: included
+reusable: true
+paths:
+  fathom:
+    transcript_access: proven
+  zoom_native:
+    technically_possible: true
+    prerequisite: zoom_cloud_recording
+    account_auto_recording: none
+policy: do_not_change_account_wide_recording_without_client_approval

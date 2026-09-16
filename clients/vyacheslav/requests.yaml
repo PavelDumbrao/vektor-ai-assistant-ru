@@ -1,0 +1,96 @@
+schema: hermes.client-requests/v1
+client: vyacheslav
+updated_at: 2026-09-16
+requests:
+  - id: car_deal_investment_tracker
+    capability: deal-tracker
+    status: approved
+    commercial: unknown
+    source_refs:
+      - telegram:1165484
+      - telegram:1165697
+    requirements:
+      source_of_truth: google_sheets
+      hermes_role: working_interface
+      write_policy: preview_before_write
+      per_vehicle_fields:
+        - purchase
+        - delivery
+        - parts
+        - repair
+        - additional_expenses
+        - total_investment
+        - current_stage
+        - responsible_people
+        - expected_sale_price
+        - actual_sale_price
+        - net_profit
+        - deal_duration
+        - roi
+        - annualized_return
+      accounting_rules:
+        - separate_planned_and_actual_amounts
+        - expected_sale_price_must_not_count_as_actual_profit
+      stages:
+        - vehicle_found
+        - vehicle_inspection
+        - purchased
+        - delivery
+        - diagnostics_and_estimate
+        - parts_ordered
+        - waiting_for_parts
+        - repair
+        - inspection_and_photo_report
+        - ready_for_sale
+        - listed
+        - showing
+        - sold
+        - financial_result
+      alternate_outcome:
+        stage: purchase_rejected
+        require_reason: true
+      reporting:
+        - weekly_portfolio_dashboard
+        - report_on_request
+        - concise_active_vehicle_status
+        - no_unnecessary_daily_spam
+
+  - id: telegram_group_observer
+    capability: group-observer
+    status: needs_clarification
+    commercial: unknown
+    requirements:
+      mode: read_listen_collect_only
+    outstanding:
+      - exact_group_names_or_links
+    source_refs:
+      - telegram:1165697
+
+  - id: notion
+    capability: notion
+    status: deferred
+    commercial: unknown
+    reason: client_explicitly_does_not_need_notion_now
+    source_refs:
+      - telegram:1165697
+
+  - id: steer_mobile_followup
+    status: research
+    commercial: included
+    summary: smartphone client reports that adding a new message while Hermes is still processing does not work as expected
+    source_refs:
+      - telegram:1165779
+
+  - id: personal_finance_tracking
+    status: captured
+    commercial: unknown
+    implementation_authorized: false
+    source_refs:
+      - telegram:1165697
+
+  - id: land_house_construction_tracking
+    status: captured
+    commercial: unknown
+    implementation_authorized: false
+    source_refs:
+      - telegram:1165697

@@ -1,0 +1,15 @@
+schema: hermes.client-integrations/v1
+client: salavat
+updated_at: 2026-09-16
+integrations:
+  telegram_workspace:
+    runtime: shared_single_profile
+    plugin: workspace-members
+    plugin_enabled: true
+    member_limit: 1
+    member_state_exists: false
+    invite_count: 0
+    son_canary: not_started
+  visual_generation:
+    desired_use: visual_proposal
+    state: requirements_incomplete

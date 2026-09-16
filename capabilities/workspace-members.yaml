@@ -1,0 +1,28 @@
+schema: hermes.capability-registry/v1
+id: workspace-members
+status: deployed
+commercial: included
+reusable: true
+implementation:
+  pr: 97
+  merge_commit: 6525751fdf60d012d5f42dd2c530dafd3c7c33b3
+mvp:
+  owner_count: 1
+  member_limit: 1
+  shared_runtime: true
+  member_memory_access: full
+  invite_ttl_hours: 24
+  invite_single_use: true
+  tool_grant_ttl_days:
+    - 1
+    - 7
+    - 30
+  destructive_action_safety_remains: true
+future:
+  additional_members: paid_addon
+first_real_canary:
+  workspace: salavat
+  member: son
+  status: captured
+  operational_state: not_started
+  reason: no_invite_created_or_accepted_as_of_2026_09_16

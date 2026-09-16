@@ -1,0 +1,9 @@
+schema: hermes.capability-registry/v1
+id: postofme
+status: deferred
+commercial: future_product
+reusable: true
+role: shared_social_execution_layer
+blocker: BLOCKED_BY_POSTOFME
+architecture: hermes_to_postofme_to_social_networks
+policy: do_not_build_separate_social_api_integrations_inside_hermes

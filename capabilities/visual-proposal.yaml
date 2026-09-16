@@ -1,0 +1,14 @@
+schema: hermes.capability-registry/v1
+id: visual-proposal
+status: needs_clarification
+commercial: unknown
+reusable: true
+first_client: salavat
+proposed_input:
+  - source_photo
+  - reference_or_description
+proposed_output:
+  - two_to_four_realistic_variants
+  - perspective_consistent_visualization
+  - material_color_detail_consistency
+blocker: client_specific_generation_rules_and_references_missing

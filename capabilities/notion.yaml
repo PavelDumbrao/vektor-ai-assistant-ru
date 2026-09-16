@@ -1,0 +1,9 @@
+schema: hermes.capability-registry/v1
+id: notion
+status: deferred
+commercial: unknown
+reusable: true
+current_connection: notion_mcp
+legacy_maton_rest_compatible: false
+future_architecture: direct_notion_mcp_adapter
+activation_condition: client_confirms_notion_is_needed

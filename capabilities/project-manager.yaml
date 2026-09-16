@@ -1,0 +1,19 @@
+schema: hermes.capability-registry/v1
+id: project-manager
+status: approved
+commercial: included
+reusable: true
+summary: messages_and_meetings_to_execution_management
+outputs:
+  - decisions
+  - tasks
+  - subtasks
+  - responsible_people
+  - deadlines
+  - weekly_plan
+  - daily_plan
+  - followups
+  - reminders
+  - manager_report
+current_clients:
+  - bebov

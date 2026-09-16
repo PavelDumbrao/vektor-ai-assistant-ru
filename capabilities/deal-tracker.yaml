@@ -1,0 +1,14 @@
+schema: hermes.capability-registry/v1
+id: deal-tracker
+status: approved
+commercial: unknown
+reusable: true
+first_client: vyacheslav
+source_of_truth: configurable
+initial_source_of_truth: google_sheets
+financial_outputs:
+  - total_investment
+  - net_profit
+  - roi
+  - annualized_return
+  - comparison_to_bank_deposit

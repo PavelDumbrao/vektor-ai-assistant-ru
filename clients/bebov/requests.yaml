@@ -1,0 +1,45 @@
+schema: hermes.client-requests/v1
+client: bebov
+updated_at: 2026-09-16
+requests:
+  - id: ai_project_manager
+    capability: project-manager
+    status: approved
+    commercial: included
+    summary: >-
+      Reusable AI Project Manager that turns messages and meetings into decisions,
+      tasks, subtasks, responsible people, deadlines, follow-ups, reminders and manager reports.
+    requirements:
+      - post_meeting_output_must_be_concise_and_actionable
+      - extract_tasks_instead_of_dumping_full_meeting_summary
+      - assign_or_route_tasks_to_responsible_managers
+      - reminders_and_followups_must_not_require_manual_rereading
+      - support_weekly_plan_daily_plan_and_manager_report
+      - existing_connected_groups_should_not_be_reworked_without_reason
+    outstanding:
+      - exact_project_management_groups
+      - staff_roster_with_roles_and_usernames
+      - post_meeting_delivery_destination
+      - reminder_cadence
+      - task_status_vocabulary_confirmation
+    source_refs:
+      - telegram:1165483
+      - telegram:1166276
+      - telegram:1166361
+
+  - id: moysklad
+    status: deferred
+    commercial: paid_addon
+    source: prior_approved_backlog
+  - id: wechat
+    status: deferred
+    commercial: paid_addon
+    source: prior_approved_backlog
+  - id: avito
+    status: deferred
+    commercial: paid_addon
+    source: prior_approved_backlog
+  - id: yandex_market
+    status: deferred
+    commercial: paid_addon
+    source: prior_approved_backlog

@@ -1,0 +1,18 @@
+schema: hermes.client-integrations/v1
+client: vyacheslav
+updated_at: 2026-09-16
+integrations:
+  google_sheets:
+    desired_role: source_of_truth_for_vehicle_tracker
+    state: client_selected
+  notion_mcp:
+    state: active_connection
+    usage: deferred_by_client
+    future_path: direct_mcp_adapter_if_reactivated
+  telegram_groups:
+    state: awaiting_client_list
+    desired_mode: read_listen_collect_only
+  busy_input:
+    mode: steer
+    mobile_behavior: research_required
+    source_ref: telegram:1165779

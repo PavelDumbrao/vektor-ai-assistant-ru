@@ -1,0 +1,53 @@
+schema: hermes.client-requests/v1
+client: salavat
+updated_at: 2026-09-16
+requests:
+  - id: visual_proposal
+    capability: visual-proposal
+    status: needs_clarification
+    commercial: unknown
+    proposed_flow:
+      - porch_photo
+      - canopy_reference_or_description
+      - realistic_variants
+      - correct_perspective
+      - materials_colors_details
+      - client_ready_image
+    outstanding:
+      - number_of_variants
+      - mandatory_client_inputs
+      - common_canopy_types
+      - allowed_materials_colors_and_elements
+      - whether_offer_text_is_required
+      - preliminary_pricing_rules
+      - reference_examples
+    source_refs:
+      - telegram:1165485
+      - telegram:1165735
+    note: client_confirmed_need_for_operational_unloading_but_did_not_answer_visual_proposal_parameters
+
+  - id: workspace_member_son
+    capability: workspace-members
+    status: captured
+    commercial: included
+    operational_state:
+      instruction_ref: telegram:1165596
+      invite_created: false
+      invite_accepted: false
+      controlled_canary_run: false
+    next_step: client_creates_and_sends_invite_then_son_accepts
+
+  - id: contract_automation
+    status: proposed
+    commercial: unknown
+    scope:
+      - autofill_contract
+      - attach_sketch
+      - print
+      - signature
+    implementation_authorized: false
+
+  - id: invoice_automation
+    status: deferred
+    commercial: unknown
+    reason: not_needed_now

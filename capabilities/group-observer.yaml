@@ -1,0 +1,10 @@
+schema: hermes.capability-registry/v1
+id: group-observer
+status: needs_clarification
+commercial: unknown
+reusable: true
+default_safety:
+  - explicit_group_allowlist
+  - read_only_until_separately_approved
+current_clients:
+  vyacheslav: awaiting_group_list

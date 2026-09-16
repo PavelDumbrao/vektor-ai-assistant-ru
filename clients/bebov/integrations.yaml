@@ -1,0 +1,17 @@
+schema: hermes.client-integrations/v1
+client: bebov
+updated_at: 2026-09-16
+integrations:
+  fathom:
+    state: active
+    transcript_path: proven
+    notes: recent_meetings_to_recording_id_to_transcript_verified
+  zoom:
+    state: active
+    cloud_recording: true
+    recording_audio_transcript: true
+    auto_recording: none
+    policy: do_not_change_account_wide_settings_without_client_approval
+  zoom_admin:
+    state: active
+    api_recordings_path: available

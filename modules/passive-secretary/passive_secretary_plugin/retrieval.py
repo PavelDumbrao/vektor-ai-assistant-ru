@@ -69,6 +69,23 @@ def sanitize_untrusted_text(
     return normalized[:max_chars]
 
 
+def normalize_source_username(value: Any) -> str:
+    """Return a bounded Telegram @username or empty string.
+
+    Usernames are display metadata only, never routing authority.
+    """
+    if value is None:
+        return ""
+    raw = sanitize_untrusted_text(value, max_chars=65, preserve_newlines=False).strip()
+    if raw.startswith("@"):
+        raw = raw[1:]
+    if not raw or len(raw) > 64:
+        return ""
+    if any(ch not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_" for ch in raw):
+        return ""
+    return f"@{raw}"
+
+
 def normalize_source_label(value: Any) -> str:
     """Return the bounded, single-line label form used for source resolution."""
     return sanitize_untrusted_text(
@@ -456,8 +473,9 @@ def render_tool_result(
                 "uncertain items. Mark completion only when the archive confirms it."
             ),
             "identity": (
-                "Display source_label exactly; it includes @username when Telegram "
-                "provided one."
+                "Always display source_username when it is present. It is the latest "
+                "known Telegram @username recovered for that exact archived contact. "
+                "Never infer, guess, or substitute a username when source_username is null."
             ),
             "next_steps": (
                 "After the factual summary, propose practical options and suggested "
@@ -495,6 +513,7 @@ def render_tool_result(
             ),
             "source_label": normalize_source_label(row.get("chat_label"))
             or "Telegram chat",
+            "source_username": normalize_source_username(row.get("source_username")) or None,
             "message_ref": message_ref,
             "sender_ref": _safe_opaque_ref(
                 row.get("sender_ref"), "sender", "unknown-sender"
@@ -584,6 +603,7 @@ def render_sources_result(
                 "source_ref": source_ref,
                 "source_label": normalize_source_label(row.get("chat_label"))
                 or "Telegram chat",
+                "source_username": normalize_source_username(row.get("source_username")) or None,
                 "last_message_local_time": _iso(row.get("last_message_at"), tz),
                 "message_count": message_count,
             }

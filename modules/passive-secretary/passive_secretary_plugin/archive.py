@@ -873,6 +873,192 @@ class PostgresArchive:
         finally:
             self._close(conn, cursor)
 
+    def query_activity_days(
+        self,
+        ranges: list[tuple[datetime, datetime]],
+        *,
+        tenant_owner_id: str,
+    ) -> list[dict[str, Any]]:
+        """Return compact per-local-day activity counts without message bodies."""
+        if not ranges:
+            return []
+        self.ensure_schema()
+        date_clauses: list[str] = []
+        scope = [
+            self.settings.tenant_id,
+            int(tenant_owner_id),
+            self.settings.source_id,
+            self.settings.test_run_id,
+        ]
+        params: list[Any] = [
+            self.settings.timezone,
+            *scope,
+            self.settings.retention_days,
+        ]
+        for start, end in ranges:
+            if start.tzinfo is None or end.tzinfo is None or start >= end:
+                raise ValueError("ranges must be aware, non-empty half-open intervals")
+            date_clauses.append("(message.sent_at >= %s AND message.sent_at < %s)")
+            params.extend((start.astimezone(timezone.utc), end.astimezone(timezone.utc)))
+        sql = f"""
+            SELECT (message.sent_at AT TIME ZONE %s)::date AS local_day,
+                   COUNT(*) AS message_count,
+                   COUNT(DISTINCT message.source_ref) AS contact_count,
+                   COUNT(*) FILTER (WHERE message.direction='incoming') AS incoming_count,
+                   COUNT(*) FILTER (WHERE message.direction='outgoing') AS outgoing_count
+            FROM passive_secretary.messages AS message
+            WHERE message.tenant_id=%s AND message.tenant_owner_id=%s
+              AND message.source_id=%s AND message.test_run_id=%s
+              AND message.is_deleted=FALSE
+              AND message.sent_at >= CURRENT_TIMESTAMP - make_interval(days => %s)
+              AND ({' OR '.join(date_clauses)})
+            GROUP BY local_day
+            ORDER BY local_day ASC
+        """
+        conn = self._connect()
+        cursor = None
+        try:
+            cursor = conn.cursor()
+            cursor.execute(sql, tuple(params))
+            return self._dict_rows(
+                cursor,
+                cursor.fetchall(),
+                (
+                    "local_day",
+                    "message_count",
+                    "contact_count",
+                    "incoming_count",
+                    "outgoing_count",
+                ),
+            )
+        except Exception as exc:
+            raise ArchiveUnavailable("postgres_activity_query_failed") from exc
+        finally:
+            self._close(conn, cursor)
+
+    def query_activity_contacts(
+        self,
+        ranges: list[tuple[datetime, datetime]],
+        *,
+        tenant_owner_id: str,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> dict[str, Any]:
+        """Return a bounded contact index for the selected local-date ranges."""
+        if not ranges:
+            return {
+                "rows": [],
+                "total_contacts": 0,
+                "total_messages": 0,
+                "incoming_count": 0,
+                "outgoing_count": 0,
+                "has_more": False,
+            }
+        self.ensure_schema()
+        bounded_limit = max(1, min(int(limit), 200))
+        bounded_offset = max(0, min(int(offset), 100_000))
+        date_clauses: list[str] = []
+        scope = [
+            self.settings.tenant_id,
+            int(tenant_owner_id),
+            self.settings.source_id,
+            self.settings.test_run_id,
+        ]
+        range_params: list[Any] = []
+        for start, end in ranges:
+            if start.tzinfo is None or end.tzinfo is None or start >= end:
+                raise ValueError("ranges must be aware, non-empty half-open intervals")
+            date_clauses.append("(message.sent_at >= %s AND message.sent_at < %s)")
+            range_params.extend(
+                (start.astimezone(timezone.utc), end.astimezone(timezone.utc))
+            )
+        where_sql = f"""
+            message.tenant_id=%s AND message.tenant_owner_id=%s
+            AND message.source_id=%s AND message.test_run_id=%s
+            AND message.is_deleted=FALSE
+            AND message.sent_at >= CURRENT_TIMESTAMP - make_interval(days => %s)
+            AND ({' OR '.join(date_clauses)})
+        """
+        total_sql = f"""
+            SELECT COUNT(DISTINCT message.source_ref) AS total_contacts,
+                   COUNT(*) AS total_messages,
+                   COUNT(*) FILTER (WHERE message.direction='incoming') AS incoming_count,
+                   COUNT(*) FILTER (WHERE message.direction='outgoing') AS outgoing_count
+            FROM passive_secretary.messages AS message
+            WHERE {where_sql}
+        """
+        rows_sql = f"""
+            SELECT message.source_ref,
+                   (ARRAY_AGG(
+                       message.chat_label
+                       ORDER BY message.sent_at DESC, message.message_id DESC
+                   ))[1] AS chat_label,
+                   COUNT(*) AS message_count,
+                   COUNT(*) FILTER (WHERE message.direction='incoming') AS incoming_count,
+                   COUNT(*) FILTER (WHERE message.direction='outgoing') AS outgoing_count,
+                   COUNT(DISTINCT (message.sent_at AT TIME ZONE %s)::date) AS active_days,
+                   MIN(message.sent_at) AS first_message_at,
+                   MAX(message.sent_at) AS last_message_at
+            FROM passive_secretary.messages AS message
+            WHERE {where_sql}
+            GROUP BY message.source_ref
+            ORDER BY last_message_at DESC, message.source_ref
+            LIMIT %s OFFSET %s
+        """
+        base_params = [*scope, self.settings.retention_days, *range_params]
+        conn = self._connect()
+        cursor = None
+        try:
+            cursor = conn.cursor()
+            cursor.execute(total_sql, tuple(base_params))
+            total_row = cursor.fetchone()
+            if isinstance(total_row, dict):
+                total_contacts = int(total_row.get("total_contacts") or 0)
+                total_messages = int(total_row.get("total_messages") or 0)
+                incoming_count = int(total_row.get("incoming_count") or 0)
+                outgoing_count = int(total_row.get("outgoing_count") or 0)
+            else:
+                total_contacts, total_messages, incoming_count, outgoing_count = (
+                    int(value or 0) for value in (total_row or (0, 0, 0, 0))
+                )
+            cursor.execute(
+                rows_sql,
+                tuple(
+                    [
+                        self.settings.timezone,
+                        *base_params,
+                        bounded_limit,
+                        bounded_offset,
+                    ]
+                ),
+            )
+            rows = self._dict_rows(
+                cursor,
+                cursor.fetchall(),
+                (
+                    "source_ref",
+                    "chat_label",
+                    "message_count",
+                    "incoming_count",
+                    "outgoing_count",
+                    "active_days",
+                    "first_message_at",
+                    "last_message_at",
+                ),
+            )
+            return {
+                "rows": rows,
+                "total_contacts": total_contacts,
+                "total_messages": total_messages,
+                "incoming_count": incoming_count,
+                "outgoing_count": outgoing_count,
+                "has_more": bounded_offset + len(rows) < total_contacts,
+            }
+        except Exception as exc:
+            raise ArchiveUnavailable("postgres_activity_query_failed") from exc
+        finally:
+            self._close(conn, cursor)
+
     def _outbound_scope(self, tenant_owner_id: str) -> tuple[Any, ...]:
         owner_id = str(tenant_owner_id or "")
         if owner_id not in self.settings.owner_ids:

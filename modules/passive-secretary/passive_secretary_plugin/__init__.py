@@ -12,6 +12,7 @@ import logging
 from pathlib import Path
 
 from .controller import (
+    ACTIVITY_TOOL_SCHEMA,
     EXACT_DATE_TOOL_SCHEMA,
     RECALL_TOOL_SCHEMA,
     REPLY_TOOL_SCHEMA,
@@ -46,6 +47,10 @@ def register(ctx) -> None:
         assert _controller is not None
         return _controller.handle_sources(args, **kwargs)
 
+    def activity(args, **kwargs):
+        assert _controller is not None
+        return _controller.handle_activity(args, **kwargs)
+
     def recall(args, **kwargs):
         assert _controller is not None
         return _controller.handle_recall(args, **kwargs)
@@ -69,6 +74,15 @@ def register(ctx) -> None:
         check_fn=_controller.tool_available,
         description="Exact-date search in the owner's passive Telegram archive.",
         emoji="🗄️",
+    )
+    ctx.register_tool(
+        name="passive_secretary_activity",
+        toolset="passive_secretary",
+        schema=ACTIVITY_TOOL_SCHEMA,
+        handler=activity,
+        check_fn=_controller.tool_available,
+        description="Compact day/contact index for self-planned archive audits.",
+        emoji="🧭",
     )
     ctx.register_tool(
         name="passive_secretary_recall",

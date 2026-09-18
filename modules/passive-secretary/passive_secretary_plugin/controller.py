@@ -334,6 +334,89 @@ class PassiveSecretaryController:
             with self._retention_lock:
                 self._retention_running = False
 
+    @staticmethod
+    def _owner_archive_routing_context(
+        user_message: Any,
+        raw_user_message: Any = None,
+    ) -> str:
+        """Return a current-turn-only routing contract for explicit archive work."""
+        source = raw_user_message if isinstance(raw_user_message, str) else user_message
+        if not isinstance(source, str):
+            return ""
+        normalized = " ".join(source.casefold().split())
+        if not normalized:
+            return ""
+
+        explicit_archive = any(
+            marker in normalized
+            for marker in (
+                "пассивн",
+                "passive secretary",
+                "passive_secretary",
+                "архив перепис",
+                "архив чатов",
+                "архив диалог",
+                "telegram архив",
+                "telegram-архив",
+                "телеграм архив",
+                "телеграм-архив",
+            )
+        )
+        conversation_request = (
+            any(marker in normalized for marker in ("переписк", "диалог", "чат"))
+            and any(
+                marker in normalized
+                for marker in (
+                    "контакт",
+                    "сообщ",
+                    "договор",
+                    "обещ",
+                    "встреч",
+                    "деньг",
+                    "документ",
+                    "follow-up",
+                    "follow up",
+                    "username",
+                    "юзернейм",
+                    "@",
+                    "найд",
+                    "проверь",
+                    "посмотри",
+                    "аудит",
+                )
+            )
+        )
+        if not (explicit_archive or conversation_request):
+            return ""
+
+        return (
+            "<passive_secretary_routing>\n"
+            "PASSIVE SECRETARY ROUTING CONTRACT. The owner explicitly requested facts "
+            "from the private Telegram/passive archive. For archive facts, identities, "
+            "contacts, usernames, message history, commitments, meetings, money, "
+            "documents, or follow-up, use the native Passive Secretary read-only tools "
+            "as the sole archive data path.\n"
+            "Preferred routing: passive_secretary_activity for a broad period/contact "
+            "map; passive_secretary_sources to resolve a named contact/source_ref; "
+            "passive_secretary_search for exact dates/source_ref and pagination; "
+            "passive_secretary_recall when the exact date is unknown or the request is "
+            "topic/person based. If one of these tools is deferred/not visible, use "
+            "tool_search for the exact passive_secretary tool name and then call it.\n"
+            "DO NOT use execute_code, shell, direct PostgreSQL, Telegram API, old "
+            "session dumps, model memory, or guessed name matches as a substitute for "
+            "these archive tools. Do not answer an archive identity question from prior "
+            "conversation text alone.\n"
+            "For usernames: use only username/source_username returned for the exact "
+            "resolved source_ref. Always display that @username when present. If the "
+            "exact contact resolves but username/source_username is null, say "
+            "'username не найден'. Never infer, guess, transliterate, or substitute a "
+            "similar person's username.\n"
+            "For lists of contacts, resolve all requested contacts before answering. "
+            "For paginated results, follow next_cursor/next_offset until the selected "
+            "scope is complete before claiming complete coverage.\n"
+            "</passive_secretary_routing>"
+        )
+
     def on_pre_llm_call(
         self,
         *,
@@ -365,7 +448,14 @@ class PassiveSecretaryController:
         )
         if owner_id is None:
             return None
+
+        routing_context = self._owner_archive_routing_context(
+            user_message,
+            raw_user_message,
+        )
         if not self.settings.auto_context_enabled or not self.settings.postgres_configured():
+            if routing_context:
+                return {"context": routing_context, "persist": False}
             return None
         end = self._now_fn()
         if end.tzinfo is None:
@@ -382,8 +472,12 @@ class PassiveSecretaryController:
             logger.warning(
                 "Passive auto-context query failed: category=%s", type(exc).__name__
             )
+            if routing_context:
+                return {"context": routing_context, "persist": False}
             return None
         if not rows:
+            if routing_context:
+                return {"context": routing_context, "persist": False}
             return None
         context = render_auto_context(
             rows,
@@ -396,6 +490,8 @@ class PassiveSecretaryController:
         # Archive context is current-request-only. Hermes core must never
         # copy it into the persisted api_content sidecar or replay it on a
         # later turn.
+        if routing_context:
+            context = routing_context + "\n\n" + context
         return {"context": context, "persist": False}
 
     def handle_exact_date(self, args: dict[str, Any], **kwargs: Any) -> str:

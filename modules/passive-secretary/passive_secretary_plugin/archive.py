@@ -634,9 +634,11 @@ class PostgresArchive:
         tenant_owner_id: str,
         chat_id_key: str = "_chat_id",
     ) -> list[dict[str, Any]]:
-        """Attach latest archived @username for each exact Telegram chat id.
+        """Attach the latest archived @username for each exact Telegram chat id.
 
-        The raw chat id is internal-only and removed before any row leaves archive.py.
+        The lookup is deliberately indexed by the primary-key chat_id prefix instead
+        of scanning the whole owner archive. Raw chat ids stay internal and are
+        removed before rows leave archive.py.
         """
         chat_ids = sorted({
             int(row[chat_id_key])
@@ -647,48 +649,52 @@ class PostgresArchive:
         if chat_ids:
             cursor.execute(
                 """
-                WITH identity_labels AS (
-                    SELECT chat_id, sent_at, message_id, chat_label AS label
-                    FROM passive_secretary.messages
-                    WHERE tenant_id=%s AND tenant_owner_id=%s
-                      AND source_id=%s AND test_run_id=%s
-                      AND chat_id = ANY(%s)
-                      AND sent_at >= CURRENT_TIMESTAMP - make_interval(days => %s)
-                    UNION ALL
-                    SELECT chat_id, sent_at, message_id, sender_label AS label
-                    FROM passive_secretary.messages
-                    WHERE tenant_id=%s AND tenant_owner_id=%s
-                      AND source_id=%s AND test_run_id=%s
-                      AND chat_id = ANY(%s)
-                      AND sender_telegram_user_id=chat_id
-                      AND sent_at >= CURRENT_TIMESTAMP - make_interval(days => %s)
-                ),
-                ranked AS (
-                    SELECT chat_id,
-                           substring(label FROM '[(]@([A-Za-z0-9_]{1,64})[)]$') AS username,
-                           sent_at,
-                           message_id
-                    FROM identity_labels
-                    WHERE label ~ '[(]@[A-Za-z0-9_]{1,64}[)]$'
-                )
-                SELECT DISTINCT ON (chat_id) chat_id, username
-                FROM ranked
-                WHERE username IS NOT NULL
-                ORDER BY chat_id, sent_at DESC, message_id DESC
+                SELECT ids.chat_id,
+                       COALESCE(
+                           (
+                               SELECT substring(
+                                   message.chat_label
+                                   FROM '[(]@([A-Za-z0-9_]{1,64})[)]$'
+                               )
+                               FROM passive_secretary.messages AS message
+                               WHERE message.tenant_id=%s
+                                 AND message.tenant_owner_id=%s
+                                 AND message.source_id=%s
+                                 AND message.test_run_id=%s
+                                 AND message.chat_id=ids.chat_id
+                                 AND message.chat_label ~ '[(]@[A-Za-z0-9_]{1,64}[)]$'
+                               ORDER BY message.message_id DESC
+                               LIMIT 1
+                           ),
+                           (
+                               SELECT substring(
+                                   message.sender_label
+                                   FROM '[(]@([A-Za-z0-9_]{1,64})[)]$'
+                               )
+                               FROM passive_secretary.messages AS message
+                               WHERE message.tenant_id=%s
+                                 AND message.tenant_owner_id=%s
+                                 AND message.source_id=%s
+                                 AND message.test_run_id=%s
+                                 AND message.chat_id=ids.chat_id
+                                 AND message.sender_telegram_user_id=ids.chat_id
+                                 AND message.sender_label ~ '[(]@[A-Za-z0-9_]{1,64}[)]$'
+                               ORDER BY message.message_id DESC
+                               LIMIT 1
+                           )
+                       ) AS username
+                FROM unnest(%s::bigint[]) AS ids(chat_id)
                 """,
                 (
                     self.settings.tenant_id,
                     int(tenant_owner_id),
                     self.settings.source_id,
                     self.settings.test_run_id,
-                    chat_ids,
-                    self.settings.retention_days,
                     self.settings.tenant_id,
                     int(tenant_owner_id),
                     self.settings.source_id,
                     self.settings.test_run_id,
                     chat_ids,
-                    self.settings.retention_days,
                 ),
             )
             for chat_id, username in cursor.fetchall():
@@ -696,7 +702,9 @@ class PostgresArchive:
                     usernames[int(chat_id)] = f"@{username}"
         for row in rows:
             raw_chat_id = row.pop(chat_id_key, None)
-            row["source_username"] = usernames.get(int(raw_chat_id)) if raw_chat_id is not None else None
+            row["source_username"] = (
+                usernames.get(int(raw_chat_id)) if raw_chat_id is not None else None
+            )
         return rows
 
     def query_ranges(

@@ -48,6 +48,7 @@ class FakeArchive:
                 {
                     "source_ref": "chat:abc123",
                     "chat_label": "Даша",
+                    "source_username": "@DariaArseneva",
                     "message_count": 17,
                     "incoming_count": 7,
                     "outgoing_count": 10,
@@ -124,6 +125,7 @@ class PassiveSecretaryActivityTests(unittest.TestCase):
         self.assertFalse(payload["has_more"])
         self.assertIsNone(payload["next_offset"])
         self.assertEqual(payload["contacts"][0]["source_ref"], "chat:abc123")
+        self.assertEqual(payload["contacts"][0]["username"], "@DariaArseneva")
         self.assertEqual(payload["contacts"][0]["active_days"], 2)
         serialized = json.dumps(payload, ensure_ascii=False)
         self.assertNotIn("chat_id", serialized)
@@ -161,6 +163,7 @@ class PassiveSecretaryActivityTests(unittest.TestCase):
         search_description = controller_mod.EXACT_DATE_TOOL_SCHEMA["description"]
         self.assertIn("passive_secretary_activity", search_description)
         self.assertIn("next_cursor", search_description)
+        self.assertIn("username", search_description.lower())
 
     def test_plugin_manifest_exposes_activity(self):
         manifest = (MODULE / "passive_secretary_plugin" / "plugin.yaml").read_text(

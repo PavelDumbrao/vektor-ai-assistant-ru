@@ -10,6 +10,7 @@ from zoneinfo import ZoneInfo
 from .archive import ArchiveUnavailable, PostgresArchive
 from .retrieval import (
     normalize_source_label,
+    normalize_source_username,
     parse_source_ref,
     sanitize_attachment_metadata,
     sanitize_media_transcripts,
@@ -307,7 +308,8 @@ class HybridRecall:
           FROM candidates_raw
           GROUP BY tenant_id, tenant_owner_id, source_id, test_run_id, chat_id, message_id
         ), scored AS (
-          SELECT message.source_ref, message.chat_label, message.message_ref,
+          SELECT message.chat_id AS _chat_id,
+                 message.source_ref, message.chat_label, message.message_ref,
                  message.sender_ref, message.sender_label, message.direction,
                  message.body, message.caption, message.content_kind,
                  message.attachment, message.sent_at, message.edited_at,
@@ -349,7 +351,12 @@ class HybridRecall:
         cursor.execute("SET LOCAL pg_trgm.word_similarity_threshold = 0.40")
         cursor.execute(sql, tuple(params))
         columns = [d.name if hasattr(d, "name") else d[0] for d in cursor.description]
-        return [dict(zip(columns, row)) for row in cursor.fetchall()]
+        rows = [dict(zip(columns, row)) for row in cursor.fetchall()]
+        return self.archive._attach_best_known_usernames(
+            cursor,
+            rows,
+            tenant_owner_id=owner_id,
+        )
 
     def _render(
         self,
@@ -370,6 +377,7 @@ class HybridRecall:
                 "local_time": row["sent_at"].astimezone(tz).isoformat(timespec="seconds") if row.get("sent_at") else "",
                 "source_ref": row.get("source_ref") or "",
                 "source_label": normalize_source_label(row.get("chat_label")) or "Telegram chat",
+                "source_username": normalize_source_username(row.get("source_username")) or None,
                 "message_ref": row.get("message_ref") or "",
                 "sender_label": normalize_source_label(row.get("sender_label")) or "Telegram user",
                 "body": sanitize_untrusted_text(body, max_chars=3000, preserve_newlines=True),
@@ -400,7 +408,8 @@ class HybridRecall:
             "analysis_contract": {
                 "source_separation": "Never present IMPORTED_HISTORY as current LIVE status without fresh evidence.",
                 "search": "Use lexical evidence first. If results are weak, retry with synonyms or a narrower source/date window.",
-                "answer": "Answer naturally, cite source label and date in prose, and distinguish fact from inference.",
+                "identity": "Always include source_username when present. Never infer, guess, or substitute a username when it is null.",
+                "answer": "Answer naturally, cite source label, source_username when present, and date in prose; distinguish fact from inference.",
             },
         }
         return json.dumps(payload, ensure_ascii=False, indent=2, default=str)

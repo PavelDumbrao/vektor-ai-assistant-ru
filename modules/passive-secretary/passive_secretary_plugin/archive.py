@@ -626,6 +626,79 @@ class PostgresArchive:
                 result.append(dict(zip(columns, row)))
         return result
 
+    def _attach_best_known_usernames(
+        self,
+        cursor: Any,
+        rows: list[dict[str, Any]],
+        *,
+        tenant_owner_id: str,
+        chat_id_key: str = "_chat_id",
+    ) -> list[dict[str, Any]]:
+        """Attach latest archived @username for each exact Telegram chat id.
+
+        The raw chat id is internal-only and removed before any row leaves archive.py.
+        """
+        chat_ids = sorted({
+            int(row[chat_id_key])
+            for row in rows
+            if row.get(chat_id_key) is not None
+        })
+        usernames: dict[int, str] = {}
+        if chat_ids:
+            cursor.execute(
+                """
+                WITH identity_labels AS (
+                    SELECT chat_id, sent_at, message_id, chat_label AS label
+                    FROM passive_secretary.messages
+                    WHERE tenant_id=%s AND tenant_owner_id=%s
+                      AND source_id=%s AND test_run_id=%s
+                      AND chat_id = ANY(%s)
+                      AND sent_at >= CURRENT_TIMESTAMP - make_interval(days => %s)
+                    UNION ALL
+                    SELECT chat_id, sent_at, message_id, sender_label AS label
+                    FROM passive_secretary.messages
+                    WHERE tenant_id=%s AND tenant_owner_id=%s
+                      AND source_id=%s AND test_run_id=%s
+                      AND chat_id = ANY(%s)
+                      AND sender_telegram_user_id=chat_id
+                      AND sent_at >= CURRENT_TIMESTAMP - make_interval(days => %s)
+                ),
+                ranked AS (
+                    SELECT chat_id,
+                           substring(label FROM '[(]@([A-Za-z0-9_]{1,64})[)]$') AS username,
+                           sent_at,
+                           message_id
+                    FROM identity_labels
+                    WHERE label ~ '[(]@[A-Za-z0-9_]{1,64}[)]$'
+                )
+                SELECT DISTINCT ON (chat_id) chat_id, username
+                FROM ranked
+                WHERE username IS NOT NULL
+                ORDER BY chat_id, sent_at DESC, message_id DESC
+                """,
+                (
+                    self.settings.tenant_id,
+                    int(tenant_owner_id),
+                    self.settings.source_id,
+                    self.settings.test_run_id,
+                    chat_ids,
+                    self.settings.retention_days,
+                    self.settings.tenant_id,
+                    int(tenant_owner_id),
+                    self.settings.source_id,
+                    self.settings.test_run_id,
+                    chat_ids,
+                    self.settings.retention_days,
+                ),
+            )
+            for chat_id, username in cursor.fetchall():
+                if username:
+                    usernames[int(chat_id)] = f"@{username}"
+        for row in rows:
+            raw_chat_id = row.pop(chat_id_key, None)
+            row["source_username"] = usernames.get(int(raw_chat_id)) if raw_chat_id is not None else None
+        return rows
+
     def query_ranges(
         self,
         ranges: list[tuple[datetime, datetime]],
@@ -726,7 +799,8 @@ class PostgresArchive:
         params.append(bounded_limit + 1)
         sql = f"""
             {cursor_cte}
-            SELECT message.source_ref, message.chat_label, message.message_ref,
+            SELECT message.chat_id AS _chat_id,
+                   message.source_ref, message.chat_label, message.message_ref,
                    message.reply_to_message_ref, message.media_group_ref,
                    message.sender_ref, message.sender_label, message.direction,
                    message.body, message.caption, message.content_kind,
@@ -769,6 +843,7 @@ class PostgresArchive:
             cursor.execute(sql, tuple(params))
             raw_rows = cursor.fetchall()
             columns = (
+                "_chat_id",
                 "source_ref",
                 "chat_label",
                 "message_ref",
@@ -786,6 +861,11 @@ class PostgresArchive:
                 "edited_at",
             )
             rows = self._dict_rows(cursor, raw_rows, columns)
+            rows = self._attach_best_known_usernames(
+                cursor,
+                rows,
+                tenant_owner_id=tenant_owner_id,
+            )
             has_more = len(rows) > bounded_limit
             safe_rows: list[dict[str, Any]] = []
             for row in rows[:bounded_limit]:
@@ -842,6 +922,7 @@ class PostgresArchive:
         sql = f"""
             WITH distinct_sources AS (
                 SELECT source_ref,
+                       chat_id AS _chat_id,
                        (ARRAY_AGG(chat_label ORDER BY sent_at DESC, message_id DESC))[1]
                            AS chat_label,
                        MAX(sent_at) AS last_message_at,
@@ -850,9 +931,9 @@ class PostgresArchive:
                 WHERE tenant_id=%s AND tenant_owner_id=%s AND source_id=%s AND test_run_id=%s
                   AND is_deleted=FALSE
                   AND sent_at >= CURRENT_TIMESTAMP - make_interval(days => %s)
-                GROUP BY source_ref
+                GROUP BY source_ref, chat_id
             )
-            SELECT source_ref, chat_label, last_message_at, message_count
+            SELECT _chat_id, source_ref, chat_label, last_message_at, message_count
             FROM distinct_sources
             {filter_clause}
             ORDER BY {exact_order} last_message_at DESC, source_ref
@@ -863,10 +944,15 @@ class PostgresArchive:
         try:
             cursor = conn.cursor()
             cursor.execute(sql, tuple(params))
-            return self._dict_rows(
+            rows = self._dict_rows(
                 cursor,
                 cursor.fetchall(),
-                ("source_ref", "chat_label", "last_message_at", "message_count"),
+                ("_chat_id", "source_ref", "chat_label", "last_message_at", "message_count"),
+            )
+            return self._attach_best_known_usernames(
+                cursor,
+                rows,
+                tenant_owner_id=tenant_owner_id,
             )
         except Exception as exc:
             raise ArchiveUnavailable("postgres_source_query_failed") from exc
@@ -989,6 +1075,7 @@ class PostgresArchive:
         """
         rows_sql = f"""
             SELECT message.source_ref,
+                   message.chat_id AS _chat_id,
                    (ARRAY_AGG(
                        message.chat_label
                        ORDER BY message.sent_at DESC, message.message_id DESC
@@ -1001,7 +1088,7 @@ class PostgresArchive:
                    MAX(message.sent_at) AS last_message_at
             FROM passive_secretary.messages AS message
             WHERE {where_sql}
-            GROUP BY message.source_ref
+            GROUP BY message.source_ref, message.chat_id
             ORDER BY last_message_at DESC, message.source_ref
             LIMIT %s OFFSET %s
         """
@@ -1037,6 +1124,7 @@ class PostgresArchive:
                 cursor.fetchall(),
                 (
                     "source_ref",
+                    "_chat_id",
                     "chat_label",
                     "message_count",
                     "incoming_count",
@@ -1045,6 +1133,11 @@ class PostgresArchive:
                     "first_message_at",
                     "last_message_at",
                 ),
+            )
+            rows = self._attach_best_known_usernames(
+                cursor,
+                rows,
+                tenant_owner_id=tenant_owner_id,
             )
             return {
                 "rows": rows,

@@ -37,6 +37,19 @@ from .settings import Settings
 logger = logging.getLogger(__name__)
 
 
+IdentityResolver = Callable[..., Any]
+
+
+def _default_identity_resolver(**kwargs: Any) -> Any:
+    try:
+        from plugins.platforms.telegram.adapter import (
+            resolve_telegram_identities_for_current_session,
+        )
+    except Exception:
+        return []
+    return resolve_telegram_identities_for_current_session(**kwargs)
+
+
 RETENTION_INTERVAL_SECONDS = 86_400.0
 RETENTION_MAX_ATTEMPTS = 3
 RETENTION_RETRY_BASE_SECONDS = 5.0
@@ -120,6 +133,7 @@ class PassiveSecretaryController:
         monotonic_fn: Callable[[], float] | None = None,
         sleep_fn: Callable[[float], None] | None = None,
         reply_service: TelegramBusinessReplyService | None = None,
+        identity_resolver: IdentityResolver | None = None,
     ):
         self.settings = settings
         self.archive = archive or PostgresArchive(settings)
@@ -142,6 +156,7 @@ class PassiveSecretaryController:
             self.archive,
             reference_key,
         )
+        self._identity_resolver = identity_resolver or _default_identity_resolver
         self._retention_lock = threading.Lock()
         self._retention_running = False
         self._last_retention_success_at: float | None = None
@@ -745,6 +760,95 @@ class PassiveSecretaryController:
                 ensure_ascii=False,
             )
 
+    def _enrich_source_usernames_live(
+        self,
+        rows: list[dict[str, Any]],
+        *,
+        owner_id: str,
+    ) -> list[dict[str, Any]]:
+        """Fill missing usernames from the request-local live Telegram capability.
+
+        Exact archived source_ref -> chat_id mapping is resolved inside the archive.
+        Numeric ids never leave this function.
+        """
+        missing_refs: list[str] = []
+        for row in rows:
+            if normalize_source_username(row.get("source_username")):
+                continue
+            try:
+                source_ref = parse_source_ref(row.get("source_ref"))
+            except RetrievalInputError:
+                continue
+            if source_ref and source_ref not in missing_refs:
+                missing_refs.append(source_ref)
+        if not missing_refs:
+            return rows
+        if len(missing_refs) > 20:
+            missing_refs = missing_refs[:20]
+
+        try:
+            source_to_chat = self.archive.resolve_source_chat_ids(
+                tenant_owner_id=owner_id,
+                source_refs=missing_refs,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Passive live identity source resolution failed: category=%s",
+                type(exc).__name__,
+            )
+            return rows
+
+        chat_ids = list(dict.fromkeys(
+            int(source_to_chat[ref])
+            for ref in missing_refs
+            if ref in source_to_chat
+        ))
+        if not chat_ids:
+            return rows
+        try:
+            raw_results = self._identity_resolver(
+                owner_id=str(owner_id),
+                chat_ids=chat_ids,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Passive live identity lookup failed: category=%s",
+                type(exc).__name__,
+            )
+            return rows
+        if not isinstance(raw_results, (list, tuple)):
+            return rows
+
+        usernames: dict[int, str] = {}
+        requested = set(chat_ids)
+        for item in raw_results:
+            if not isinstance(item, dict):
+                continue
+            if str(item.get("status") or "") != "resolved":
+                continue
+            raw_id = item.get("telegram_id")
+            try:
+                telegram_id = int(raw_id)
+            except (TypeError, ValueError, OverflowError):
+                continue
+            if telegram_id not in requested:
+                continue
+            username = normalize_source_username(item.get("username"))
+            if username:
+                usernames[telegram_id] = username
+
+        for row in rows:
+            if normalize_source_username(row.get("source_username")):
+                continue
+            ref = row.get("source_ref")
+            chat_id = source_to_chat.get(ref) if isinstance(ref, str) else None
+            if chat_id is None:
+                continue
+            username = usernames.get(int(chat_id))
+            if username:
+                row["source_username"] = username
+        return rows
+
     def handle_recall(self, args: dict[str, Any], **kwargs: Any) -> str:
         owner_id = self._read_owner_for(kwargs.get("session_id"))
         if owner_id is None:
@@ -812,6 +916,10 @@ class PassiveSecretaryController:
             else:
                 status = "not_found" if label_query else "empty"
                 selected = []
+            selected = self._enrich_source_usernames_live(
+                selected,
+                owner_id=owner_id,
+            )
             return render_sources_result(
                 selected,
                 timezone_name=self.settings.timezone,

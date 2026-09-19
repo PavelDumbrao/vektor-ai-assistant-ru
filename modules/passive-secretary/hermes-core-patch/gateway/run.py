@@ -534,6 +534,60 @@ def _redact_approval_command(cmd: "str | None") -> str:
     return redact_sensitive_text(str(cmd or ""), force=True)
 
 
+def _bind_telegram_passive_identity_for_turn(
+    runner: Any,
+    ctx: Any,
+) -> Optional[Callable[[], None]]:
+    """Bind read-only exact-id Telegram identity lookup for one owner DM turn."""
+    source = getattr(ctx, "source", None)
+    if (
+        source is None
+        or getattr(source, "platform", None) != Platform.TELEGRAM
+        or getattr(source, "chat_type", None) != "dm"
+        or not getattr(ctx, "session_key", None)
+    ):
+        return None
+    try:
+        owner_id = int(getattr(source, "user_id", "") or 0)
+        owner_chat_id = int(getattr(source, "chat_id", "") or 0)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if owner_id <= 0 or owner_chat_id != owner_id:
+        return None
+    loop = getattr(runner, "_gateway_loop", None)
+    if loop is None:
+        return None
+    try:
+        from plugins.platforms.telegram.adapter import (
+            TelegramAdapter,
+            bind_passive_identity_capability,
+            unbind_passive_identity_capability,
+        )
+        adapter = runner._adapter_for_source(source)
+        if type(adapter) is not TelegramAdapter:
+            return None
+        token = bind_passive_identity_capability(
+            str(ctx.session_key),
+            owner_id=owner_id,
+            owner_chat_id=owner_chat_id,
+            adapter=adapter,
+            loop=loop,
+        )
+    except Exception:
+        logger.warning(
+            "Telegram passive identity capability could not be bound",
+            exc_info=True,
+        )
+        return None
+    if token is None:
+        return None
+
+    def _unbind() -> None:
+        unbind_passive_identity_capability(str(ctx.session_key), token)
+
+    return _unbind
+
+
 def _bind_telegram_business_reply_for_turn(
     runner: Any,
     ctx: Any,
@@ -5400,6 +5454,10 @@ class TurnRunner:
         _approval_session_key = ctx.session_key or ""
         _approval_session_token = set_current_session_key(_approval_session_key)
         register_gateway_notify(_approval_session_key, _approval_notify_sync)
+        _passive_identity_unbind = _bind_telegram_passive_identity_for_turn(
+            self._runner,
+            ctx,
+        )
         _business_reply_unbind = _bind_telegram_business_reply_for_turn(
             self._runner,
             ctx,
@@ -5465,6 +5523,14 @@ class TurnRunner:
                 except Exception:
                     logger.warning(
                         "Telegram Business reply capability cleanup failed",
+                        exc_info=True,
+                    )
+            if _passive_identity_unbind is not None:
+                try:
+                    _passive_identity_unbind()
+                except Exception:
+                    logger.warning(
+                        "Telegram passive identity capability cleanup failed",
                         exc_info=True,
                     )
             unregister_gateway_notify(_approval_session_key)

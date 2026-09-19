@@ -560,11 +560,12 @@ def _bind_telegram_passive_identity_for_turn(
     try:
         from plugins.platforms.telegram.adapter import (
             TelegramAdapter,
+            _is_trusted_telegram_adapter_instance,
             bind_passive_identity_capability,
             unbind_passive_identity_capability,
         )
         adapter = runner._adapter_for_source(source)
-        if type(adapter) is not TelegramAdapter:
+        if not _is_trusted_telegram_adapter_instance(adapter):
             return None
         bindings: list[tuple[str, object]] = []
         for binding_key in dict.fromkeys(

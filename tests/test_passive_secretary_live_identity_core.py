@@ -205,6 +205,64 @@ class PassiveIdentityCoreTests(unittest.TestCase):
                 reset_current_session_key(context_token)
                 unbind_passive_identity_capability("agent-session-id", token)
 
+    def test_bind_accepts_same_file_adapter_loaded_under_plugin_alias(self):
+        import importlib.util
+
+        adapter_path = CORE / "plugins" / "platforms" / "telegram" / "adapter.py"
+        alias_name = "hermes_plugins.telegram_platform.adapter_test_alias"
+        alias_spec = importlib.util.spec_from_file_location(alias_name, adapter_path)
+        self.assertIsNotNone(alias_spec)
+        self.assertIsNotNone(alias_spec.loader)
+        alias_module = importlib.util.module_from_spec(alias_spec)
+        sys.modules[alias_name] = alias_module
+        try:
+            alias_spec.loader.exec_module(alias_module)
+            alias_adapter = object.__new__(alias_module.TelegramAdapter)
+            alias_adapter.config = SimpleNamespace(
+                extra={
+                    "business_updates_mode": "passive",
+                    "business_owner_ids": [1],
+                }
+            )
+            alias_adapter._bot = FakeBot({})
+            with LoopThread() as loop:
+                binding_handle = bind_passive_identity_capability(
+                    "owner-alias-session",
+                    owner_id=1,
+                    owner_chat_id=1,
+                    adapter=alias_adapter,
+                    loop=loop,
+                )
+                self.assertIsNotNone(binding_handle)
+                if binding_handle is not None:
+                    unbind_passive_identity_capability(
+                        "owner-alias-session",
+                        binding_handle,
+                    )
+        finally:
+            sys.modules.pop(alias_name, None)
+
+    def test_bind_rejects_untrusted_telegramadapter_named_class(self):
+        FakeTelegramAdapter = type(
+            "TelegramAdapter",
+            (),
+            {
+                "__module__": "evil.telegram.adapter",
+                "_business_updates_mode": lambda self: "passive",
+                "_business_owner_ids": lambda self: {1},
+            },
+        )
+        fake = FakeTelegramAdapter()
+        with LoopThread() as loop:
+            binding_handle = bind_passive_identity_capability(
+                "owner-evil-session",
+                owner_id=1,
+                owner_chat_id=1,
+                adapter=fake,
+                loop=loop,
+            )
+        self.assertIsNone(binding_handle)
+
     def test_unbound_session_cannot_resolve(self):
         context_token = set_current_session_key("not-bound")
         try:

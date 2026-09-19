@@ -78,7 +78,7 @@ PATCHED_SHA256 = {
         "b9449f2360403ab961e8a39eda89b8a3744c63cd253d68d2fdfecbc890d437a6"
     ),
     "gateway/run.py": (
-        "56e29e5b8f574a6472f17f015ae617550993884ec6df98efeda6b6c937fdbeac"
+        "f82203f3a627794649cfe79778806b29094f1830f0bf033dcaf20661d98b93ef"
     ),
     "gateway/turn_context.py": (
         "58bed0055c3ba28ef0f6dbf3a4747301ca6597f07314a47cf1a35559bd61c427"
@@ -99,7 +99,7 @@ PATCHED_SHA256 = {
         "88acaa013e84cd544b082f582ef17d7ea1667de361e1a34af0b7b0632bbc111d"
     ),
     "plugins/platforms/telegram/adapter.py": (
-        "11b72a5c3dc97b1c5b08d2305636e9266dd84b9179c7a237bfb7b33c93c582c4"
+        "6ef5f6f08da0184718a3c0af1adfd690683878ee2cb6d41f505c2457763a231e"
     ),
     "plugins/platforms/telegram/passive_media.py": (
         "2896b8fe56bba55e50bf9367b846a7e4f9a10a03a6967b3c61f6c686eaaadaae"
@@ -128,6 +128,7 @@ MIGRATION_SHA256 = {
         "10ae956def15b7aa6df98f207075600845c7b8a52b24f4b00e640db41593e793",
         "ea2321834f3ce76dde5f77213baf9a819d2afddecded6548f9b584fd1ef52a53",
         "15e406b999a66663b0b39a093cc5ca6ca0070f099230902abf23851fad722139",
+        "56e29e5b8f574a6472f17f015ae617550993884ec6df98efeda6b6c937fdbeac",
     ),
     "hermes_cli/plugins.py": (
         "ce9d9a8c14ff37c3749cf28c4d0ee85acbeee4e03b698dd985017c6c36cbc680",
@@ -142,6 +143,7 @@ MIGRATION_SHA256 = {
         "81a905c8910ed288725679f0e1b0def5ff80d6a3631c7234dc952021846b4d4d",
         "427f483036fe1e832167a83dc21d8f4487aabd05ff9492da283684cc3e63c5be",
         "0e6e0684eb854a576078f4acf7661dc39c092826423934b3c15829355367a3bf",
+        "11b72a5c3dc97b1c5b08d2305636e9266dd84b9179c7a237bfb7b33c93c582c4",
     ),
     "plugins/platforms/telegram/passive_media.py": (
         "bed0619a9d5f03f909831905d621d4bc517fe20526d5ffc6123fd520222ca546",

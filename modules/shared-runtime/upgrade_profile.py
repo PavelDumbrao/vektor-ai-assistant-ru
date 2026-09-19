@@ -51,8 +51,19 @@ def snapshot(home: Path, backup: Path):
             return None
         return member
 
-    with tarfile.open(archive, 'x:gz', dereference=False) as output:
-        output.add(home, arcname='profile', filter=keep)
+    transient_sidecars = {home / 'state.db-shm', home / 'state.db-wal'}
+    for attempt in range(3):
+        try:
+            if archive.exists():
+                archive.unlink()
+            with tarfile.open(archive, 'x:gz', dereference=False) as output:
+                output.add(home, arcname='profile', filter=keep)
+            break
+        except FileNotFoundError as exc:
+            missing = Path(exc.filename) if exc.filename else None
+            if missing not in transient_sidecars or attempt >= 2:
+                raise
+            archive.unlink(missing_ok=True)
     archive.chmod(0o600)
     with tarfile.open(archive, 'r:gz') as check:
         names = check.getnames()

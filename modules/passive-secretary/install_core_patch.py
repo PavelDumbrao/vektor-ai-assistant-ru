@@ -78,7 +78,7 @@ PATCHED_SHA256 = {
         "b9449f2360403ab961e8a39eda89b8a3744c63cd253d68d2fdfecbc890d437a6"
     ),
     "gateway/run.py": (
-        "f82203f3a627794649cfe79778806b29094f1830f0bf033dcaf20661d98b93ef"
+        "bf81e9b15d44ea9e089cda34e4f666e562ab3f4e0d005bf2dd06fbfd9d5ceb3d"
     ),
     "gateway/turn_context.py": (
         "58bed0055c3ba28ef0f6dbf3a4747301ca6597f07314a47cf1a35559bd61c427"
@@ -129,6 +129,7 @@ MIGRATION_SHA256 = {
         "ea2321834f3ce76dde5f77213baf9a819d2afddecded6548f9b584fd1ef52a53",
         "15e406b999a66663b0b39a093cc5ca6ca0070f099230902abf23851fad722139",
         "56e29e5b8f574a6472f17f015ae617550993884ec6df98efeda6b6c937fdbeac",
+        "f82203f3a627794649cfe79778806b29094f1830f0bf033dcaf20661d98b93ef",
     ),
     "hermes_cli/plugins.py": (
         "ce9d9a8c14ff37c3749cf28c4d0ee85acbeee4e03b698dd985017c6c36cbc680",

@@ -537,6 +537,8 @@ def _redact_approval_command(cmd: "str | None") -> str:
 def _bind_telegram_passive_identity_for_turn(
     runner: Any,
     ctx: Any,
+    *,
+    agent_session_id: Any = "",
 ) -> Optional[Callable[[], None]]:
     """Bind read-only exact-id Telegram identity lookup for one owner DM turn."""
     source = getattr(ctx, "source", None)
@@ -573,6 +575,7 @@ def _bind_telegram_passive_identity_for_turn(
             for key in (
                 str(ctx.session_key or ""),
                 str(getattr(ctx, "session_id", "") or ""),
+                str(agent_session_id or ""),
             )
             if key
         ):
@@ -5470,6 +5473,7 @@ class TurnRunner:
         _passive_identity_unbind = _bind_telegram_passive_identity_for_turn(
             self._runner,
             ctx,
+            agent_session_id=getattr(agent, "session_id", "") or "",
         )
         _business_reply_unbind = _bind_telegram_business_reply_for_turn(
             self._runner,

@@ -11680,6 +11680,25 @@ class TelegramAdapter(BasePlatformAdapter):
 
 
 # ──────────────────────────────────────────────────────────────────────────
+def _is_trusted_telegram_identity_result_instance(value: Any) -> bool:
+    """Accept only TelegramIdentityResult classes defined by this source file."""
+    if type(value) is TelegramIdentityResult:
+        return True
+    cls = type(value)
+    if getattr(cls, "__name__", "") != "TelegramIdentityResult":
+        return False
+    try:
+        source = inspect.getsourcefile(cls) or inspect.getfile(cls)
+    except (TypeError, OSError):
+        return False
+    if not source:
+        return False
+    try:
+        return os.path.realpath(source) == os.path.realpath(__file__)
+    except Exception:
+        return False
+
+
 def _is_trusted_telegram_adapter_instance(adapter: Any) -> bool:
     """Accept only TelegramAdapter classes defined by this exact source file.
 
@@ -11837,7 +11856,7 @@ def resolve_telegram_identities_for_current_session(
     safe: List[Dict[str, Any]] = []
     requested = set(normalized_ids)
     for result in results:
-        if not isinstance(result, TelegramIdentityResult):
+        if not _is_trusted_telegram_identity_result_instance(result):
             continue
         if result.telegram_id not in requested:
             continue

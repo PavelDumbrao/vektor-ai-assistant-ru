@@ -99,7 +99,7 @@ PATCHED_SHA256 = {
         "88acaa013e84cd544b082f582ef17d7ea1667de361e1a34af0b7b0632bbc111d"
     ),
     "plugins/platforms/telegram/adapter.py": (
-        "6ef5f6f08da0184718a3c0af1adfd690683878ee2cb6d41f505c2457763a231e"
+        "37abe6e96d9639c21ad899fd76fa237ff06f9d83c2f9a83a631902abbdf86250"
     ),
     "plugins/platforms/telegram/passive_media.py": (
         "2896b8fe56bba55e50bf9367b846a7e4f9a10a03a6967b3c61f6c686eaaadaae"
@@ -145,6 +145,7 @@ MIGRATION_SHA256 = {
         "427f483036fe1e832167a83dc21d8f4487aabd05ff9492da283684cc3e63c5be",
         "0e6e0684eb854a576078f4acf7661dc39c092826423934b3c15829355367a3bf",
         "11b72a5c3dc97b1c5b08d2305636e9266dd84b9179c7a237bfb7b33c93c582c4",
+        "6ef5f6f08da0184718a3c0af1adfd690683878ee2cb6d41f505c2457763a231e",
     ),
     "plugins/platforms/telegram/passive_media.py": (
         "bed0619a9d5f03f909831905d621d4bc517fe20526d5ffc6123fd520222ca546",

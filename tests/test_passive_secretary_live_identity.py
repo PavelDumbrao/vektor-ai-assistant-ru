@@ -88,6 +88,7 @@ class PassiveSecretaryLiveIdentityTests(unittest.TestCase):
         self.assertEqual(payload["sources"][0]["source_username"], "@romanmurash")
         self.assertEqual(calls[0]["owner_id"], "1")
         self.assertEqual(calls[0]["chat_ids"], [694403684])
+        self.assertEqual(calls[0]["session_id"], "owner-session")
 
     def test_archive_username_wins_without_live_call(self):
         archive = FakeArchive(username="@cached_name")

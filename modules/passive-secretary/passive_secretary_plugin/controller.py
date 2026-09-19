@@ -765,6 +765,7 @@ class PassiveSecretaryController:
         rows: list[dict[str, Any]],
         *,
         owner_id: str,
+        session_id: str = "",
     ) -> list[dict[str, Any]]:
         """Fill missing usernames from the request-local live Telegram capability.
 
@@ -809,6 +810,7 @@ class PassiveSecretaryController:
             raw_results = self._identity_resolver(
                 owner_id=str(owner_id),
                 chat_ids=chat_ids,
+                session_id=str(session_id or ""),
             )
         except Exception as exc:
             logger.warning(
@@ -919,6 +921,7 @@ class PassiveSecretaryController:
             selected = self._enrich_source_usernames_live(
                 selected,
                 owner_id=owner_id,
+                session_id=str(kwargs.get("session_id") or ""),
             )
             return render_sources_result(
                 selected,

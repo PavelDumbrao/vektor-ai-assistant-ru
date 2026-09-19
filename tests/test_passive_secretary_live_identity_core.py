@@ -205,6 +205,52 @@ class PassiveIdentityCoreTests(unittest.TestCase):
                 reset_current_session_key(context_token)
                 unbind_passive_identity_capability("agent-session-id", token)
 
+    def test_capability_binding_accepts_equivalent_adapter_from_other_namespace(self):
+        class OtherNamespaceTelegramAdapter:
+            def __init__(self):
+                self.calls = []
+
+            def _business_updates_mode(self):
+                return "passive"
+
+            def _business_owner_ids(self):
+                return {1}
+
+            async def resolve_private_chat_identities(self, *, owner_id, chat_ids):
+                self.calls.append((owner_id, list(chat_ids)))
+                return [
+                    adapter_module.TelegramIdentityResult(
+                        status="resolved",
+                        telegram_id=chat_ids[0],
+                        username="roman",
+                        display_name="Roman M",
+                    )
+                ]
+
+        adapter = OtherNamespaceTelegramAdapter()
+        self.assertIsNot(type(adapter), TelegramAdapter)
+        with LoopThread() as loop:
+            token = bind_passive_identity_capability(
+                "agent-session-id",
+                owner_id=1,
+                owner_chat_id=1,
+                adapter=adapter,
+                loop=loop,
+            )
+            self.assertIsNotNone(token)
+            context_token = set_current_session_key("gateway-session-key")
+            try:
+                result = resolve_telegram_identities_for_current_session(
+                    owner_id="1",
+                    chat_ids=[10],
+                    session_id="agent-session-id",
+                )
+                self.assertEqual(result[0]["username"], "roman")
+                self.assertEqual(adapter.calls, [(1, [10])])
+            finally:
+                reset_current_session_key(context_token)
+                unbind_passive_identity_capability("agent-session-id", token)
+
     def test_unbound_session_cannot_resolve(self):
         context_token = set_current_session_key("not-bound")
         try:

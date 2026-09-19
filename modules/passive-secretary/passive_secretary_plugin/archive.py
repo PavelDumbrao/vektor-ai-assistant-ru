@@ -1160,6 +1160,67 @@ class PostgresArchive:
         finally:
             self._close(conn, cursor)
 
+    def resolve_source_chat_ids(
+        self,
+        *,
+        tenant_owner_id: str,
+        source_refs: list[str],
+    ) -> dict[str, int]:
+        """Resolve opaque source refs to internal Telegram chat ids.
+
+        This method is storage-internal. Callers must never expose the returned
+        numeric ids to the model or user.
+        """
+        unique_refs = list(dict.fromkeys(
+            str(ref) for ref in source_refs if isinstance(ref, str) and ref
+        ))
+        if not unique_refs:
+            return {}
+        if len(unique_refs) > 20:
+            raise ValueError("too many source refs for live identity resolution")
+        self.ensure_schema()
+        params = (
+            self.settings.tenant_id,
+            int(tenant_owner_id),
+            self.settings.source_id,
+            self.settings.test_run_id,
+            unique_refs,
+            self.settings.retention_days,
+        )
+        sql = """
+            SELECT DISTINCT ON (source_ref)
+                   source_ref, chat_id
+            FROM passive_secretary.messages
+            WHERE tenant_id=%s
+              AND tenant_owner_id=%s
+              AND source_id=%s
+              AND test_run_id=%s
+              AND source_ref = ANY(%s)
+              AND is_deleted=FALSE
+              AND sent_at >= CURRENT_TIMESTAMP - make_interval(days => %s)
+            ORDER BY source_ref, sent_at DESC, message_id DESC
+        """
+        conn = self._connect()
+        cursor = None
+        try:
+            cursor = conn.cursor()
+            cursor.execute(sql, params)
+            rows = cursor.fetchall()
+            result: dict[str, int] = {}
+            for row in rows:
+                if isinstance(row, dict):
+                    ref = row.get("source_ref")
+                    chat_id = row.get("chat_id")
+                else:
+                    ref, chat_id = row
+                if isinstance(ref, str) and chat_id is not None:
+                    result[ref] = int(chat_id)
+            return result
+        except Exception as exc:
+            raise ArchiveUnavailable("postgres_source_identity_query_failed") from exc
+        finally:
+            self._close(conn, cursor)
+
     def _outbound_scope(self, tenant_owner_id: str) -> tuple[Any, ...]:
         owner_id = str(tenant_owner_id or "")
         if owner_id not in self.settings.owner_ids:

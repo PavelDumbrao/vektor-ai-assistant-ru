@@ -393,6 +393,34 @@ class BusinessReplyResult:
 
 
 @dataclasses.dataclass(frozen=True)
+class TelegramIdentityResult:
+    """Capability-free current Telegram identity for one exact private chat."""
+
+    status: str
+    telegram_id: Optional[int] = None
+    username: Optional[str] = None
+    display_name: Optional[str] = None
+    error_code: Optional[str] = None
+
+    def as_dict(self) -> Dict[str, Any]:
+        return {
+            "status": self.status,
+            "telegram_id": self.telegram_id,
+            "username": self.username,
+            "display_name": self.display_name,
+            "error_code": self.error_code,
+        }
+
+
+@dataclasses.dataclass(frozen=True)
+class _PassiveIdentityBinding:
+    token: object
+    owner_id: int
+    adapter: Any
+    loop: asyncio.AbstractEventLoop
+
+
+@dataclasses.dataclass(frozen=True)
 class _BusinessReplyBinding:
     token: object
     owner_id: int
@@ -403,6 +431,10 @@ class _BusinessReplyBinding:
 _BUSINESS_REPLY_BINDINGS: Dict[str, _BusinessReplyBinding] = {}
 _BUSINESS_REPLY_BINDINGS_LOCK = threading.RLock()
 _BUSINESS_REPLY_BRIDGE_TIMEOUT_SECONDS = 30.0
+_PASSIVE_IDENTITY_BINDINGS: Dict[str, _PassiveIdentityBinding] = {}
+_PASSIVE_IDENTITY_BINDINGS_LOCK = threading.RLock()
+_PASSIVE_IDENTITY_BRIDGE_TIMEOUT_SECONDS = 10.0
+_PASSIVE_IDENTITY_MAX_IDS = 20
 _ONE_TIME_APPROVAL_STATE_CAP = 256
 _ONE_TIME_APPROVAL_STATE_GRACE_SECONDS = 60.0
 
@@ -4087,6 +4119,108 @@ class TelegramAdapter(BasePlatformAdapter):
             getattr(connection, "rights", None)
         )
         return rights_valid
+
+    async def resolve_private_chat_identities(
+        self,
+        *,
+        owner_id: int,
+        chat_ids: List[int],
+    ) -> List[TelegramIdentityResult]:
+        """Resolve exact private Telegram chat ids through the live Bot API.
+
+        Read-only capability used by Passive Secretary. It never searches by
+        name, never sends/edits/deletes messages, and returns no Bot object or
+        transport error text.
+        """
+        try:
+            if (
+                self._business_updates_mode() != "passive"
+                or owner_id not in self._business_owner_ids()
+            ):
+                return []
+        except Exception:
+            return []
+        if not isinstance(chat_ids, list):
+            return []
+        unique: List[int] = []
+        for value in chat_ids:
+            if isinstance(value, bool):
+                return []
+            try:
+                chat_id = int(value)
+            except (TypeError, ValueError, OverflowError):
+                return []
+            if chat_id <= 0:
+                return []
+            if chat_id not in unique:
+                unique.append(chat_id)
+        if not unique or len(unique) > _PASSIVE_IDENTITY_MAX_IDS:
+            return []
+        bot = self._bot
+        getter = getattr(bot, "get_chat", None) if bot is not None else None
+        if not callable(getter):
+            return [
+                TelegramIdentityResult(
+                    status="failed_known",
+                    telegram_id=chat_id,
+                    error_code="bot_unavailable",
+                )
+                for chat_id in unique
+            ]
+
+        semaphore = asyncio.Semaphore(5)
+
+        async def _one(chat_id: int) -> TelegramIdentityResult:
+            async with semaphore:
+                try:
+                    chat = await getter(chat_id)
+                except Exception:
+                    return TelegramIdentityResult(
+                        status="failed_known",
+                        telegram_id=chat_id,
+                        error_code="telegram_lookup_failed",
+                    )
+            raw_id = getattr(chat, "id", None)
+            try:
+                resolved_id = int(raw_id)
+            except (TypeError, ValueError, OverflowError):
+                return TelegramIdentityResult(
+                    status="failed_known",
+                    telegram_id=chat_id,
+                    error_code="invalid_telegram_identity",
+                )
+            if resolved_id != chat_id:
+                return TelegramIdentityResult(
+                    status="failed_known",
+                    telegram_id=chat_id,
+                    error_code="identity_mismatch",
+                )
+            chat_type = getattr(chat, "type", None)
+            if ChatType is not None and chat_type != ChatType.PRIVATE:
+                return TelegramIdentityResult(
+                    status="failed_known",
+                    telegram_id=chat_id,
+                    error_code="not_private_chat",
+                )
+
+            username = getattr(chat, "username", None)
+            if username is not None:
+                username = str(username).strip().lstrip("@")
+                if not re.fullmatch(r"[A-Za-z0-9_]{1,64}", username):
+                    username = None
+            first_name = str(getattr(chat, "first_name", "") or "").strip()
+            last_name = str(getattr(chat, "last_name", "") or "").strip()
+            display_name = " ".join(
+                part for part in (first_name, last_name) if part
+            ).strip()[:256] or None
+            return TelegramIdentityResult(
+                status="resolved",
+                telegram_id=chat_id,
+                username=username,
+                display_name=display_name,
+            )
+
+        return list(await asyncio.gather(*(_one(chat_id) for chat_id in unique)))
 
     async def send_business_reply(
         self,
@@ -11546,6 +11680,134 @@ class TelegramAdapter(BasePlatformAdapter):
 
 
 # ──────────────────────────────────────────────────────────────────────────
+def bind_passive_identity_capability(
+    session_key: str,
+    *,
+    owner_id: int,
+    owner_chat_id: int,
+    adapter: TelegramAdapter,
+    loop: asyncio.AbstractEventLoop,
+) -> Optional[object]:
+    """Bind a read-only live Telegram identity capability to one owner DM run."""
+    if (
+        not isinstance(session_key, str)
+        or not session_key
+        or isinstance(owner_id, bool)
+        or not isinstance(owner_id, int)
+        or owner_id <= 0
+        or isinstance(owner_chat_id, bool)
+        or not isinstance(owner_chat_id, int)
+        or owner_chat_id != owner_id
+        or type(adapter) is not TelegramAdapter
+        or not isinstance(loop, asyncio.AbstractEventLoop)
+        or loop.is_closed()
+    ):
+        return None
+    try:
+        if (
+            adapter._business_updates_mode() != "passive"
+            or owner_id not in adapter._business_owner_ids()
+        ):
+            return None
+    except Exception:
+        return None
+    token = object()
+    binding = _PassiveIdentityBinding(
+        token=token,
+        owner_id=owner_id,
+        adapter=adapter,
+        loop=loop,
+    )
+    with _PASSIVE_IDENTITY_BINDINGS_LOCK:
+        _PASSIVE_IDENTITY_BINDINGS[session_key] = binding
+    return token
+
+
+def unbind_passive_identity_capability(session_key: str, token: object) -> None:
+    """Remove only the exact read-only identity binding created for this run."""
+    with _PASSIVE_IDENTITY_BINDINGS_LOCK:
+        binding = _PASSIVE_IDENTITY_BINDINGS.get(session_key)
+        if binding is not None and binding.token is token:
+            _PASSIVE_IDENTITY_BINDINGS.pop(session_key, None)
+
+
+def resolve_telegram_identities_for_current_session(
+    *,
+    owner_id: str,
+    chat_ids: List[int],
+) -> List[Dict[str, Any]]:
+    """Bridge exact-id read-only lookups onto the bound Telegram gateway loop."""
+    try:
+        from tools.approval import get_current_session_key
+    except Exception:
+        return []
+    session_key = get_current_session_key(default="")
+    try:
+        if isinstance(owner_id, bool):
+            raise ValueError
+        parsed_owner_id = int(owner_id)
+    except (TypeError, ValueError, OverflowError):
+        return []
+    if (
+        not session_key
+        or parsed_owner_id <= 0
+        or not isinstance(chat_ids, list)
+        or not chat_ids
+        or len(chat_ids) > _PASSIVE_IDENTITY_MAX_IDS
+    ):
+        return []
+    normalized_ids: List[int] = []
+    for value in chat_ids:
+        if isinstance(value, bool):
+            return []
+        try:
+            chat_id = int(value)
+        except (TypeError, ValueError, OverflowError):
+            return []
+        if chat_id <= 0:
+            return []
+        if chat_id not in normalized_ids:
+            normalized_ids.append(chat_id)
+    if not normalized_ids or len(normalized_ids) > _PASSIVE_IDENTITY_MAX_IDS:
+        return []
+
+    with _PASSIVE_IDENTITY_BINDINGS_LOCK:
+        binding = _PASSIVE_IDENTITY_BINDINGS.get(session_key)
+    if binding is None or binding.owner_id != parsed_owner_id:
+        return []
+    if binding.loop.is_closed() or not binding.loop.is_running():
+        return []
+    try:
+        if asyncio.get_running_loop() is binding.loop:
+            return []
+    except RuntimeError:
+        pass
+    try:
+        future = asyncio.run_coroutine_threadsafe(
+            binding.adapter.resolve_private_chat_identities(
+                owner_id=parsed_owner_id,
+                chat_ids=normalized_ids,
+            ),
+            binding.loop,
+        )
+        results = future.result(timeout=_PASSIVE_IDENTITY_BRIDGE_TIMEOUT_SECONDS)
+    except Exception:
+        return []
+    if not isinstance(results, list):
+        return []
+    safe: List[Dict[str, Any]] = []
+    requested = set(normalized_ids)
+    for result in results:
+        if not isinstance(result, TelegramIdentityResult):
+            continue
+        if result.telegram_id not in requested:
+            continue
+        if result.status not in {"resolved", "failed_known"}:
+            continue
+        safe.append(result.as_dict())
+    return safe
+
+
 def bind_business_reply_capability(
     session_key: str,
     *,

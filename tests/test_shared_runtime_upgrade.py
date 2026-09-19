@@ -87,6 +87,50 @@ class UpgradeTests(unittest.TestCase):
             self.assertNotIn('profile/hermes-agent', archive.getnames())
         self.assertEqual((f.code / 'module.py').read_text(), 'VALUE = 1\n')
 
+
+    def test_snapshot_retries_when_state_db_shm_disappears(self):
+        f = self.fixture
+        sidecar = f.home / 'state.db-shm'
+        sidecar.write_text('transient sqlite sidecar')
+        backup = f.root / 'backups' / 'snapshot-sidecar-race'
+        backup.mkdir()
+        real_add = tarfile.TarFile.add
+        fired = {'value': False}
+
+        def flaky_add(output, name, *args, **kwargs):
+            if Path(name) == f.home and not fired['value']:
+                fired['value'] = True
+                sidecar.unlink()
+                raise FileNotFoundError(2, 'No such file or directory', str(sidecar))
+            return real_add(output, name, *args, **kwargs)
+
+        with patch.object(tarfile.TarFile, 'add', new=flaky_add):
+            result = upgrade.snapshot(f.home, backup)
+
+        self.assertTrue(fired['value'])
+        self.assertGreater(result['archive_bytes'], 0)
+        with tarfile.open(backup / 'profile-state.tar.gz') as archive:
+            self.assertIn('profile/state.db', archive.getnames())
+            self.assertNotIn('profile/state.db-shm', archive.getnames())
+
+    def test_snapshot_does_not_hide_non_sidecar_disappearance(self):
+        f = self.fixture
+        victim = f.home / 'SOUL.md'
+        backup = f.root / 'backups' / 'snapshot-real-file-race'
+        backup.mkdir()
+        real_add = tarfile.TarFile.add
+        fired = {'value': False}
+
+        def flaky_add(output, name, *args, **kwargs):
+            if Path(name) == f.home and not fired['value']:
+                fired['value'] = True
+                raise FileNotFoundError(2, 'No such file or directory', str(victim))
+            return real_add(output, name, *args, **kwargs)
+
+        with patch.object(tarfile.TarFile, 'add', new=flaky_add):
+            with self.assertRaises(FileNotFoundError):
+                upgrade.snapshot(f.home, backup)
+
     def test_readiness_failure_restores_only_code_binding(self):
         f = self.fixture
         with patch.object(upgrade.common, 'wait_ready', side_effect=[RuntimeError('not ready'), dict(self.state)]):

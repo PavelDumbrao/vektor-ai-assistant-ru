@@ -48,6 +48,17 @@ class InstallerBundleTests(unittest.TestCase):
                 mismatches.append((relative, actual, expected))
         self.assertEqual(mismatches, [])
 
+    def test_live_identity_gateway_binds_actual_agent_session_id(self) -> None:
+        gateway = (
+            MODULE_DIR / "hermes-core-patch" / "gateway" / "run.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn('agent_session_id: Any = ""', gateway)
+        self.assertIn('str(agent_session_id or "")', gateway)
+        self.assertIn(
+            'agent_session_id=getattr(agent, "session_id", "") or ""',
+            gateway,
+        )
+
     def test_required_release_manifest_is_complete(self) -> None:
         expected = [MODULE_DIR / "requirements.txt"]
         expected.append(MODULE_DIR / installer.RUNTIME_LAYOUT_FILE)

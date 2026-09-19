@@ -11698,7 +11698,9 @@ def bind_passive_identity_capability(
         or isinstance(owner_chat_id, bool)
         or not isinstance(owner_chat_id, int)
         or owner_chat_id != owner_id
-        or type(adapter) is not TelegramAdapter
+        or not callable(getattr(adapter, "resolve_private_chat_identities", None))
+        or not callable(getattr(adapter, "_business_updates_mode", None))
+        or not callable(getattr(adapter, "_business_owner_ids", None))
         or not isinstance(loop, asyncio.AbstractEventLoop)
         or loop.is_closed()
     ):

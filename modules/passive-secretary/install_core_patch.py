@@ -78,7 +78,7 @@ PATCHED_SHA256 = {
         "b9449f2360403ab961e8a39eda89b8a3744c63cd253d68d2fdfecbc890d437a6"
     ),
     "gateway/run.py": (
-        "56e29e5b8f574a6472f17f015ae617550993884ec6df98efeda6b6c937fdbeac"
+        "761cd38bcb6a2dbf5ef99e207793a789beed579815fb8bf25a241cff53c01f91"
     ),
     "gateway/turn_context.py": (
         "58bed0055c3ba28ef0f6dbf3a4747301ca6597f07314a47cf1a35559bd61c427"
@@ -99,7 +99,7 @@ PATCHED_SHA256 = {
         "88acaa013e84cd544b082f582ef17d7ea1667de361e1a34af0b7b0632bbc111d"
     ),
     "plugins/platforms/telegram/adapter.py": (
-        "11b72a5c3dc97b1c5b08d2305636e9266dd84b9179c7a237bfb7b33c93c582c4"
+        "b578876e83a2661ca3cb6f86c9b5c189b808261940b6bccf8c82241e3960599e"
     ),
     "plugins/platforms/telegram/passive_media.py": (
         "2896b8fe56bba55e50bf9367b846a7e4f9a10a03a6967b3c61f6c686eaaadaae"

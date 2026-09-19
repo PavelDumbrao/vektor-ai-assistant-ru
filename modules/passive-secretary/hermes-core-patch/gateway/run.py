@@ -559,12 +559,11 @@ def _bind_telegram_passive_identity_for_turn(
         return None
     try:
         from plugins.platforms.telegram.adapter import (
-            TelegramAdapter,
             bind_passive_identity_capability,
             unbind_passive_identity_capability,
         )
         adapter = runner._adapter_for_source(source)
-        if type(adapter) is not TelegramAdapter:
+        if not callable(getattr(adapter, "resolve_private_chat_identities", None)):
             return None
         bindings: list[tuple[str, object]] = []
         for binding_key in dict.fromkeys(

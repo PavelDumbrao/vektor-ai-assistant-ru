@@ -11735,13 +11735,19 @@ def resolve_telegram_identities_for_current_session(
     *,
     owner_id: str,
     chat_ids: List[int],
+    session_id: str = "",
 ) -> List[Dict[str, Any]]:
     """Bridge exact-id read-only lookups onto the bound Telegram gateway loop."""
     try:
         from tools.approval import get_current_session_key
     except Exception:
         return []
-    session_key = get_current_session_key(default="")
+    context_session_key = get_current_session_key(default="")
+    explicit_session_id = str(session_id or "").strip()
+    candidate_session_keys: List[str] = []
+    for candidate in (explicit_session_id, context_session_key):
+        if candidate and candidate not in candidate_session_keys:
+            candidate_session_keys.append(candidate)
     try:
         if isinstance(owner_id, bool):
             raise ValueError
@@ -11749,7 +11755,7 @@ def resolve_telegram_identities_for_current_session(
     except (TypeError, ValueError, OverflowError):
         return []
     if (
-        not session_key
+        not candidate_session_keys
         or parsed_owner_id <= 0
         or not isinstance(chat_ids, list)
         or not chat_ids
@@ -11771,9 +11777,17 @@ def resolve_telegram_identities_for_current_session(
     if not normalized_ids or len(normalized_ids) > _PASSIVE_IDENTITY_MAX_IDS:
         return []
 
+    binding = None
     with _PASSIVE_IDENTITY_BINDINGS_LOCK:
-        binding = _PASSIVE_IDENTITY_BINDINGS.get(session_key)
-    if binding is None or binding.owner_id != parsed_owner_id:
+        for candidate_session_key in candidate_session_keys:
+            candidate_binding = _PASSIVE_IDENTITY_BINDINGS.get(candidate_session_key)
+            if (
+                candidate_binding is not None
+                and candidate_binding.owner_id == parsed_owner_id
+            ):
+                binding = candidate_binding
+                break
+    if binding is None:
         return []
     if binding.loop.is_closed() or not binding.loop.is_running():
         return []

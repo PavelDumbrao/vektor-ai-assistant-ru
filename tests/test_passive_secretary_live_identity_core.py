@@ -172,6 +172,39 @@ class PassiveIdentityCoreTests(unittest.TestCase):
                 reset_current_session_key(context_token)
                 unbind_passive_identity_capability("owner-session", token)
 
+    def test_explicit_agent_session_alias_resolves(self):
+        bot = FakeBot({
+            10: SimpleNamespace(
+                id=10,
+                type=ChatType.PRIVATE,
+                username="roman",
+                first_name="Roman",
+                last_name="M",
+            )
+        })
+        adapter = adapter_with_bot(bot)
+        with LoopThread() as loop:
+            token = bind_passive_identity_capability(
+                "agent-session-id",
+                owner_id=1,
+                owner_chat_id=1,
+                adapter=adapter,
+                loop=loop,
+            )
+            self.assertIsNotNone(token)
+            context_token = set_current_session_key("gateway-session-key")
+            try:
+                result = resolve_telegram_identities_for_current_session(
+                    owner_id="1",
+                    chat_ids=[10],
+                    session_id="agent-session-id",
+                )
+                self.assertEqual(result[0]["telegram_id"], 10)
+                self.assertEqual(result[0]["username"], "roman")
+            finally:
+                reset_current_session_key(context_token)
+                unbind_passive_identity_capability("agent-session-id", token)
+
     def test_unbound_session_cannot_resolve(self):
         context_token = set_current_session_key("not-bound")
         try:

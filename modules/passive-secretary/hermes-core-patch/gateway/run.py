@@ -566,24 +566,36 @@ def _bind_telegram_passive_identity_for_turn(
         adapter = runner._adapter_for_source(source)
         if type(adapter) is not TelegramAdapter:
             return None
-        token = bind_passive_identity_capability(
-            str(ctx.session_key),
-            owner_id=owner_id,
-            owner_chat_id=owner_chat_id,
-            adapter=adapter,
-            loop=loop,
-        )
+        bindings: list[tuple[str, object]] = []
+        for binding_key in dict.fromkeys(
+            key
+            for key in (
+                str(ctx.session_key or ""),
+                str(getattr(ctx, "session_id", "") or ""),
+            )
+            if key
+        ):
+            binding_token = bind_passive_identity_capability(
+                binding_key,
+                owner_id=owner_id,
+                owner_chat_id=owner_chat_id,
+                adapter=adapter,
+                loop=loop,
+            )
+            if binding_token is not None:
+                bindings.append((binding_key, binding_token))
     except Exception:
         logger.warning(
             "Telegram passive identity capability could not be bound",
             exc_info=True,
         )
         return None
-    if token is None:
+    if not bindings:
         return None
 
     def _unbind() -> None:
-        unbind_passive_identity_capability(str(ctx.session_key), token)
+        for binding_key, binding_token in bindings:
+            unbind_passive_identity_capability(binding_key, binding_token)
 
     return _unbind
 

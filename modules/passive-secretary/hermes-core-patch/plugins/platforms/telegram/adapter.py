@@ -11680,6 +11680,31 @@ class TelegramAdapter(BasePlatformAdapter):
 
 
 # ──────────────────────────────────────────────────────────────────────────
+def _is_trusted_telegram_adapter_instance(adapter: Any) -> bool:
+    """Accept only TelegramAdapter classes defined by this exact source file.
+
+    Hermes plugin loading can import this same file under a second module name.
+    Python then creates a distinct class object, so strict type identity rejects
+    the real live adapter. Source-file identity preserves the boundary without
+    accepting arbitrary duck-typed objects.
+    """
+    if type(adapter) is TelegramAdapter:
+        return True
+    cls = type(adapter)
+    if getattr(cls, "__name__", "") != "TelegramAdapter":
+        return False
+    try:
+        source = inspect.getsourcefile(cls) or inspect.getfile(cls)
+    except (TypeError, OSError):
+        return False
+    if not source:
+        return False
+    try:
+        return os.path.realpath(source) == os.path.realpath(__file__)
+    except Exception:
+        return False
+
+
 def bind_passive_identity_capability(
     session_key: str,
     *,
@@ -11698,7 +11723,7 @@ def bind_passive_identity_capability(
         or isinstance(owner_chat_id, bool)
         or not isinstance(owner_chat_id, int)
         or owner_chat_id != owner_id
-        or type(adapter) is not TelegramAdapter
+        or not _is_trusted_telegram_adapter_instance(adapter)
         or not isinstance(loop, asyncio.AbstractEventLoop)
         or loop.is_closed()
     ):

@@ -16001,9 +16001,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     f"[The user sent an audio file attachment: '{_display}'. "
                     f"It is saved at: {_agent_path}. "
                     f"Its content is not inlined here. If the user's request involves "
-                    f"what the audio contains, transcribe or process it yourself — for "
-                    f"example by passing the path to a transcription or media tool — "
-                    f"instead of asking the user to describe it. Only ask what to do "
+                    f"what the audio contains, use the transcription tool on this path; "
+                    f"it supports long media and chunks oversized files automatically. "
+                    f"Do not ask the user to split or re-upload it. Only ask what to do "
                     f"with it if their intent is genuinely unclear.]"
                 )
                 message_text = f"{_note}\n\n{message_text}"
@@ -16019,11 +16019,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _note = (
                     f"[The user sent a video attachment: '{_display}'. "
                     f"It is saved at: {_agent_path}. "
-                    f"Its content is not inlined here. If the user's request involves "
-                    f"what the video contains, inspect or process it yourself — for "
-                    f"example by passing the path to a video analysis or media tool — "
-                    f"instead of asking the user to describe it. Only ask what to do "
-                    f"with it if their intent is genuinely unclear.]"
+                    f"Its content is not inlined here. If the request is about speech, dialogue, "
+                    f"a transcript, summary, or spoken content, use the transcription "
+                    f"tool on this video path; it extracts audio and chunks long files "
+                    f"automatically. For visual content, use video analysis. Do not ask "
+                    f"the user to split or re-upload it. Only ask what to do if intent "
+                    f"is genuinely unclear.]"
                 )
                 message_text = f"{_note}\n\n{message_text}"
 

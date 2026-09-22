@@ -132,7 +132,7 @@ XAI_STT_BASE_URL = os.getenv("XAI_STT_BASE_URL", "https://api.x.ai/v1")
 ELEVENLABS_STT_BASE_URL = os.getenv("ELEVENLABS_STT_BASE_URL", "https://api.elevenlabs.io/v1")
 # DeepInfra STT base URL now resolved via hermes_cli.models.deepinfra_base_url (shared).
 
-SUPPORTED_FORMATS = {".mp3", ".mp4", ".mpeg", ".mpga", ".m4a", ".wav", ".webm", ".ogg", ".oga", ".opus", ".aac", ".flac", ".caf"}
+SUPPORTED_FORMATS = {".mp3", ".mp4", ".mpeg", ".mpg", ".mpga", ".m4a", ".wav", ".webm", ".ogg", ".oga", ".opus", ".aac", ".flac", ".caf", ".mov", ".mkv", ".m4v", ".avi"}
 LOCAL_NATIVE_AUDIO_FORMATS = {".wav", ".aiff", ".aif"}
 MAX_FILE_SIZE = 25 * 1024 * 1024  # 25 MB
 
@@ -2715,8 +2715,118 @@ def _transcribe_prepared_audio(file_path: str, model: Optional[str] = None) -> D
     }
 
 
+def _long_media_settings(stt_config: Dict[str, Any]) -> tuple[bool, int, int, int]:
+    cfg = stt_config.get("long_media") or {}
+    if not isinstance(cfg, dict):
+        cfg = {}
+    enabled = is_truthy_value(cfg.get("enabled", True), default=True)
+    chunk_seconds = int(cfg.get("chunk_seconds", 480))
+    duration_threshold = int(cfg.get("duration_threshold_seconds", 1200))
+    max_chunks = int(cfg.get("max_chunks", 180))
+    return enabled, chunk_seconds, duration_threshold, max_chunks
+
+
+def _transcribe_long_media(
+    file_path: str,
+    *,
+    model: Optional[str],
+    provider: str,
+    stt_config: Dict[str, Any],
+) -> Dict[str, Any]:
+    from tools.long_media_transcription import (
+        format_timestamp,
+        prepare_long_media,
+        probe_media,
+        should_prepare_long_media,
+    )
+
+    enabled, chunk_seconds, duration_threshold, max_chunks = _long_media_settings(stt_config)
+    if not enabled:
+        return {"handled": False}
+
+    provider_is_local = _is_local_stt_provider(provider, stt_config)
+    needed, probe = should_prepare_long_media(
+        file_path,
+        provider_is_local=provider_is_local,
+        cloud_max_bytes=MAX_FILE_SIZE,
+        duration_threshold_seconds=duration_threshold,
+    )
+    if not needed:
+        return {"handled": False}
+
+    try:
+        prepared = prepare_long_media(
+            file_path,
+            chunk_seconds=chunk_seconds,
+            max_chunks=max_chunks,
+            probe=probe,
+        )
+    except Exception as exc:
+        return {
+            "handled": True,
+            "success": False,
+            "transcript": "",
+            "long_media": True,
+            "error": f"Long-media preparation failed: {exc}",
+        }
+
+    transcripts = []
+    failures = []
+    providers = []
+    try:
+        for chunk in prepared.chunks:
+            result = _transcribe_prepared_audio(chunk.path, model)
+            if not result.get("success") and result.get("allow_local_fallback", True):
+                fallback = transcribe_audio_local_fallback(chunk.path, model=None)
+                if fallback.get("success"):
+                    result = fallback
+            if result.get("success") and str(result.get("transcript", "")).strip():
+                providers.append(str(result.get("provider") or "unknown"))
+                transcripts.append(
+                    f"[{format_timestamp(chunk.start_seconds)}] "
+                    f"{str(result['transcript']).strip()}"
+                )
+            else:
+                failures.append(
+                    {
+                        "index": chunk.index,
+                        "start_seconds": chunk.start_seconds,
+                        "error": str(result.get("error") or "transcription failed")[:300],
+                    }
+                )
+    finally:
+        prepared.cleanup()
+
+    if not transcripts:
+        return {
+            "handled": True,
+            "success": False,
+            "transcript": "",
+            "long_media": True,
+            "chunks_total": len(transcripts) + len(failures),
+            "chunks_succeeded": 0,
+            "chunks_failed": len(failures),
+            "failed_chunks": failures,
+            "error": "Long-media transcription failed for every audio chunk.",
+        }
+
+    return {
+        "handled": True,
+        "success": True,
+        "transcript": "\n\n".join(transcripts),
+        "provider": providers[-1] if providers else provider,
+        "long_media": True,
+        "duration_seconds": probe.duration_seconds,
+        "chunks_total": len(transcripts) + len(failures),
+        "chunks_succeeded": len(transcripts),
+        "chunks_failed": len(failures),
+        "partial": bool(failures),
+        "failed_chunks": failures,
+    }
+
+
 def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, Any]:
-    """Safely validate, preprocess supported inputs, and dispatch transcription."""
+    """Transcribe supported audio or video, chunking long media when needed."""
     # Refuse to feed a credential / secret store (auth.json, .env, OAuth
     # tokens, mcp-tokens/, ...) to an STT provider — before ANY validation or
     # preprocessing, so the refusal names the real reason rather than a
@@ -2748,6 +2858,21 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
         prepared_error = _validate_audio_file(prepared_path, enforce_size_limit=False)
         if prepared_error:
             return prepared_error
+
+        stt_config = _load_stt_config()
+        if is_stt_enabled(stt_config):
+            provider = _get_provider(stt_config)
+            if provider != "none":
+                long_result = _transcribe_long_media(
+                    prepared_path,
+                    model=model,
+                    provider=provider,
+                    stt_config=stt_config,
+                )
+                if long_result.get("handled"):
+                    long_result.pop("handled", None)
+                    return long_result
+
         return _transcribe_prepared_audio(prepared_path, model)
     finally:
         if cleanup_dir:

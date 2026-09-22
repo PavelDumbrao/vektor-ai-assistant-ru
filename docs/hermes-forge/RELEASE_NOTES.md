@@ -24,7 +24,8 @@
 ### Verification
 
 - New group self-service regression: 4/4 passed.
-- Targeted neighboring regression suite: 37/37 passed.
+- Targeted Passive Secretary / Telegram / release suite: 45/45 passed.
+- Exact GitHub release-contract reproduction: 115 tests passed, 8 skipped.
 - Production canary rights audit: all previously approved groups present and readable.
 - Client configuration and Passive Secretary settings remained unchanged during the canary.
 

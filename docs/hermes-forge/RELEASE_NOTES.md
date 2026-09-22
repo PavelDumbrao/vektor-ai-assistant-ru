@@ -29,6 +29,14 @@
 - Production canary rights audit: all previously approved groups present and readable.
 - Client configuration and Passive Secretary settings remained unchanged during the canary.
 
+### Fleet post-reboot persistence
+
+- Reconciled legacy active profile services with the canonical 30-profile-env.conf drop-in.
+- Verified profile secrets/capability environment is restored on service start.
+- Verified Passive Secretary archive access across the active fleet.
+- Verified Maton read-only identity calls on Maton-enabled profiles.
+- Verified active-release import provenance and scheduled-job heartbeat recovery.
+
 ### Production finding
 
 A release-layout and import-provenance debt was discovered: a copied Python virtual environment can resolve modules from its parent release. This is tracked as P0 in PRODUCTION_SYNC.md and must be hardened before broad fleet rollout.
@@ -36,3 +44,12 @@ A release-layout and import-provenance debt was discovered: a copied Python virt
 ### Rollback model
 
 Hermes profiles continue to use immutable releases with per-profile symlink switching. Rollback points to the previously verified release and restarts only the affected profile service.
+
+## 2026-09-22 - Fathom Owner Post-Meeting Watcher
+
+- Added a generic per-profile Fathom watcher.
+- Polls completed recordings without external meeting writes.
+- Sends one concise owner brief per new completed recording.
+- Uses durable per-profile processed recording IDs to prevent duplicate delivery.
+- First normal run seeds existing recordings, so enabling the timer does not flood historical meetings.
+- Supports dry-run and explicit latest-recording acceptance smoke.

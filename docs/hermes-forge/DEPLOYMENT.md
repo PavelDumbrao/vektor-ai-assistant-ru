@@ -19,6 +19,8 @@ Before switching a profile:
 After switching:
 
 - service is active/running;
+- profile EnvironmentFile is bound to /home/<profile>/.hermes/.env;
+- required capability variables are present in the service process environment;
 - NRestarts is stable;
 - active symlink resolves to the expected release;
 - profile config and settings hashes are unchanged unless intentionally migrated;

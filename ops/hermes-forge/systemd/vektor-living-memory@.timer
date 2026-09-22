@@ -1,0 +1,12 @@
+[Unit]
+Description=Daily Hermes Living Memory curation for %i
+
+[Timer]
+OnCalendar=*-*-* 04:00:00 Europe/Moscow
+RandomizedDelaySec=30m
+FixedRandomDelay=true
+Persistent=true
+Unit=vektor-living-memory@%i.service
+
+[Install]
+WantedBy=timers.target

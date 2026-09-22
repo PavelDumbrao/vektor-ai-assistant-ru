@@ -1,0 +1,24 @@
+[Unit]
+Description=Enroll Hermes profiles into privacy-safe SharedMetrics export timers
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+WorkingDirectory=/opt/proai-hermes-fleet-ops
+ExecStart=/usr/bin/python3 /opt/proai-hermes-fleet-ops/enroll_shared_metrics_exporters.py
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+PrivateNetwork=true
+ProtectSystem=full
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+LockPersonality=true
+RestrictNamespaces=true
+RestrictAddressFamilies=AF_UNIX

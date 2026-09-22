@@ -249,6 +249,7 @@ try:
         LinkPreviewOptions = None
     from telegram.ext import (
         Application,
+        ChatMemberHandler,
         CommandHandler,
         CallbackQueryHandler,
         ExtBot,
@@ -279,6 +280,7 @@ except ImportError:
     ReplyParameters = Any
     LinkPreviewOptions = None
     Application = Any
+    ChatMemberHandler = Any
     ExtBot = Any
     ApplicationHandlerStop = Any
     BusinessConnectionHandler = Any
@@ -327,6 +329,7 @@ from plugins.platforms.telegram.telegram_ids import (
 from plugins.platforms.telegram.passive_updates import (
     BusinessConnectionRegistry,
     DurableUpdateSpool,
+    PassiveGroupRegistry,
     build_business_update_dto,
     build_group_passive_update_dto,
     business_connection_rights_state,
@@ -518,7 +521,7 @@ def check_telegram_requirements() -> bool:
     global TELEGRAM_AVAILABLE, Update, Bot, Message, InlineKeyboardButton
     global InlineKeyboardMarkup, ReplyParameters, LinkPreviewOptions, Application, ExtBot
     global ApplicationHandlerStop, BusinessConnectionHandler
-    global BusinessMessagesDeletedHandler, CommandHandler
+    global BusinessMessagesDeletedHandler, ChatMemberHandler, CommandHandler
     global CallbackQueryHandler, TelegramMessageHandler
     global ContextTypes, filters, ParseMode, ChatType, HTTPXRequest
     if TELEGRAM_AVAILABLE:
@@ -537,7 +540,7 @@ def check_telegram_requirements() -> bool:
         except ImportError:
             _LPO = None
         from telegram.ext import (
-            Application as _App, CommandHandler as _CH,
+            Application as _App, ChatMemberHandler as _CMH, CommandHandler as _CH,
             CallbackQueryHandler as _CQH,
             ExtBot as _ExtBot,
             MessageHandler as _MH,
@@ -560,6 +563,7 @@ def check_telegram_requirements() -> bool:
     ReplyParameters = _RP
     LinkPreviewOptions = _LPO
     Application = _App
+    ChatMemberHandler = _CMH
     ExtBot = _ExtBot
     ApplicationHandlerStop = _AHS
     BusinessConnectionHandler = _BCH
@@ -917,6 +921,7 @@ class TelegramAdapter(BasePlatformAdapter):
         self._bot: Optional[Bot] = None
         self._passive_update_spool: Optional[DurableUpdateSpool] = None
         self._passive_connection_registry: Optional[BusinessConnectionRegistry] = None
+        self._passive_group_registry: Optional[PassiveGroupRegistry] = None
         self._passive_spool_retry_task: Optional[asyncio.Task] = None
         self._passive_spool_wakeup = asyncio.Event()
         self._passive_media_spool: Optional[DurableMediaSpool] = None
@@ -3947,15 +3952,71 @@ class TelegramAdapter(BasePlatformAdapter):
             if chat_id >= 0:
                 raise ValueError("Telegram passive group chat ids must be negative")
             result.add(chat_id)
-        if self._group_passive_enabled() and not result:
-            raise ValueError("Telegram group passive mode requires an exact chat allowlist")
-        return result
+        if not self._group_passive_enabled():
+            return result
+        owner_id = self._group_passive_owner_id()
+        registry = self._get_passive_group_registry()
+        # A fresh pending/denied membership decision deliberately shadows a
+        # legacy static allowlist entry.  This guarantees that re-adding the bot
+        # can never resume capture before the owner presses the new Yes button.
+        return (
+            result | registry.approved_ids(owner_id=owner_id)
+        ) - registry.blocked_ids(owner_id=owner_id)
 
     def _group_passive_owner_id(self) -> int:
         owners = self._business_owner_ids()
         if len(owners) != 1:
             raise ValueError("Telegram group passive mode requires exactly one tenant owner")
         return next(iter(owners))
+
+    def _group_passive_trusted_inviter_ids(self) -> set[int]:
+        raw = (self.config.extra or {}).get("group_passive_trusted_inviter_ids", [])
+        if not isinstance(raw, list):
+            raise ValueError("Telegram group_passive_trusted_inviter_ids must be a list")
+        result: set[int] = set()
+        for value in raw:
+            if isinstance(value, bool):
+                raise ValueError("Telegram trusted inviter ids must contain positive integers")
+            try:
+                user_id = int(value)
+            except (TypeError, ValueError, OverflowError) as exc:
+                raise ValueError("Telegram trusted inviter ids must contain positive integers") from exc
+            if user_id <= 0 or user_id > 2**63 - 1:
+                raise ValueError("Telegram trusted inviter ids must contain positive integers")
+            result.add(user_id)
+        return result
+
+    def _get_passive_group_registry(self) -> PassiveGroupRegistry:
+        if self._passive_group_registry is None:
+            from hermes_constants import get_hermes_home
+
+            bot_id = str(self.config.token or "").partition(":")[0]
+            if not bot_id.isdigit():
+                raise ValueError("Telegram passive groups require a valid bot token id")
+            self._passive_group_registry = PassiveGroupRegistry(
+                _Path("passive-secretary")
+                / "groups"
+                / f"telegram-bot-{bot_id}.json",
+                hermes_home=get_hermes_home(),
+            )
+        return self._passive_group_registry
+
+    @staticmethod
+    def _chat_member_is_present(member: object) -> bool:
+        raw_status = getattr(member, "status", "")
+        status = str(getattr(raw_status, "value", raw_status) or "").lower()
+        if status in {"creator", "administrator", "member"}:
+            return True
+        return status == "restricted" and getattr(member, "is_member", False) is True
+
+    @staticmethod
+    def _group_consent_label(chat: object) -> tuple[str, str | None]:
+        raw_title = getattr(chat, "title", None)
+        title = str(raw_title).strip()[:256] if raw_title else "Группа Telegram"
+        raw_username = getattr(chat, "username", None)
+        username = str(raw_username).strip().lstrip("@")[:256] if raw_username else None
+        return title or "Группа Telegram", username
+
 
     @staticmethod
     def _ordinary_group_message(update: object) -> Any | None:
@@ -4645,11 +4706,21 @@ class TelegramAdapter(BasePlatformAdapter):
         message = self._ordinary_group_message(update)
         if message is None:
             return False
-        chat_id = int(getattr(getattr(message, "chat", None), "id", 0) or 0)
-        if chat_id not in self._group_passive_chat_ids():
-            return False
+        chat = getattr(message, "chat", None)
+        chat_id = int(getattr(chat, "id", 0) or 0)
         sender = getattr(message, "from_user", None)
         if getattr(sender, "is_bot", False) is True:
+            return False
+        if chat_id not in self._group_passive_chat_ids():
+            # Recovery path for groups where the bot was already present before
+            # enrollment support existed, or where a membership update was
+            # missed. The triggering message is NEVER archived.
+            owner_id = self._group_passive_owner_id()
+            sender_id = int(getattr(sender, "id", 0) or 0)
+            if sender_id == owner_id:
+                await self._prompt_passive_group_consent(
+                    chat=chat, owner_id=owner_id
+                )
             return False
         event = build_group_passive_update_dto(
             update,
@@ -4719,6 +4790,166 @@ class TelegramAdapter(BasePlatformAdapter):
             event.get("update_id"),
         )
         return False
+
+    async def _passive_group_health(self, chat_id: int) -> dict[str, Any]:
+        """Verify the minimum Bot API rights required for passive group capture."""
+        if self._bot is None or chat_id >= 0:
+            return {"ok": False, "present": False, "can_read": False, "status": "unknown"}
+        try:
+            me = await self._bot.get_me()
+            bot_id = int(getattr(me, "id", 0) or 0)
+            membership = await self._bot.get_chat_member(
+                chat_id=chat_id, user_id=bot_id
+            )
+            present = self._chat_member_is_present(membership)
+            raw_status = getattr(membership, "status", "")
+            status = str(getattr(raw_status, "value", raw_status) or "").lower()
+            privacy_read_all = (
+                getattr(me, "can_read_all_group_messages", False) is True
+            )
+            can_read = present and (
+                privacy_read_all or status in {"creator", "administrator"}
+            )
+            return {
+                "ok": bool(present and can_read),
+                "present": bool(present),
+                "can_read": bool(can_read),
+                "status": status or "unknown",
+                "privacy_read_all": bool(privacy_read_all),
+            }
+        except Exception as exc:
+            logger.warning(
+                "[%s] Passive group health check failed: chat=%s failure=%s",
+                self.name, chat_id, type(exc).__name__,
+            )
+            return {
+                "ok": False,
+                "present": False,
+                "can_read": False,
+                "status": "error",
+                "failure": type(exc).__name__,
+            }
+
+    async def _auto_approve_passive_group(
+        self, *, chat: object, owner_id: int
+    ) -> bool:
+        """Approve an owner-added group silently after a live rights check."""
+        chat_id = int(getattr(chat, "id", 0) or 0)
+        if chat_id >= 0:
+            return False
+        registry = self._get_passive_group_registry()
+        if chat_id in registry.approved_ids(owner_id=owner_id):
+            return True
+
+        health = await self._passive_group_health(chat_id)
+        title, username = self._group_consent_label(chat)
+        if not health.get("ok"):
+            registry.revoke(chat_id=chat_id, owner_id=owner_id)
+            logger.warning(
+                "[%s] Owner-added passive group not approved: chat=%s status=%s",
+                self.name, chat_id, health.get("status"),
+            )
+            return False
+
+        nonce = registry.begin(
+            chat_id=chat_id,
+            owner_id=owner_id,
+            title=title,
+            username=username,
+        )
+        resolved = registry.resolve(
+            nonce=nonce,
+            owner_id=owner_id,
+            approve=True,
+        )
+        if resolved is None:
+            logger.warning(
+                "[%s] Owner-added passive group approval did not resolve: chat=%s",
+                self.name, chat_id,
+            )
+            return False
+        logger.info(
+            "[%s] Owner-added passive group auto-approved: chat=%s title=%s",
+            self.name, chat_id, title,
+        )
+        return True
+
+    async def _prompt_passive_group_consent(
+        self, *, chat: object, owner_id: int
+    ) -> bool:
+        """Persist one pending consent and DM the owner exactly once."""
+        chat_id = int(getattr(chat, "id", 0) or 0)
+        if chat_id >= 0:
+            return False
+        registry = self._get_passive_group_registry()
+        if chat_id in registry.approved_ids(owner_id=owner_id):
+            return False
+        if chat_id in registry.pending_ids(owner_id=owner_id):
+            return False
+
+        health = await self._passive_group_health(chat_id)
+        title, username = self._group_consent_label(chat)
+        if not health.get("ok"):
+            if self._bot is not None:
+                try:
+                    await self._bot.send_message(
+                        chat_id=owner_id,
+                        text=(
+                            "⚠️ <b>Не могу подключить пассивного секретаря</b>\n\n"
+                            f"Группа: <b>{_html.escape(title)}</b>\n"
+                            f"Статус бота: <code>{_html.escape(str(health.get('status') or 'unknown'))}</code>\n"
+                            "Нужно, чтобы бот оставался участником и мог читать обычные сообщения."
+                        ),
+                        parse_mode=ParseMode.HTML,
+                    )
+                except Exception:
+                    pass
+            return False
+
+        nonce = registry.begin(
+            chat_id=chat_id,
+            owner_id=owner_id,
+            title=title,
+            username=username,
+        )
+        suffix = f" (@{_html.escape(username)})" if username else ""
+        status = _html.escape(str(health.get("status") or "member"))
+        text = (
+            "🎧 <b>Подключить пассивного секретаря?</b>\n\n"
+            f"Группа: <b>{_html.escape(title)}</b>{suffix}\n"
+            f"✅ Бот в группе: <code>{status}</code>\n"
+            "✅ Чтение обычных сообщений доступно\n\n"
+            "После подтверждения я буду сохранять только новые сообщения. "
+            "Голосовые и кружки расшифрую, у документов сохраню только метаданные. "
+            "В самой группе отвечать не буду."
+        )
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton(
+                "✅ Да, подключить", callback_data=f"pg:y:{nonce}"
+            )],
+            [InlineKeyboardButton(
+                "❌ Нет", callback_data=f"pg:n:{nonce}"
+            )],
+        ])
+        if self._bot is None:
+            registry.revoke(chat_id=chat_id, owner_id=owner_id)
+            return False
+        try:
+            await self._bot.send_message(
+                chat_id=owner_id,
+                text=text,
+                parse_mode=ParseMode.HTML,
+                reply_markup=keyboard,
+            )
+            return True
+        except Exception as exc:
+            registry.revoke(chat_id=chat_id, owner_id=owner_id)
+            logger.warning(
+                "[%s] Passive group consent DM failed closed: %s",
+                self.name, type(exc).__name__,
+            )
+            return False
+
 
     def _drain_passive_update_spool(self) -> int:
         drained = 0
@@ -5118,6 +5349,138 @@ class TelegramAdapter(BasePlatformAdapter):
             )
         raise ApplicationHandlerStop
 
+    async def _handle_passive_group_membership(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        """Ask the configured owner to opt a newly joined group into capture."""
+        if not self._group_passive_enabled():
+            return
+        membership = getattr(update, "my_chat_member", None)
+        chat = getattr(membership, "chat", None)
+        chat_type = str(getattr(chat, "type", "") or "")
+        if membership is None or chat_type not in {"group", "supergroup"}:
+            return
+        chat_id = int(getattr(chat, "id", 0) or 0)
+        if chat_id >= 0:
+            return
+        owner_id = self._group_passive_owner_id()
+        registry = self._get_passive_group_registry()
+        was_present = self._chat_member_is_present(
+            getattr(membership, "old_chat_member", None)
+        )
+        is_present = self._chat_member_is_present(
+            getattr(membership, "new_chat_member", None)
+        )
+        if was_present == is_present:
+            return
+
+        if not is_present:
+            registry.revoke(chat_id=chat_id, owner_id=owner_id)
+            return
+
+        actor_id = int(getattr(getattr(membership, "from_user", None), "id", 0) or 0)
+        trusted_inviters = self._group_passive_trusted_inviter_ids()
+
+        if actor_id == owner_id:
+            # The owner adding their own assistant is sufficient consent.
+            # Do not create approval UI noise and never leave the group.
+            await self._auto_approve_passive_group(
+                chat=chat, owner_id=owner_id
+            )
+            return
+
+        if actor_id in trusted_inviters:
+            # Technical inviters may stage a group, but the owner still
+            # confirms capture. A failed DM must never eject the bot.
+            await self._prompt_passive_group_consent(
+                chat=chat, owner_id=owner_id
+            )
+            return
+
+        # Unknown inviter: stay in the group but fail closed for capture.
+        # The exact owner can later reopen consent simply by speaking in the
+        # group; no remove/re-add cycle is required.
+        registry.revoke(chat_id=chat_id, owner_id=owner_id)
+        logger.info(
+            "[%s] Passive group staged without capture: chat=%s actor=%s",
+            self.name, chat_id, actor_id,
+        )
+        return
+
+    async def _handle_passive_group_consent_callback(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        query = getattr(update, "callback_query", None)
+        data = getattr(query, "data", None)
+        if query is None or not isinstance(data, str):
+            return
+        parts = data.split(":", 2)
+        if len(parts) != 3 or parts[0] != "pg" or parts[1] not in {"y", "n"}:
+            await query.answer(text="Некорректное подтверждение.")
+            return
+        owner_id = self._group_passive_owner_id()
+        caller_id = int(getattr(getattr(query, "from_user", None), "id", 0) or 0)
+        message = getattr(query, "message", None)
+        callback_chat = getattr(message, "chat", None)
+        callback_chat_id = int(getattr(callback_chat, "id", 0) or 0)
+        callback_chat_type = str(getattr(callback_chat, "type", "") or "")
+        if (
+            caller_id != owner_id
+            or callback_chat_id != owner_id
+            or callback_chat_type != "private"
+        ):
+            await query.answer(text="⛔ Подтвердить может только владелец бота.")
+            return
+
+        approve = parts[1] == "y"
+        record = self._get_passive_group_registry().resolve(
+            nonce=parts[2], owner_id=owner_id, approve=approve
+        )
+        if record is None:
+            await query.answer(text="⌛ Запрос истёк или уже обработан.")
+            return
+        title = _html.escape(str(record.get("title") or "Группа Telegram"))
+        chat_id = int(record["chat_id"])
+        if approve:
+            health = await self._passive_group_health(chat_id)
+            if not health.get("ok"):
+                self._get_passive_group_registry().revoke(
+                    chat_id=chat_id, owner_id=owner_id
+                )
+                answer = "⚠️ Не подключено"
+                rendered = (
+                    f"⚠️ <b>{title}</b> не подключена: self-check прав не пройден.\n\n"
+                    f"Статус бота: <code>{_html.escape(str(health.get('status') or 'unknown'))}</code>\n"
+                    "Нужно, чтобы бот был участником/администратором и мог читать обычные сообщения."
+                )
+            else:
+                answer = "✅ Группа подключена"
+                rendered = (
+                    f"✅ <b>{title}</b> подключена к пассивному секретарю.\n\n"
+                    f"✅ Бот: <code>{_html.escape(str(health.get('status') or 'member'))}</code>\n"
+                    "✅ Чтение обычных сообщений: доступно\n"
+                    "✅ Passive Secretary: включён\n"
+                    "🟡 Исходящие сообщения: выключены\n\n"
+                    "Сохраняются только новые сообщения после этого подтверждения. "
+                    "В группе бот остаётся молчаливым."
+                )
+        else:
+            answer = "❌ Пассивный секретарь выключен"
+            rendered = (
+                f"❌ <b>{title}</b>: пассивный секретарь не подключён. "
+                "Бот останется в группе и будет молчать."
+            )
+        await query.answer(text=answer)
+        try:
+            await query.edit_message_text(
+                text=rendered,
+                parse_mode=ParseMode.HTML,
+                reply_markup=None,
+            )
+        except Exception:
+            pass
+
+
     @staticmethod
     def _safe_business_update_kind(update: Update) -> str:
         try:
@@ -5135,6 +5498,7 @@ class TelegramAdapter(BasePlatformAdapter):
         if group_passive:
             self._group_passive_chat_ids()
             self._group_passive_owner_id()
+            self._get_passive_group_registry()
             self._get_passive_update_spool()
             if self._passive_media_enabled():
                 self._get_passive_media_spool()
@@ -5197,6 +5561,22 @@ class TelegramAdapter(BasePlatformAdapter):
             )
 
         if group_passive:
+            app.add_handler(
+                ChatMemberHandler(
+                    self._handle_passive_group_membership,
+                    ChatMemberHandler.MY_CHAT_MEMBER,
+                    block=True,
+                ),
+                group=-9,
+            )
+            app.add_handler(
+                CallbackQueryHandler(
+                    self._handle_passive_group_consent_callback,
+                    pattern=r"^pg:[yn]:[A-Za-z0-9_-]{20,32}$",
+                    block=True,
+                ),
+                group=0,
+            )
             app.add_handler(
                 TelegramMessageHandler(
                     filters.ChatType.GROUPS,

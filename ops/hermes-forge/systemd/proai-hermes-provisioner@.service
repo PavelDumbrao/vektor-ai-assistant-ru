@@ -1,0 +1,21 @@
+[Unit]
+Description=Hermes Forge bounded provisioner for %i
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+WorkingDirectory=/opt/proai-hermes-manager
+ExecStart=/usr/bin/python3 /opt/proai-hermes-manager/provisioner.py provision --instance-file /opt/proai-hermes-manager/state/instances/%i.json
+UMask=0077
+TimeoutStartSec=600
+PrivateTmp=false
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+LockPersonality=true
+NoNewPrivileges=true
+StandardOutput=journal
+StandardError=journal

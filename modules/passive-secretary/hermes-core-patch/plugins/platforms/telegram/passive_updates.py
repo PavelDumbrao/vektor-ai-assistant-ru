@@ -1237,6 +1237,22 @@ class PassiveGroupRegistry:
                     and int(record.get("owner_id", 0)) == owner_id
                 }
 
+    def pending_ids(self, *, owner_id: int) -> set[int]:
+        """Return only groups with an active owner-consent prompt."""
+        with self._lock:
+            with self._process_lock(exclusive=True):
+                groups = self._load()
+                before = len(groups)
+                self._prune_expired(groups, time.time())
+                if len(groups) != before:
+                    self._write_locked(groups)
+                return {
+                    int(chat_id)
+                    for chat_id, record in groups.items()
+                    if record.get("state") == "pending"
+                    and int(record.get("owner_id", 0)) == owner_id
+                }
+
     def blocked_ids(self, *, owner_id: int) -> set[int]:
         """Return pending/denied ids that must shadow legacy static allowlists."""
         with self._lock:

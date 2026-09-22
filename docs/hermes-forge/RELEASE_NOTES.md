@@ -25,9 +25,18 @@
 
 - New group self-service regression: 4/4 passed.
 - Targeted Passive Secretary / Telegram / release suite: 45/45 passed.
-- Exact GitHub release-contract reproduction: 115 tests passed, 8 skipped.
+- Exact GitHub release-contract reproduction: 117 tests passed, 8 skipped.
 - Production canary rights audit: all previously approved groups present and readable.
 - Client configuration and Passive Secretary settings remained unchanged during the canary.
+
+### Telegram group onboarding hardening
+
+- Removed all passive-group auto-leave behavior.
+- Owner-added groups are auto-approved silently after a live Bot API rights check.
+- Groups added by unknown admins remain present but capture stays fail-closed.
+- A previously denied group can be reopened by the exact owner without remove/re-add.
+- Owner denial disables capture but leaves the bot in the group.
+- Added six regression scenarios covering owner auto-approve, denied reopen and no-autoleave behavior.
 
 ### Fleet post-reboot persistence
 

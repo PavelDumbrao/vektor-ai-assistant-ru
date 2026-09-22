@@ -4830,6 +4830,50 @@ class TelegramAdapter(BasePlatformAdapter):
                 "failure": type(exc).__name__,
             }
 
+    async def _auto_approve_passive_group(
+        self, *, chat: object, owner_id: int
+    ) -> bool:
+        """Approve an owner-added group silently after a live rights check."""
+        chat_id = int(getattr(chat, "id", 0) or 0)
+        if chat_id >= 0:
+            return False
+        registry = self._get_passive_group_registry()
+        if chat_id in registry.approved_ids(owner_id=owner_id):
+            return True
+
+        health = await self._passive_group_health(chat_id)
+        title, username = self._group_consent_label(chat)
+        if not health.get("ok"):
+            registry.revoke(chat_id=chat_id, owner_id=owner_id)
+            logger.warning(
+                "[%s] Owner-added passive group not approved: chat=%s status=%s",
+                self.name, chat_id, health.get("status"),
+            )
+            return False
+
+        nonce = registry.begin(
+            chat_id=chat_id,
+            owner_id=owner_id,
+            title=title,
+            username=username,
+        )
+        resolved = registry.resolve(
+            nonce=nonce,
+            owner_id=owner_id,
+            approve=True,
+        )
+        if resolved is None:
+            logger.warning(
+                "[%s] Owner-added passive group approval did not resolve: chat=%s",
+                self.name, chat_id,
+            )
+            return False
+        logger.info(
+            "[%s] Owner-added passive group auto-approved: chat=%s title=%s",
+            self.name, chat_id, title,
+        )
+        return True
+
     async def _prompt_passive_group_consent(
         self, *, chat: object, owner_id: int
     ) -> bool:
@@ -4840,7 +4884,7 @@ class TelegramAdapter(BasePlatformAdapter):
         registry = self._get_passive_group_registry()
         if chat_id in registry.approved_ids(owner_id=owner_id):
             return False
-        if chat_id in registry.blocked_ids(owner_id=owner_id):
+        if chat_id in registry.pending_ids(owner_id=owner_id):
             return False
 
         health = await self._passive_group_health(chat_id)
@@ -5336,26 +5380,32 @@ class TelegramAdapter(BasePlatformAdapter):
 
         actor_id = int(getattr(getattr(membership, "from_user", None), "id", 0) or 0)
         trusted_inviters = self._group_passive_trusted_inviter_ids()
-        if actor_id != owner_id and actor_id not in trusted_inviters:
-            # This is a personal assistant: only the owner or an explicitly
-            # configured technical inviter may start enrollment.  The owner
-            # must still approve the group in a private callback below.
-            # Persist denial before the network call
-            # so even a failed leave cannot expose group content.
-            registry.revoke(chat_id=chat_id, owner_id=owner_id)
-            if self._bot is not None:
-                try:
-                    await self._bot.leave_chat(chat_id=chat_id)
-                except Exception as exc:
-                    logger.warning(
-                        "[%s] Could not leave owner-unauthorized Telegram group: %s",
-                        self.name, type(exc).__name__,
-                    )
+
+        if actor_id == owner_id:
+            # The owner adding their own assistant is sufficient consent.
+            # Do not create approval UI noise and never leave the group.
+            await self._auto_approve_passive_group(
+                chat=chat, owner_id=owner_id
+            )
             return
 
-        await self._prompt_passive_group_consent(
-            chat=chat, owner_id=owner_id
+        if actor_id in trusted_inviters:
+            # Technical inviters may stage a group, but the owner still
+            # confirms capture. A failed DM must never eject the bot.
+            await self._prompt_passive_group_consent(
+                chat=chat, owner_id=owner_id
+            )
+            return
+
+        # Unknown inviter: stay in the group but fail closed for capture.
+        # The exact owner can later reopen consent simply by speaking in the
+        # group; no remove/re-add cycle is required.
+        registry.revoke(chat_id=chat_id, owner_id=owner_id)
+        logger.info(
+            "[%s] Passive group staged without capture: chat=%s actor=%s",
+            self.name, chat_id, actor_id,
         )
+        return
 
     async def _handle_passive_group_consent_callback(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
@@ -5415,16 +5465,11 @@ class TelegramAdapter(BasePlatformAdapter):
                     "В группе бот остаётся молчаливым."
                 )
         else:
-            answer = "❌ Группа не подключена"
-            rendered = f"❌ <b>{title}</b> не подключена. Бот выходит из группы."
-            if self._bot is not None:
-                try:
-                    await self._bot.leave_chat(chat_id=chat_id)
-                except Exception as exc:
-                    logger.warning(
-                        "[%s] Passive group leave after denial failed: %s",
-                        self.name, type(exc).__name__,
-                    )
+            answer = "❌ Пассивный секретарь выключен"
+            rendered = (
+                f"❌ <b>{title}</b>: пассивный секретарь не подключён. "
+                "Бот останется в группе и будет молчать."
+            )
         await query.answer(text=answer)
         try:
             await query.edit_message_text(

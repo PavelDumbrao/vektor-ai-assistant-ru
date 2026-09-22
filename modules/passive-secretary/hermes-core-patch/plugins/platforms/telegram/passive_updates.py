@@ -11,9 +11,11 @@ import hashlib
 import json
 import logging
 import os
+import secrets
 import stat
 import tempfile
 import threading
+import time
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -28,6 +30,7 @@ except ImportError:  # pragma: no cover - exercised only on non-POSIX hosts
 
 
 SCHEMA_VERSION = 2
+MAX_PASSIVE_GROUP_RECORDS = 256
 DEFAULT_RELATIVE_SPOOL = Path("passive-secretary") / "inbox"
 MAX_SPOOL_EVENT_BYTES = 512_000
 
@@ -987,4 +990,283 @@ class BusinessConnectionRegistry:
                 }
                 self._write_locked(connections)
                 self._untrusted_after.pop(connection_id, None)
+                return True
+
+
+class PassiveGroupRegistry:
+    """Durable owner consent for passive Telegram group capture.
+
+    Callback payloads contain only a random nonce.  Raw group identifiers and
+    approval state stay in this private, fsync-backed registry.  Every
+    add/re-add transition replaces an earlier approval with a fresh pending
+    decision, so stale consent cannot silently survive a new membership.
+    """
+
+    def __init__(self, path: Path, *, hermes_home: Path):
+        home = hermes_home.resolve()
+        candidate = path if path.is_absolute() else home / path
+        resolved_parent = candidate.parent.resolve()
+        try:
+            resolved_parent.relative_to(home)
+        except ValueError as exc:
+            raise RuntimeError(
+                "Telegram passive group registry must stay inside HERMES_HOME"
+            ) from exc
+        if candidate.is_symlink() or candidate.parent.is_symlink():
+            raise RuntimeError("Refusing symlinked Telegram passive group registry")
+        _ensure_durable_private_directory(resolved_parent)
+        self.path = resolved_parent / candidate.name
+        self._process_lock_path = resolved_parent / f".{candidate.name}.lock"
+        self._lock = threading.RLock()
+
+    @contextmanager
+    def _process_lock(self, *, exclusive: bool) -> Iterator[None]:
+        if fcntl is None:
+            raise RuntimeError(
+                "Telegram passive group registry requires POSIX file locking"
+            )
+        flags = os.O_RDWR | getattr(os, "O_NOFOLLOW", 0)
+        created = False
+        try:
+            fd = os.open(self._process_lock_path, flags | os.O_CREAT | os.O_EXCL, 0o600)
+            created = True
+        except FileExistsError:
+            fd = os.open(self._process_lock_path, flags)
+        try:
+            info = os.fstat(fd)
+            if (
+                not stat.S_ISREG(info.st_mode)
+                or info.st_nlink != 1
+                or stat.S_IMODE(info.st_mode) & 0o077
+            ):
+                raise RuntimeError("Telegram passive group registry lock is unsafe")
+            if created:
+                os.fsync(fd)
+                DurableUpdateSpool._fsync_directory(self.path.parent)
+            fcntl.flock(fd, fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH)
+            try:
+                yield
+            finally:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+        finally:
+            os.close(fd)
+
+    def _load(self) -> dict[str, dict[str, Any]]:
+        if not self.path.exists():
+            return {}
+        raw = DurableUpdateSpool._read_json_file(self.path)
+        groups = raw.get("groups")
+        if not isinstance(groups, dict):
+            raise ValueError("Invalid Telegram passive group registry")
+        result: dict[str, dict[str, Any]] = {}
+        for raw_chat_id, record in groups.items():
+            try:
+                chat_id = int(raw_chat_id)
+            except (TypeError, ValueError, OverflowError):
+                continue
+            if chat_id >= 0 or not isinstance(record, dict):
+                continue
+            owner_id = _int_or_none(record.get("owner_id"))
+            state = record.get("state")
+            if not owner_id or owner_id <= 0 or state not in {
+                "pending", "approved", "denied"
+            }:
+                continue
+            normalized = {
+                "owner_id": owner_id,
+                "state": state,
+                "title": _str_or_none(record.get("title"), max_chars=256) or "Группа Telegram",
+            }
+            username = _str_or_none(record.get("username"), max_chars=256)
+            if username:
+                normalized["username"] = username
+            if state == "pending":
+                nonce_sha256 = record.get("nonce_sha256")
+                expires_at = record.get("expires_at")
+                if (
+                    not isinstance(nonce_sha256, str)
+                    or len(nonce_sha256) != 64
+                    or isinstance(expires_at, bool)
+                    or not isinstance(expires_at, (int, float))
+                ):
+                    continue
+                normalized["nonce_sha256"] = nonce_sha256
+                normalized["expires_at"] = float(expires_at)
+            result[str(chat_id)] = normalized
+        return result
+
+    def _write_locked(self, groups: Mapping[str, Mapping[str, Any]]) -> None:
+        payload = {"schema_version": SCHEMA_VERSION, "groups": groups}
+        fd, temp_name = tempfile.mkstemp(prefix=".groups-", dir=self.path.parent)
+        temp = Path(temp_name)
+        try:
+            os.fchmod(fd, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                fd = -1
+                json.dump(payload, handle, ensure_ascii=False, sort_keys=True)
+                handle.write("\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temp, self.path)
+            DurableUpdateSpool._fsync_directory(self.path.parent)
+        finally:
+            if fd >= 0:
+                os.close(fd)
+            if temp.exists():
+                temp.unlink()
+                DurableUpdateSpool._fsync_directory(self.path.parent)
+
+    @staticmethod
+    def _nonce_digest(nonce: str) -> str:
+        return hashlib.sha256(nonce.encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _prune_expired(groups: dict[str, dict[str, Any]], now: float) -> None:
+        for chat_id, record in list(groups.items()):
+            if record.get("state") == "pending" and float(record.get("expires_at", 0)) <= now:
+                groups[chat_id] = {
+                    key: value
+                    for key, value in record.items()
+                    if key not in {"nonce_sha256", "expires_at"}
+                }
+                groups[chat_id]["state"] = "denied"
+
+    def begin(
+        self,
+        *,
+        chat_id: int,
+        owner_id: int,
+        title: str,
+        username: str | None = None,
+        ttl_seconds: int = 600,
+        now: float | None = None,
+    ) -> str:
+        if chat_id >= 0 or owner_id <= 0:
+            raise ValueError("Invalid Telegram passive group identity")
+        if not isinstance(title, str) or not title.strip():
+            title = "Группа Telegram"
+        if not 60 <= int(ttl_seconds) <= 3600:
+            raise ValueError("Invalid Telegram passive group consent TTL")
+        current_time = time.time() if now is None else float(now)
+        nonce = secrets.token_urlsafe(18)
+        record: dict[str, Any] = {
+            "owner_id": owner_id,
+            "state": "pending",
+            "title": title.strip()[:256],
+            "nonce_sha256": self._nonce_digest(nonce),
+            "expires_at": current_time + int(ttl_seconds),
+        }
+        if isinstance(username, str) and username.strip():
+            record["username"] = username.strip().lstrip("@")[:256]
+        with self._lock:
+            with self._process_lock(exclusive=True):
+                groups = self._load()
+                self._prune_expired(groups, current_time)
+                if str(chat_id) not in groups and len(groups) >= MAX_PASSIVE_GROUP_RECORDS:
+                    raise RuntimeError("Telegram passive group registry is full")
+                groups[str(chat_id)] = record
+                self._write_locked(groups)
+        return nonce
+
+    def resolve(
+        self,
+        *,
+        nonce: str,
+        owner_id: int,
+        approve: bool,
+        now: float | None = None,
+    ) -> dict[str, Any] | None:
+        if not isinstance(nonce, str) or not nonce or owner_id <= 0:
+            return None
+        current_time = time.time() if now is None else float(now)
+        candidate_digest = self._nonce_digest(nonce)
+        with self._lock:
+            with self._process_lock(exclusive=True):
+                groups = self._load()
+                before = dict(groups)
+                self._prune_expired(groups, current_time)
+                matched_chat_id: str | None = None
+                matched: dict[str, Any] | None = None
+                for chat_id, record in groups.items():
+                    if (
+                        record.get("state") == "pending"
+                        and int(record.get("owner_id", 0)) == owner_id
+                        and secrets.compare_digest(
+                            str(record.get("nonce_sha256", "")), candidate_digest
+                        )
+                    ):
+                        matched_chat_id = chat_id
+                        matched = record
+                        break
+                if matched_chat_id is None or matched is None:
+                    # Persist expiry pruning even when the supplied nonce is
+                    # invalid, without revealing whether a group existed.
+                    if groups != before:
+                        self._write_locked(groups)
+                    return None
+                result = {**matched, "chat_id": int(matched_chat_id)}
+                if approve:
+                    groups[matched_chat_id] = {
+                        key: value
+                        for key, value in matched.items()
+                        if key not in {"nonce_sha256", "expires_at"}
+                    }
+                    groups[matched_chat_id]["state"] = "approved"
+                else:
+                    groups[matched_chat_id] = {
+                        key: value
+                        for key, value in matched.items()
+                        if key not in {"nonce_sha256", "expires_at"}
+                    }
+                    groups[matched_chat_id]["state"] = "denied"
+                self._write_locked(groups)
+                return result
+
+    def approved_ids(self, *, owner_id: int) -> set[int]:
+        with self._lock:
+            with self._process_lock(exclusive=True):
+                groups = self._load()
+                before = len(groups)
+                self._prune_expired(groups, time.time())
+                if len(groups) != before:
+                    self._write_locked(groups)
+                return {
+                    int(chat_id)
+                    for chat_id, record in groups.items()
+                    if record.get("state") == "approved"
+                    and int(record.get("owner_id", 0)) == owner_id
+                }
+
+    def blocked_ids(self, *, owner_id: int) -> set[int]:
+        """Return pending/denied ids that must shadow legacy static allowlists."""
+        with self._lock:
+            with self._process_lock(exclusive=True):
+                groups = self._load()
+                before = len(groups)
+                self._prune_expired(groups, time.time())
+                if len(groups) != before:
+                    self._write_locked(groups)
+                return {
+                    int(chat_id)
+                    for chat_id, record in groups.items()
+                    if record.get("state") in {"pending", "denied"}
+                    and int(record.get("owner_id", 0)) == owner_id
+                }
+
+    def revoke(self, *, chat_id: int, owner_id: int) -> bool:
+        if chat_id >= 0 or owner_id <= 0:
+            return False
+        with self._lock:
+            with self._process_lock(exclusive=True):
+                groups = self._load()
+                record = groups.get(str(chat_id))
+                if record and int(record.get("owner_id", 0)) != owner_id:
+                    return False
+                groups[str(chat_id)] = ({
+                    key: value
+                    for key, value in (record or {}).items()
+                    if key not in {"nonce_sha256", "expires_at"}
+                } or {"owner_id": owner_id, "title": "Группа Telegram"})
+                groups[str(chat_id)]["state"] = "denied"
+                self._write_locked(groups)
                 return True

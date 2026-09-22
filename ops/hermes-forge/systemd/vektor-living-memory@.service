@@ -1,0 +1,33 @@
+[Unit]
+Description=Hermes Living Memory daily curator for %i
+After=network-online.target %i-hermes.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=%i
+Group=%i
+WorkingDirectory=/home/%i/.hermes/hermes-agent
+Environment=HERMES_HOME=/home/%i/.hermes
+Environment=HERMES_PROFILE=%i
+ExecStart=/home/%i/.hermes/hermes-agent/venv/bin/python /opt/vektor/living-memory/profiles/%i/current/worker.py --owner %i --apply
+TimeoutStartSec=20min
+Nice=10
+IOSchedulingClass=idle
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/%i/.hermes/living_memory /home/%i/.hermes/memories
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target

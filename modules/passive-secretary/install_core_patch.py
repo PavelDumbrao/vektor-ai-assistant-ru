@@ -99,13 +99,13 @@ PATCHED_SHA256 = {
         "88acaa013e84cd544b082f582ef17d7ea1667de361e1a34af0b7b0632bbc111d"
     ),
     "plugins/platforms/telegram/adapter.py": (
-        "37abe6e96d9639c21ad899fd76fa237ff06f9d83c2f9a83a631902abbdf86250"
+        "9b2a617528655c08b257a1bf682ef8a0feab1d67152a843426277eb9d3b19252"
     ),
     "plugins/platforms/telegram/passive_media.py": (
         "2896b8fe56bba55e50bf9367b846a7e4f9a10a03a6967b3c61f6c686eaaadaae"
     ),
     "plugins/platforms/telegram/passive_updates.py": (
-        "1535757c15935cf387dcfc0c8b143b6156d0025a09d3899e87b61d6040249787"
+        "56888a9b4aaf4f71622972ac72048909a824253f209889a948af7196fc0d1659"
     ),
 }
 

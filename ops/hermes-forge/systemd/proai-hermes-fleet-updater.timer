@@ -1,0 +1,12 @@
+[Unit]
+Description=Run Hermes Forge fleet updater hourly
+
+[Timer]
+OnBootSec=15min
+OnUnitActiveSec=1h
+RandomizedDelaySec=5min
+Persistent=true
+Unit=proai-hermes-fleet-updater.service
+
+[Install]
+WantedBy=timers.target

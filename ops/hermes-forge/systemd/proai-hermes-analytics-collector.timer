@@ -1,0 +1,12 @@
+[Unit]
+Description=Collect Hermes Forge fleet analytics every five minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+RandomizedDelaySec=30s
+Persistent=true
+Unit=proai-hermes-analytics-collector.service
+
+[Install]
+WantedBy=timers.target

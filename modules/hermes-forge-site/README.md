@@ -35,7 +35,7 @@ Target canonical host: `forge.proaicommunity.online`.
 DNS must contain:
 - type: `A`
 - name: `forge`
-- value: `31.97.199.12`
+- value: `<VPS_IP>` <!-- real IP intentionally not published in docs; see hosting DNS panel -->
 
 After DNS resolves to this VPS, set:
 ```bash

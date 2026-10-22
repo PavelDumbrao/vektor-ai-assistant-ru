@@ -16,6 +16,7 @@ import runpy
 import shutil
 import stat
 import subprocess
+import sys
 import tempfile
 import time
 import urllib.request
@@ -39,7 +40,7 @@ SYSTEM_PYTHON = Path("/usr/bin/python3")
 TECH_ADMIN_ID = 450206471
 TOKEN_RE = re.compile(r"^\d{5,}:[A-Za-z0-9_-]{20,}$")
 REQUIRED_PLATFORM_KEYS = ("LLM_API_KEY", "FALLBACK_LLM_API_KEY", "GEMINI_LLM_API_KEY")
-OPTIONAL_PLATFORM_KEYS = ("OPENROUTER_API_KEY", "TAVILY_API_KEY", "GRSAI_API_KEY")
+OPTIONAL_PLATFORM_KEYS = ("OPENROUTER_API_KEY", "TAVILY_API_KEY", "GRSAI_API_KEY", "PROAISAVER_MCP_TOKEN")
 
 
 class ProvisionError(RuntimeError):
@@ -144,7 +145,7 @@ def _render_profile(instance: HermesInstance, entry: pwd.struct_passwd) -> Path:
     for relative in (
         ".", "bin", "plugins", "memories", "logs", "cron", "runtime",
         "skills", "tools", "hooks", "cache", "cache/audio", "backups",
-        "telemetry", "telemetry/shared_metrics", "telemetry/shared_metrics/outbox",
+        "telemetry", "telemetry/shared_metrics", "telemetry/shared_metrics/outbox", "downloads",
     ):
         _ensure_private_dir(hermes / relative, entry)
     for relative in ("workspace", "workspace/knowledge", "workspace/documents", "workspace/data"):
@@ -154,6 +155,8 @@ def _render_profile(instance: HermesInstance, entry: pwd.struct_passwd) -> Path:
         "@OWNER@": instance.owner_linux,
         "@OWNER_TELEGRAM_ID@": str(instance.owner_telegram_id),
         "@TECH_ADMIN_TELEGRAM_ID@": str(TECH_ADMIN_ID),
+        "@BOT_NAME@": instance.bot_name,
+        "@BOT_USERNAME@": instance.bot_username,
     }
     for name in ("config.yaml", "SOUL.md", "USER.md"):
         source = template_root / name
@@ -193,6 +196,72 @@ def _ensure_profile_env(
         raise ProvisionError("environment_value_invalid")
     content = "".join(f"{key}={value}\n" for key, value in sorted(desired.items()))
     _atomic_write(path, content, uid=entry.pw_uid, gid=entry.pw_gid)
+
+
+def _ensure_proaisaver_header(entry: pwd.struct_passwd, hermes: Path, platform_values: dict[str, str]) -> None:
+    """Fill the template's empty `Authorization: Bearer` of mcp_servers.proaisaver
+    in config.yaml from the platform token; idempotent, text-level (no YAML re-dump)."""
+    token = platform_values.get("PROAISAVER_MCP_TOKEN", "")
+    if not token:
+        return
+    path = hermes / "config.yaml"
+    if path.is_symlink() or not path.is_file():
+        raise ProvisionError("profile_config_missing")
+    lines = path.read_text(encoding="utf-8").splitlines()
+    inside = False
+    for index, line in enumerate(lines):
+        if line.startswith("  proaisaver:"):
+            inside = True
+            continue
+        if inside and re.match(r"^  \S", line):
+            inside = False
+        if inside and line.strip().startswith("Authorization:"):
+            current = line.split("Bearer", 1)[1].strip().strip("\"'") if "Bearer" in line else ""
+            if current == token:
+                return
+            if current:
+                raise ProvisionError("proaisaver_token_conflict")
+            indent = line[: len(line) - len(line.lstrip())]
+            lines[index] = f"{indent}Authorization: Bearer {token}"
+            _atomic_write(path, "\n".join(lines) + "\n", uid=entry.pw_uid, gid=entry.pw_gid)
+            return
+    # No proaisaver block in this profile: nothing to fill.
+
+
+def _install_profile_hooks(instance: HermesInstance, entry: pwd.struct_passwd, hermes: Path) -> None:
+    """Install the document-metadata hook into the profile and pre-consent it
+    (shell hooks need an allowlist entry, otherwise Hermes silently skips them)."""
+    source = MANAGER_ROOT / "templates" / "personal" / "hooks" / "clean-docmeta.py"
+    if source.is_symlink() or not source.is_file():
+        raise ProvisionError("profile_hook_template_missing")
+    hooks_dir = hermes / "hooks"
+    _ensure_private_dir(hooks_dir, entry)
+    target = hooks_dir / "clean-docmeta.py"
+    if target.is_symlink():
+        raise ProvisionError("profile_hook_symlink")
+    content = source.read_text(encoding="utf-8")
+    if not target.exists() or target.read_text(encoding="utf-8") != content:
+        _atomic_write(target, content, uid=entry.pw_uid, gid=entry.pw_gid, mode=0o700)
+    command = f"{hermes}/hermes-agent/venv/bin/python {target}"
+    allowlist = hermes / "shell-hooks-allowlist.json"
+    if allowlist.is_symlink():
+        raise ProvisionError("profile_hook_allowlist_symlink")
+    data = {"approvals": []}
+    if allowlist.is_file():
+        try:
+            data = json.loads(allowlist.read_text(encoding="utf-8"))
+        except ValueError:
+            data = {"approvals": []}
+    approvals = data.setdefault("approvals", [])
+    if not any(a.get("event") == "post_tool_call" and a.get("command") == command for a in approvals):
+        approvals.append({
+            "approved_at": time.strftime("%Y-%m-%dT%H:%M:%S.000000Z", time.gmtime()),
+            "command": command,
+            "event": "post_tool_call",
+            "script_mtime_at_approval": None,
+        })
+        _atomic_write(allowlist, json.dumps(data, ensure_ascii=False, indent=2) + "\n",
+                      uid=entry.pw_uid, gid=entry.pw_gid)
 
 
 def _ensure_symlink(path: Path, target: Path, entry: pwd.struct_passwd) -> None:
@@ -268,7 +337,22 @@ def _run(args: list[str], *, timeout: int = 300, user: int | None = None, group:
         kwargs["env"] = env
     result = subprocess.run(args, **kwargs)
     if result.returncode:
+        _log_subprocess_failure(args, result)
         raise ProvisionError("subprocess_failed:" + Path(args[0]).name)
+
+
+_STDERR_REDACT = re.compile(
+    r"(postgres(?:ql)?://\S+)|((?:TOKEN|KEY|SECRET|PASSWORD|DSN)[A-Z_]*\s*[=:]\s*\S+)",
+    re.IGNORECASE,
+)
+
+
+def _log_subprocess_failure(args: list[str], result: subprocess.CompletedProcess) -> None:
+    """Surface a short, redacted stderr tail in the journal (root-only); installers
+    print only safe `error=` lines, but redact DSN/token-looking values anyway."""
+    tail = (result.stderr or "").strip().replace("\n", " | ")[-600:]
+    tail = _STDERR_REDACT.sub("<redacted>", tail)
+    print(f"subprocess_failed:{Path(args[0]).name} rc={result.returncode} stderr={tail}", file=sys.stderr)
 
 
 def _provision_database(instance: HermesInstance, entry: pwd.struct_passwd, hermes: Path) -> None:
@@ -483,6 +567,8 @@ def provision(instance: HermesInstance, token_file: Path | None = None) -> dict[
         entry = _ensure_account(instance.owner_linux)
         hermes = _render_profile(instance, entry)
         _ensure_profile_env(instance, entry, hermes, token, platform_values)
+        _ensure_proaisaver_header(entry, hermes, platform_values)
+        _install_profile_hooks(instance, entry, hermes)
         _bind_runtime(instance, entry, hermes, release)
         _install_service(instance, entry)
         _provision_database(instance, entry, hermes)

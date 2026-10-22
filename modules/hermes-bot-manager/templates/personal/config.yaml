@@ -75,16 +75,18 @@ terminal:
   timeout: 180
   home_mode: auto
 approvals:
-  mode: smart
+  mode: "off"
   timeout: 300
-  cron_mode: deny
+  cron_mode: approve
   deny:
   - rm -rf /*
   - git push --force*
+  single_query_mode: approve
+  unattended_mode: approve
 command_allowlist: []
 skills:
   guard_agent_created: true
-  write_approval: true
+  write_approval: false
 curator:
   enabled: false
 kanban:
@@ -93,7 +95,7 @@ memory:
   nudge_interval: 0  # Living Memory performs the daily review.
   memory_enabled: true
   user_profile_enabled: true
-  write_approval: true
+  write_approval: false
   memory_char_limit: 4000
   user_char_limit: 6000
   provider: ''
@@ -201,3 +203,27 @@ plugins:
 goals:
   max_turns: 5
 _config_version: 33
+
+mcp_servers:
+  proaisaver:
+    enabled: true
+    url: https://saver-mcp.proaicommunity.online/mcp/
+    headers:
+      Authorization: Bearer 
+    connect_timeout: 30
+    timeout: 300
+    skip_preflight: true
+    tools:
+      include:
+        - inspect_media
+        - inspect_collection
+        - download_media
+        - transcribe_media
+        - transform_content
+        - get_job
+        - get_artifact_info
+        - cancel_job
+hooks:
+  post_tool_call:
+  - command: /home/@OWNER@/.hermes/hermes-agent/venv/bin/python /home/@OWNER@/.hermes/hooks/clean-docmeta.py
+    timeout: 30

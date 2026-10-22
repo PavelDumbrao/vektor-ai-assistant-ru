@@ -12,7 +12,7 @@ import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, patch
 
 import yaml
 
@@ -28,10 +28,7 @@ sys.modules[spec.name] = module
 assert spec.loader is not None
 spec.loader.exec_module(module)
 _ORIGINAL_GET_HOME = module._get_home
-
-
-class _Platform:
-    value = "telegram"
+_ORIGINAL_SAMPLES_DIR = module.SAMPLES_DIR
 
 
 def _make_source(
@@ -78,7 +75,6 @@ class VoicePickerChoiceParsingTests(unittest.TestCase):
             self.assertIsNotNone(match, f"Failed to parse digit: {i}")
             self.assertEqual(match, module.VOICES[i - 1])
 
-            # Also with trailing dot
             match_dot = module._parse_voice_choice(f"{i}.")
             self.assertIsNotNone(match_dot, f"Failed to parse digit with dot: {i}.")
             self.assertEqual(match_dot, module.VOICES[i - 1])
@@ -92,10 +88,10 @@ class VoicePickerChoiceParsingTests(unittest.TestCase):
             "-1",
             "42",
             "random garbage text",
-            "Марина",  # Only name without label formatting or digit
+            "Марина",
             "1 2",
             "voice_pick",
-            "ymDCYd8puC7gYjxIamPt",  # Raw voice ID is not accepted as choice
+            "ymDCYd8puC7gYjxIamPt",
         ]
         for item in garbage:
             self.assertIsNone(
@@ -144,20 +140,16 @@ class VoicePickerConfigAtomicTests(unittest.TestCase):
         config_path.write_text(yaml.safe_dump(initial_config, sort_keys=False), encoding="utf-8")
         os.chmod(config_path, 0o600)
 
-        # Update voice
         new_voice_id = "ymDCYd8puC7gYjxIamPt"
         module._update_config_voice(new_voice_id)
 
-        # Verify permissions
         st = config_path.stat()
         self.assertEqual(stat.S_IMODE(st.st_mode), 0o600)
 
-        # Verify content
         updated = yaml.safe_load(config_path.read_text(encoding="utf-8"))
         self.assertEqual(updated["tts"]["elevenlabs"]["voice_id"], new_voice_id)
         self.assertEqual(updated["tts"]["elevenlabs"]["model_id"], "eleven_v4_turbo")
 
-        # Verify other keys preserved
         self.assertEqual(updated["agent"], initial_config["agent"])
         self.assertEqual(updated["model"], "claude-3-5-sonnet")
         self.assertEqual(updated["tts"]["provider"], "elevenlabs")
@@ -198,7 +190,6 @@ class VoicePickerStateAndTTLTests(unittest.TestCase):
         self.assertEqual(stat.S_IMODE(state_file.parent.stat().st_mode), 0o700)
         self.assertEqual(stat.S_IMODE(state_file.stat().st_mode), 0o600)
 
-        # Check content
         data = json.loads(state_file.read_text(encoding="utf-8"))
         self.assertIn(user_id, data)
         self.assertAlmostEqual(data[user_id], now + module.PENDING_TTL_SECONDS, delta=1.0)
@@ -209,13 +200,9 @@ class VoicePickerStateAndTTLTests(unittest.TestCase):
 
         module._set_pending(user_id, now=base_time)
 
-        # Within 10 minutes (e.g. at 9 minutes)
         self.assertTrue(module._is_pending(user_id, now=base_time + 540))
-
-        # After 10 minutes (e.g. at 10 minutes and 1 second)
         self.assertFalse(module._is_pending(user_id, now=base_time + 601))
 
-        # Check that expired state was silently pruned
         with module._state_lock:
             self.assertNotIn(user_id, module._pending_memory)
 
@@ -224,11 +211,8 @@ class VoicePickerStateAndTTLTests(unittest.TestCase):
         base_time = 1000000.0
 
         module._set_pending(user_id, now=base_time)
-        # Advance 8 minutes, call set_pending again
         module._set_pending(user_id, now=base_time + 480)
 
-        # At base_time + 700 (11.6 minutes from start, but 3.6 minutes from second call):
-        # Should still be pending because timer was reset!
         self.assertTrue(module._is_pending(user_id, now=base_time + 700))
 
     def test_clear_pending_removes_from_memory_and_disk(self):
@@ -250,7 +234,6 @@ class VoicePickerSecurityAndAuthorizationTests(unittest.TestCase):
         with module._state_lock:
             module._pending_memory.clear()
 
-        # Create config with business_owner_ids and allow_admin_from
         config = {
             "platforms": {
                 "telegram": {
@@ -294,16 +277,13 @@ class VoicePickerSecurityAndAuthorizationTests(unittest.TestCase):
         self.assertIsNone(result)
         self.assertFalse(module._is_pending("9999"))
 
-        # Owner has a pending selection
         module._set_pending("1001")
         self.assertTrue(module._is_pending("1001"))
 
-        # Stranger attempts to send a choice button
         stranger_choice = _make_event("♀ Марина — тёплый рассказчик", user_id="9999", chat_id="9999")
         result = module._on_pre_gateway_dispatch(stranger_choice, gateway)
         self.assertIsNone(result)
 
-        # Owner's pending state remains untouched
         self.assertTrue(module._is_pending("1001"))
 
 
@@ -312,6 +292,7 @@ class VoicePickerPreGatewayDispatchTests(unittest.IsolatedAsyncioTestCase):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.home = Path(self.temp_dir.name)
         module._get_home = lambda: self.home
+        module.SAMPLE_PAUSE_SECONDS = 0.0
         with module._state_lock:
             module._pending_memory.clear()
         module._tasks.clear()
@@ -336,10 +317,12 @@ class VoicePickerPreGatewayDispatchTests(unittest.IsolatedAsyncioTestCase):
 
     def tearDown(self):
         module._get_home = _ORIGINAL_GET_HOME
+        module.SAMPLES_DIR = _ORIGINAL_SAMPLES_DIR
+        module.SAMPLE_PAUSE_SECONDS = 0.3
         self.temp_dir.cleanup()
 
     async def test_golos_command_prompts_and_skips(self):
-        mock_bot = SimpleNamespace(send_message=AsyncMock())
+        mock_bot = SimpleNamespace(send_message=AsyncMock(), send_voice=AsyncMock())
         mock_adapter = SimpleNamespace(_bot=mock_bot, send=AsyncMock())
         gateway = SimpleNamespace(_adapter_for_source=lambda src: mock_adapter)
 
@@ -350,18 +333,26 @@ class VoicePickerPreGatewayDispatchTests(unittest.IsolatedAsyncioTestCase):
         await asyncio.gather(*list(module._tasks))
         self.assertTrue(module._is_pending("1001"))
 
+        # Verify 10 send_voice calls in exact order 1..10
+        self.assertEqual(mock_bot.send_voice.await_count, 10)
+        for i, call in enumerate(mock_bot.send_voice.await_args_list, start=1):
+            kwargs = call.kwargs
+            expected_label = module.VOICES[i - 1][0]
+            self.assertEqual(kwargs["chat_id"], "1001")
+            self.assertEqual(kwargs["caption"], f"{i}. {expected_label}")
+
+        # Verify keyboard prompt message
         mock_bot.send_message.assert_awaited_once()
-        args, kwargs = mock_bot.send_message.call_args
-        self.assertEqual(kwargs.get("chat_id") or args[0], "1001")
-        self.assertEqual(kwargs.get("text") or args[1], "Выбери голос ассистента")
+        _, kwargs = mock_bot.send_message.call_args
+        self.assertEqual(kwargs.get("chat_id"), "1001")
+        self.assertEqual(kwargs.get("text"), "Послушай примеры выше и выбери голос кнопкой 👇")
         reply_markup = kwargs.get("reply_markup")
         self.assertIsNotNone(reply_markup)
-        # Verify 5 rows x 2 cols
         self.assertEqual(len(reply_markup.keyboard), 5)
         self.assertEqual(len(reply_markup.keyboard[0]), 2)
 
     async def test_voice_pick_alias_works(self):
-        mock_bot = SimpleNamespace(send_message=AsyncMock())
+        mock_bot = SimpleNamespace(send_message=AsyncMock(), send_voice=AsyncMock())
         mock_adapter = SimpleNamespace(_bot=mock_bot, send=AsyncMock())
         gateway = SimpleNamespace(_adapter_for_source=lambda src: mock_adapter)
 
@@ -371,55 +362,110 @@ class VoicePickerPreGatewayDispatchTests(unittest.IsolatedAsyncioTestCase):
 
         await asyncio.gather(*list(module._tasks))
         self.assertTrue(module._is_pending("1001"))
+        self.assertEqual(mock_bot.send_voice.await_count, 10)
+        mock_bot.send_message.assert_awaited_once()
 
-    async def test_selection_by_button_label_updates_config_and_replies(self):
-        mock_bot = SimpleNamespace(send_message=AsyncMock())
+    async def test_golos_missing_sample_file_is_skipped(self):
+        with tempfile.TemporaryDirectory() as sample_dir:
+            temp_samples = Path(sample_dir)
+            module.SAMPLES_DIR = temp_samples
+
+            # Create only 3 of the 10 samples
+            for _, voice_id, _ in module.VOICES[:3]:
+                (temp_samples / f"{voice_id}.ogg").write_bytes(b"dummy_opus")
+
+            mock_bot = SimpleNamespace(send_message=AsyncMock(), send_voice=AsyncMock())
+            mock_adapter = SimpleNamespace(_bot=mock_bot, send=AsyncMock())
+            gateway = SimpleNamespace(_adapter_for_source=lambda src: mock_adapter)
+
+            event = _make_event("/golos", user_id="1001", chat_id="1001")
+            result = module._on_pre_gateway_dispatch(event, gateway)
+            self.assertEqual(result, {"action": "skip", "reason": "voice-picker-prompt"})
+
+            await asyncio.gather(*list(module._tasks))
+            # Exactly 3 send_voice calls
+            self.assertEqual(mock_bot.send_voice.await_count, 3)
+            # Reply keyboard is still sent
+            mock_bot.send_message.assert_awaited_once()
+
+    async def test_golos_sample_send_error_is_logged_and_continues(self):
+        mock_bot = SimpleNamespace(
+            send_message=AsyncMock(),
+            send_voice=AsyncMock(side_effect=[
+                None,  # 1 ok
+                RuntimeError("telegram timeout"),  # 2 fails
+                None, None, None, None, None, None, None, None  # 3..10 ok
+            ]),
+        )
         mock_adapter = SimpleNamespace(_bot=mock_bot, send=AsyncMock())
         gateway = SimpleNamespace(_adapter_for_source=lambda src: mock_adapter)
 
-        # Set pending
+        with self.assertLogs("voice_picker_under_test", level="WARNING") as log_capture:
+            event = _make_event("/golos", user_id="1001", chat_id="1001")
+            result = module._on_pre_gateway_dispatch(event, gateway)
+            self.assertEqual(result, {"action": "skip", "reason": "voice-picker-prompt"})
+
+            await asyncio.gather(*list(module._tasks))
+
+        # Check log contains "sample send failed" without user_id
+        log_text = "\n".join(log_capture.output)
+        self.assertIn("sample send failed", log_text)
+        self.assertNotIn("1001", log_text)
+
+        # All 10 attempts were made
+        self.assertEqual(mock_bot.send_voice.await_count, 10)
+        # Reply keyboard still sent
+        mock_bot.send_message.assert_awaited_once()
+
+    async def test_selection_by_button_label_updates_config_and_rewrites_voice_on(self):
+        mock_bot = SimpleNamespace(send_message=AsyncMock(), send_voice=AsyncMock())
+        mock_adapter = SimpleNamespace(_bot=mock_bot, send=AsyncMock())
+        gateway = SimpleNamespace(_adapter_for_source=lambda src: mock_adapter)
+
         module._set_pending("1001")
 
         with self.assertLogs("voice_picker_under_test", level="INFO") as log_capture:
             event = _make_event("♀ Марина — тёплый рассказчик", user_id="1001", chat_id="1001")
             result = module._on_pre_gateway_dispatch(event, gateway)
-            self.assertEqual(result, {"action": "skip", "reason": "voice-selected"})
+            # Rewrite contract: returns rewrite to /voice on
+            self.assertEqual(result, {"action": "rewrite", "text": "/voice on"})
 
             await asyncio.gather(*list(module._tasks))
 
-        # Check log contains only "voice changed" without user ID
         log_text = "\n".join(log_capture.output)
         self.assertIn("voice changed", log_text)
         self.assertNotIn("1001", log_text)
 
-        # Check pending cleared
         self.assertFalse(module._is_pending("1001"))
 
-        # Check config updated
         conf = yaml.safe_load((self.home / "config.yaml").read_text(encoding="utf-8"))
         self.assertEqual(conf["tts"]["elevenlabs"]["voice_id"], "ymDCYd8puC7gYjxIamPt")
         self.assertEqual(conf["tts"]["elevenlabs"]["model_id"], "eleven_v4_turbo")
 
-        # Check response message with ReplyKeyboardRemove
-        mock_bot.send_message.assert_awaited_once()
-        _, kwargs = mock_bot.send_message.call_args
-        self.assertIn("Голос: Марина.", kwargs["text"])
-        self.assertIn("Сменить — /golos", kwargs["text"])
+        # Check confirmation sent via send_voice with sample of chosen voice and ReplyKeyboardRemove
+        mock_bot.send_voice.assert_awaited_once()
+        kwargs = mock_bot.send_voice.call_args.kwargs
+        expected_caption = (
+            "Готово! Теперь я говорю голосом «Марина». "
+            "Голосовые ответы включены: на голосовое отвечу голосом. "
+            "Все ответы голосом — /voice tts, выключить — /voice off, сменить голос — /golos"
+        )
+        self.assertEqual(kwargs["caption"], expected_caption)
+        self.assertEqual(kwargs["chat_id"], "1001")
         reply_markup = kwargs.get("reply_markup")
         self.assertIsNotNone(reply_markup)
         self.assertTrue(getattr(reply_markup, "remove_keyboard", False))
 
-    async def test_selection_by_digit(self):
-        mock_bot = SimpleNamespace(send_message=AsyncMock())
+    async def test_selection_by_digit_rewrites_voice_on(self):
+        mock_bot = SimpleNamespace(send_message=AsyncMock(), send_voice=AsyncMock())
         mock_adapter = SimpleNamespace(_bot=mock_bot, send=AsyncMock())
         gateway = SimpleNamespace(_adapter_for_source=lambda src: mock_adapter)
 
         module._set_pending("1001")
 
-        # Choice digit 1 -> Артём
         event = _make_event("1", user_id="1001", chat_id="1001")
         result = module._on_pre_gateway_dispatch(event, gateway)
-        self.assertEqual(result, {"action": "skip", "reason": "voice-selected"})
+        self.assertEqual(result, {"action": "rewrite", "text": "/voice on"})
 
         await asyncio.gather(*list(module._tasks))
 
@@ -427,11 +473,59 @@ class VoicePickerPreGatewayDispatchTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(conf["tts"]["elevenlabs"]["voice_id"], "rQOBu7YxCDxGiFdTm28w")
         self.assertEqual(conf["tts"]["elevenlabs"]["model_id"], "eleven_v4_turbo")
 
-        _, kwargs = mock_bot.send_message.call_args
-        self.assertIn("Голос: Артём.", kwargs["text"])
+        mock_bot.send_voice.assert_awaited_once()
+        kwargs = mock_bot.send_voice.call_args.kwargs
+        self.assertIn("Готово! Теперь я говорю голосом «Артём».", kwargs["caption"])
+
+    async def test_selection_fallback_to_send_message_when_sample_file_missing(self):
+        with tempfile.TemporaryDirectory() as empty_dir:
+            module.SAMPLES_DIR = Path(empty_dir)
+
+            mock_bot = SimpleNamespace(send_message=AsyncMock(), send_voice=AsyncMock())
+            mock_adapter = SimpleNamespace(_bot=mock_bot, send=AsyncMock())
+            gateway = SimpleNamespace(_adapter_for_source=lambda src: mock_adapter)
+
+            module._set_pending("1001")
+
+            event = _make_event("1", user_id="1001", chat_id="1001")
+            result = module._on_pre_gateway_dispatch(event, gateway)
+            self.assertEqual(result, {"action": "rewrite", "text": "/voice on"})
+
+            await asyncio.gather(*list(module._tasks))
+
+            # Since sample file is missing, send_voice is skipped, send_message is used
+            mock_bot.send_voice.assert_not_awaited()
+            mock_bot.send_message.assert_awaited_once()
+            _, kwargs = mock_bot.send_message.call_args
+            self.assertIn("Готово! Теперь я говорю голосом «Артём».", kwargs["text"])
+            self.assertTrue(getattr(kwargs.get("reply_markup"), "remove_keyboard", False))
+
+    async def test_selection_fallback_when_send_voice_raises(self):
+        mock_bot = SimpleNamespace(
+            send_message=AsyncMock(),
+            send_voice=AsyncMock(side_effect=RuntimeError("telegram error")),
+        )
+        mock_adapter = SimpleNamespace(_bot=mock_bot, send=AsyncMock())
+        gateway = SimpleNamespace(_adapter_for_source=lambda src: mock_adapter)
+
+        module._set_pending("1001")
+
+        with self.assertLogs("voice_picker_under_test", level="WARNING") as log_capture:
+            event = _make_event("1", user_id="1001", chat_id="1001")
+            result = module._on_pre_gateway_dispatch(event, gateway)
+            self.assertEqual(result, {"action": "rewrite", "text": "/voice on"})
+
+            await asyncio.gather(*list(module._tasks))
+
+        log_text = "\n".join(log_capture.output)
+        self.assertIn("sample send failed", log_text)
+
+        mock_bot.send_voice.assert_awaited_once()
+        mock_bot.send_message.assert_awaited_once()
+        self.assertIn("Готово! Теперь я говорю голосом «Артём».", mock_bot.send_message.call_args.kwargs["text"])
 
     async def test_unrelated_text_is_not_intercepted_and_passed_to_llm(self):
-        mock_bot = SimpleNamespace(send_message=AsyncMock())
+        mock_bot = SimpleNamespace(send_message=AsyncMock(), send_voice=AsyncMock())
         mock_adapter = SimpleNamespace(_bot=mock_bot, send=AsyncMock())
         gateway = SimpleNamespace(_adapter_for_source=lambda src: mock_adapter)
 
@@ -440,12 +534,10 @@ class VoicePickerPreGatewayDispatchTests(unittest.IsolatedAsyncioTestCase):
         event = _make_event("Расскажи шутку про программистов", user_id="1001", chat_id="1001")
         result = module._on_pre_gateway_dispatch(event, gateway)
 
-        # None means it continues through normal gateway dispatch to LLM
         self.assertIsNone(result)
-
-        # Pending state remains
         self.assertTrue(module._is_pending("1001"))
         mock_bot.send_message.assert_not_awaited()
+        mock_bot.send_voice.assert_not_awaited()
 
     async def test_fallback_to_adapter_send_when_bot_missing(self):
         mock_adapter = SimpleNamespace(_bot=None, _app=None, send=AsyncMock())

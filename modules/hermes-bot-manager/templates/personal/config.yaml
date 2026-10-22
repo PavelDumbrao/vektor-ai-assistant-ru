@@ -168,10 +168,12 @@ platforms:
       - context
       - compress
       - whoami
+      - golos
       command_menu:
         max_commands: 16
         priority_mode: replace
         priority:
+        - golos
         - help
         - new
         - status

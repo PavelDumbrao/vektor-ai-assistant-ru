@@ -1,7 +1,8 @@
 """Voice picker plugin for Hermes Telegram bot.
 
-Allows profile owners to select ElevenLabs assistant voice interactively
-via Telegram reply-keyboard buttons without restarting the bot.
+Allows profile owners to listen to ElevenLabs assistant voice samples
+and select a voice interactively via Telegram reply-keyboard buttons
+without restarting the bot, auto-enabling voice mode via rewrite.
 """
 
 from __future__ import annotations
@@ -37,6 +38,8 @@ VOICES: list[tuple[str, str, str]] = [
 COMMANDS = {"golos", "voice_pick", "voice-pick"}
 PENDING_TTL_SECONDS = 10 * 60  # 10 minutes
 MODEL_ID = "eleven_v4_turbo"
+SAMPLES_DIR = Path("/opt/vektor/voice-samples")
+SAMPLE_PAUSE_SECONDS = 0.3
 
 _pending_memory: dict[str, float] = {}
 _tasks: set[asyncio.Task] = set()
@@ -195,10 +198,9 @@ def _command_parts(text: str) -> tuple[str, str]:
 
 
 def _extract_voice_name(label: str) -> str:
-    parts = label.split()
-    if len(parts) >= 2:
-        return parts[1]
-    return label
+    head = label.split(" — ", 1)[0].strip()
+    name = head.lstrip("♂♀ \t")
+    return name.strip()
 
 
 def _parse_voice_choice(text: str) -> tuple[str, str, str] | None:
@@ -275,13 +277,13 @@ def _get_ptb_bot(adapter: Any) -> Any | None:
         return None
     for attr in ("_bot", "bot"):
         bot = getattr(adapter, attr, None)
-        if bot is not None and hasattr(bot, "send_message"):
+        if bot is not None and (hasattr(bot, "send_message") or hasattr(bot, "send_voice")):
             return bot
     for attr in ("_app", "app"):
         app = getattr(adapter, attr, None)
         if app is not None:
             bot = getattr(app, "bot", None)
-            if bot is not None and hasattr(bot, "send_message"):
+            if bot is not None and (hasattr(bot, "send_message") or hasattr(bot, "send_voice")):
                 return bot
     return None
 
@@ -295,22 +297,41 @@ async def _send_voice_picker(gateway: Any, source: Any) -> None:
     bot = _get_ptb_bot(adapter)
     markup = _build_keyboard()
 
-    if bot is not None and markup is not None and hasattr(bot, "send_message"):
+    if bot is not None and hasattr(bot, "send_message"):
+        # Send voice samples sequentially if bot supports send_voice
+        if hasattr(bot, "send_voice"):
+            for idx, (label, voice_id, _) in enumerate(VOICES, start=1):
+                sample_file = SAMPLES_DIR / f"{voice_id}.ogg"
+                if not sample_file.is_file():
+                    continue
+                try:
+                    with open(sample_file, "rb") as f:
+                        await bot.send_voice(
+                            chat_id=chat_id,
+                            voice=f,
+                            caption=f"{idx}. {label}",
+                        )
+                    if SAMPLE_PAUSE_SECONDS > 0:
+                        await asyncio.sleep(SAMPLE_PAUSE_SECONDS)
+                except Exception:
+                    logger.warning("sample send failed")
+
+        prompt_text = "Послушай примеры выше и выбери голос кнопкой 👇"
         try:
             await bot.send_message(
                 chat_id=chat_id,
-                text="Выбери голос ассистента",
+                text=prompt_text,
                 reply_markup=markup,
             )
             return
         except Exception:
-            logger.warning("Failed to send reply markup via bot, falling back to text list")
+            logger.warning("sample send failed")
 
     if adapter is not None and hasattr(adapter, "send"):
         try:
             await adapter.send(chat_id, FALLBACK_PROMPT)
         except Exception:
-            logger.warning("Voice picker fallback send failed")
+            pass
 
 
 async def _send_selection_confirmation(
@@ -322,27 +343,46 @@ async def _send_selection_confirmation(
         return
 
     name = _extract_voice_name(voice_tuple[0])
-    text = f"Голос: {name}. Чтобы услышать — напиши /voice и задай любой вопрос. Сменить — /golos"
+    caption = (
+        f"Готово! Теперь я говорю голосом «{name}». "
+        "Голосовые ответы включены: на голосовое отвечу голосом. "
+        "Все ответы голосом — /voice tts, выключить — /voice off, сменить голос — /golos"
+    )
 
     bot = _get_ptb_bot(adapter)
     remove_markup = _build_remove_keyboard()
 
-    if bot is not None and remove_markup is not None and hasattr(bot, "send_message"):
-        try:
-            await bot.send_message(
-                chat_id=chat_id,
-                text=text,
-                reply_markup=remove_markup,
-            )
-            return
-        except Exception:
-            logger.warning("Failed to remove reply keyboard via bot, falling back to adapter.send")
+    if bot is not None:
+        sample_file = SAMPLES_DIR / f"{voice_tuple[1]}.ogg"
+        if sample_file.is_file() and hasattr(bot, "send_voice"):
+            try:
+                with open(sample_file, "rb") as f:
+                    await bot.send_voice(
+                        chat_id=chat_id,
+                        voice=f,
+                        caption=caption,
+                        reply_markup=remove_markup,
+                    )
+                return
+            except Exception:
+                logger.warning("sample send failed")
+
+        if hasattr(bot, "send_message"):
+            try:
+                await bot.send_message(
+                    chat_id=chat_id,
+                    text=caption,
+                    reply_markup=remove_markup,
+                )
+                return
+            except Exception:
+                pass
 
     if adapter is not None and hasattr(adapter, "send"):
         try:
-            await adapter.send(chat_id, text)
+            await adapter.send(chat_id, caption)
         except Exception:
-            logger.warning("Voice picker confirmation send failed")
+            pass
 
 
 def _update_config_voice(voice_id: str) -> None:
@@ -414,7 +454,7 @@ def _track_task(task: asyncio.Task) -> None:
         try:
             completed.result()
         except Exception:
-            logger.warning("Voice picker task failed")
+            pass
 
     task.add_done_callback(_done)
 
@@ -491,7 +531,7 @@ def _on_pre_gateway_dispatch(event: Any, gateway: Any, **_: Any) -> dict[str, st
     _update_config_voice(matched_voice[1])
     logger.info("voice changed")
     _schedule(_send_selection_confirmation(gateway, source, matched_voice))
-    return {"action": "skip", "reason": "voice-selected"}
+    return {"action": "rewrite", "text": "/voice on"}
 
 
 def _voice_picker_cli_command(_raw_args: str) -> str:

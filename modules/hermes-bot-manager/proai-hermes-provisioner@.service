@@ -5,8 +5,10 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
-User=root
-Group=root
+# Runs as root by default. Do NOT set an explicit User=root here: combined with
+# NoNewPrivileges= and the Protect*/LockPersonality sandbox, systemd strips CAP_SETUID
+# from the service, and the provisioner must demote installers to the client uid.
+# (Forge hiring failed with subprocess_failed:python3 / EPERM on setreuid, 2026-10-22.)
 WorkingDirectory=/opt/proai-hermes-manager
 ExecStart=/usr/bin/python3 /opt/proai-hermes-manager/provisioner.py provision --instance-file /opt/proai-hermes-manager/state/instances/%i.json
 UMask=0077

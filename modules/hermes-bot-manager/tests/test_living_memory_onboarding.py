@@ -150,6 +150,7 @@ def test_symlink_tenant_paths_rejected(profile, instance, name):
 def test_new_template_enables_daily_not_per_turn_learning():
     config = yaml.safe_load((ROOT/'templates/personal/config.yaml').read_text())
     assert config['memory']['nudge_interval'] == 0
-    assert config['memory']['write_approval'] is True
+    # Clients run autonomously (2026-10-22): memory writes need no approval; learning stays daily, not per turn.
+    assert config['memory']['write_approval'] is False
     assert config['memory']['memory_enabled'] is True
     assert config['memory']['user_profile_enabled'] is True

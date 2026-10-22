@@ -15,15 +15,17 @@ def test_resolve_routes_prefers_distinct_sol_on_other_host(monkeypatch,tmp_path)
     def fake_imports(home):
         return (lambda **kw: None, lambda e: e.get("_resolved_key"), lambda **kw: None)
     monkeypatch.setattr(provider,"_hermes_imports",fake_imports)
+    monkeypatch.delenv("LINGSUAN_OPUS_KEY",raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY",raising=False)
     cfg={
-        "model":{"default":"gpt-5.6-sol","base_url":"https://primary.example","api_key":"primary-key-123"},
+        "model":{"default":"gpt-6.1-sol","base_url":"https://primary.example","api_key":"primary-key-123"},
         "fallback_providers":[
             {"provider":"custom","model":"gpt-5.6-terra","base_url":"https://primary.example","_resolved_key":"terra-key-456"},
-            {"provider":"custom","model":"gpt-5.6-sol","base_url":"https://fallback.example","_resolved_key":"fallback-key-789"},
+            {"provider":"custom","model":"gpt-6.1-sol","base_url":"https://fallback.example","_resolved_key":"fallback-key-789"},
         ]}
     p,f=provider.resolve_routes(tmp_path,cfg)
-    assert p["model"] == "gpt-5.6-sol"
-    assert f["model"] == "gpt-5.6-sol"
+    assert p["model"] == "gpt-6.1-sol"
+    assert f["model"] == "gpt-6.1-sol"
     assert f["base_url"] == "https://fallback.example"
     assert f["api_key"] != p["api_key"]
 
@@ -75,14 +77,26 @@ def test_curate_batch_uses_primary_when_healthy(monkeypatch,tmp_path):
     assert meta["route"] == "primary" and err is None
 
 
-def test_resolve_routes_prefers_openrouter_sol_on_separate_key(monkeypatch,tmp_path):
+def test_resolve_routes_prefers_lingsuan_sonnet_on_opus_key(monkeypatch,tmp_path):
     monkeypatch.setattr(provider,"_hermes_imports",lambda home:(lambda **kw:None,lambda e:e.get("_resolved_key"),lambda **kw:None))
-    monkeypatch.setenv("OPENROUTER_API_KEY","openrouter-separate-key")
-    cfg={"model":{"default":"gpt-5.6-sol","base_url":"https://primary.example","api_key":"primary-key"},"fallback_providers":[]}
+    monkeypatch.setenv("LINGSUAN_OPUS_KEY","opus-separate-key")
+    monkeypatch.setenv("OPENROUTER_API_KEY","openrouter-separate-key")  # STT-only key: must be ignored here
+    cfg={"model":{"default":"gpt-6.1-sol","base_url":"https://primary.example","api_key":"primary-key"},"fallback_providers":[]}
     primary,fallback=provider.resolve_routes(tmp_path,cfg)
-    assert fallback["provider"] == "openrouter"
-    assert fallback["model"] == "openai/gpt-5.6-sol"
-    assert fallback["api_key"] != primary["api_key"]
+    assert primary["model"] == "gpt-6.1-sol"
+    assert fallback["provider"] == "custom"
+    assert fallback["model"] == "claude-sonnet-5-5"
+    assert fallback["base_url"] == "https://api.lingsuan.si/v1"
+    assert fallback["api_key"] == "opus-separate-key" and fallback["api_key"] != primary["api_key"]
+
+
+def test_resolve_routes_openrouter_key_alone_is_not_a_fallback(monkeypatch,tmp_path):
+    monkeypatch.setattr(provider,"_hermes_imports",lambda home:(lambda **kw:None,lambda e:e.get("_resolved_key"),lambda **kw:None))
+    monkeypatch.delenv("LINGSUAN_OPUS_KEY",raising=False)
+    monkeypatch.setenv("OPENROUTER_API_KEY","openrouter-separate-key")
+    cfg={"model":{"default":"gpt-6.1-sol","base_url":"https://primary.example","api_key":"primary-key"},"fallback_providers":[]}
+    with pytest.raises(RuntimeError,match="distinct_fallback"):
+        provider.resolve_routes(tmp_path,cfg)
 
 
 def test_call_route_requests_high_reasoning(monkeypatch,tmp_path):

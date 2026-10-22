@@ -66,7 +66,7 @@ def test_primary_success_never_calls_lingsuan(monkeypatch, provider):
     assert calls[0][0].endswith("/v1/draw/completions")
 
 
-def test_primary_http_error_uses_sunburst(monkeypatch, provider):
+def test_primary_http_error_uses_flare(monkeypatch, provider):
     calls = []
     encoded = base64.b64encode(b"\x89PNG\r\n\x1a\n" + b"x" * 40).decode()
     def fake_post(url, **kwargs):
@@ -79,14 +79,14 @@ def test_primary_http_error_uses_sunburst(monkeypatch, provider):
     result = provider.generate("portrait", aspect_ratio="square")
     assert result["success"] is True
     assert result["provider"] == "lingsuan"
-    assert result["model"] == "gpt-image-2.5-sunburst"
+    assert result["model"] == "gpt-image-2.5-flare"
     assert result["fallback_stage"] == "fallback_1"
     assert [payload.get("model") for _, payload in calls] == [
-        "gpt-image-2.5", "gpt-image-2.5-sunburst",
+        "gpt-image-2.5", "gpt-image-2.5-flare",
     ]
 
 
-def test_sunburst_failure_uses_flare_firefly(monkeypatch, provider):
+def test_flare_failure_uses_flare_firefly(monkeypatch, provider):
     calls = []
     encoded = base64.b64encode(b"\x89PNG\r\n\x1a\n" + b"x" * 40).decode()
 
@@ -95,7 +95,7 @@ def test_sunburst_failure_uses_flare_firefly(monkeypatch, provider):
         calls.append((url, payload))
         if url.endswith("/v1/draw/completions"):
             return FakeResponse(503, {})
-        if payload.get("model") == "gpt-image-2.5-sunburst":
+        if payload.get("model") == "gpt-image-2.5-flare":
             return FakeResponse(502, {})
         return FakeResponse(200, {"data": [{"b64_json": encoded}]})
     monkeypatch.setattr(requests, "post", fake_post)
@@ -149,6 +149,6 @@ def test_missing_grsai_key_can_use_lingsuan(monkeypatch, provider):
     result = provider.generate("portrait", aspect_ratio="square")
     assert result["success"] is True
     assert result["provider"] == "lingsuan"
-    assert result["model"] == "gpt-image-2.5-sunburst"
+    assert result["model"] == "gpt-image-2.5-flare"
     assert len(calls) == 1
     assert calls[0][0].endswith("/v1/images/generations")

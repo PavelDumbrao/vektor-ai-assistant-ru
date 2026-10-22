@@ -54,12 +54,16 @@ def test_provision_runs_bounded_steps_in_order(monkeypatch, tmp_path):
     monkeypatch.setattr(provisioner, "_ensure_account", lambda *_: entry)
     monkeypatch.setattr(provisioner, "_render_profile", lambda *_: calls.append("profile") or hermes)
     monkeypatch.setattr(provisioner, "_ensure_profile_env", lambda *_: calls.append("env"))
+    monkeypatch.setattr(provisioner, "_ensure_proaisaver_header", lambda *_: calls.append("saver-header"))
+    monkeypatch.setattr(provisioner, "_install_profile_hooks", lambda *_: calls.append("hooks"))
     monkeypatch.setattr(provisioner, "_bind_runtime", lambda *_: calls.append("runtime"))
+    monkeypatch.setattr(provisioner, "_prepare_lazy_packages", lambda *_: calls.append("lazy"))
     monkeypatch.setattr(provisioner, "_install_service", lambda *_: calls.append("service"))
     monkeypatch.setattr(provisioner, "_provision_database", lambda *_: calls.append("database"))
     monkeypatch.setattr(provisioner, "_install_passive_secretary", lambda *_: calls.append("secretary"))
     monkeypatch.setattr(provisioner, "_install_workspace_members", lambda *_: calls.append("workspace-members"))
     monkeypatch.setattr(provisioner, "_install_maton", lambda *_: calls.append("maton"))
+    monkeypatch.setattr(provisioner, "_install_voice_picker", lambda *_: calls.append("voice-picker"))
     monkeypatch.setattr(provisioner, "_install_grsai", lambda *_: calls.append("grsai"))
     monkeypatch.setattr(provisioner, "_prepare_living_memory", lambda *_: calls.append("memory-prepare"))
     monkeypatch.setattr(provisioner.living_memory, "check", lambda *_: calls.append("memory-check") or {"version": "0.1.0"})
@@ -71,8 +75,9 @@ def test_provision_runs_bounded_steps_in_order(monkeypatch, tmp_path):
     assert result["state"] == "active"
     assert result["health"]["living_memory"]["timer_enabled"] is True
     assert calls == [
-        "record:provisioning", "profile", "env", "runtime", "service",
-        "database", "secretary", "workspace-members", "maton", "grsai", "memory-prepare", "memory-check", "start", "health", "memory-enable",
+        "record:provisioning", "profile", "env", "saver-header", "hooks", "runtime", "lazy", "service",
+        "database", "secretary", "workspace-members", "maton", "voice-picker", "grsai",
+        "memory-prepare", "memory-check", "start", "health", "memory-enable",
         "record:active",
     ]
 
@@ -119,8 +124,9 @@ def test_memory_or_startup_failure_never_publishes_ready(monkeypatch, tmp_path, 
     monkeypatch.setattr(provisioner, '_instance_path', lambda *_: tmp_path/'instance.json')
     monkeypatch.setattr(provisioner, '_record', lambda _i, state, **kw: states.append((state, kw)))
     monkeypatch.setattr(provisioner, '_ensure_account', lambda *_: SimpleNamespace())
-    for name in ('_render_profile', '_ensure_profile_env', '_bind_runtime', '_install_service',
-        '_provision_database', '_install_passive_secretary', '_install_workspace_members', '_install_maton', '_install_grsai', '_prepare_living_memory'):
+    for name in ('_render_profile', '_ensure_profile_env', '_ensure_proaisaver_header', '_install_profile_hooks', '_bind_runtime',
+        '_prepare_lazy_packages', '_install_service', '_provision_database', '_install_passive_secretary', '_install_workspace_members',
+        '_install_maton', '_install_voice_picker', '_install_grsai', '_prepare_living_memory'):
         monkeypatch.setattr(provisioner, name, lambda *a: tmp_path)
     monkeypatch.setattr(provisioner, '_start_service', step('start'))
     monkeypatch.setattr(provisioner, '_wait_healthy', step('health', {}))

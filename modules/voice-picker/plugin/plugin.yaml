@@ -1,0 +1,7 @@
+name: voice-picker
+version: 1.0.0
+kind: standalone
+description: ElevenLabs voice picker for Hermes Telegram bot.
+author: Vektor
+hooks:
+  - pre_gateway_dispatch

@@ -27,7 +27,7 @@ MAX_REFERENCE_BYTES = 12 * 1024 * 1024
 MAX_FALLBACK_IMAGE_BYTES = 32 * 1024 * 1024
 LINGSUAN_BASE_DEFAULT = "https://lingsuan.top"
 LINGSUAN_FALLBACKS = (
-    ("gpt-image-2.5-sunburst", "LLM_API_KEY", "fallback_1"),
+    ("gpt-image-2.5-flare", "LLM_API_KEY", "fallback_1"),
     ("gpt-image-2.5-flare-firefly", "FALLBACK_LLM_API_KEY", "fallback_2"),
 )
 LINGSUAN_TIMEOUT = (15, 150)

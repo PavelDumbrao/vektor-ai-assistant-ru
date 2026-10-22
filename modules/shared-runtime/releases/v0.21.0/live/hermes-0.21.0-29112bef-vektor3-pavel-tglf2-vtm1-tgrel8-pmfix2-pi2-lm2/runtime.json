@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "state": "ready",
+  "release_id": "hermes-0.21.0-29112bef-vektor3-pavel-tglf2-vtm1-tgrel8-pmfix2-pi2-lm2",
+  "version": "0.21.0",
+  "upstream_commit": "29112bef099274229cadff79cdff7bf7b99c4b77",
+  "archive_sha256": "b80dc110dc3f7fcbf7978f5f7c82c99022671acd2cdc7fdbd6ec5bfae6409e2a",
+  "code_sha256": "b52ce6e9817bcd763d6f26f257b983e2a2d18412079577ca9a8867a3d3cefb7c",
+  "dependencies_sha256": "109fd8cd13df8d819a7ffe9aa057f8477ac999c0160de19c7faa9b86f32ab66b",
+  "schema_rollback_compatible": true,
+  "parent_release_id": "hermes-0.21.0-29112bef-vektor3-pavel-tglf2-vtm1-tgrel8-pmfix2-pi2",
+  "verification": {
+    "purpose": "long_media_transcription_lm2",
+    "source_commit": "d3a4d77bbef25e4ad5eff4220f985d55c7ba27c6",
+    "ported_from_live_v2_parent": true,
+    "dependencies_identical": true,
+    "changed_files": [
+      "tools/long_media_transcription.py",
+      "tools/transcription_tools.py",
+      "gateway/run.py"
+    ],
+    "parent_verification": {
+      "purpose": "passive_media_local_ingress_fix",
+      "dependencies_identical": true,
+      "changed_files": [
+        "plugins/platforms/telegram/adapter.py"
+      ],
+      "source_commit": "79146f6e458ed47896c147b25ed50512de5ba340",
+      "runtime_relocated_from": "hermes-0.21.0-29112bef-vektor3-pavel-tglf2-vtm1-tgrel8",
+      "core_metadata_rebound": true,
+      "final_metadata_rebound": true
+    },
+    "runtime_relocated_from": "hermes-0.21.0-29112bef-vektor3-pavel-tglf2-vtm1-tgrel8-pmfix2-pi2",
+    "core_metadata_rebound": true,
+    "long_media_chunk_seconds": 480,
+    "cloud_chunk_target_under_bytes": 26214400,
+    "final_path_metadata_rebound": true,
+    "neutral_import_verified": true
+  }
+}

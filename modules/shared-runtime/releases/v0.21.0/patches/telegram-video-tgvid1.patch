@@ -1,0 +1,980 @@
+--- a/plugins/platforms/telegram/adapter.py
++++ b/plugins/platforms/telegram/adapter.py
+@@ -301,6 +301,9 @@
+     parse_fallback_ip_env,
+     tcp_keepalive_socket_options,
+ )
++from plugins.platforms.telegram.video_meta import (
++    video_send_kwargs,
++)
+ from utils import atomic_replace, env_float, env_int
+ 
+ _TELEGRAM_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
+@@ -10626,6 +10629,8 @@
+         if not self._bot:
+             return SendResult(success=False, error="Not connected")
+ 
++        thumb_file = None
++        thumb_path = None
+         try:
+             if not os.path.exists(video_path):
+                 return SendResult(success=False, error=self._missing_media_path_error("Video", video_path))
+@@ -10639,22 +10644,47 @@
+                 reply_to_message_id=reply_to_id,
+                 reply_to_mode=self._reply_to_mode
+             )
++
++            try:
++                extra, thumb_path = await asyncio.to_thread(video_send_kwargs, video_path)
++            except Exception as meta_err:
++                logger.debug("[%s] Failed to probe video metadata for %s: %s", self.name, video_path, meta_err)
++                extra, thumb_path = {}, None
++
++            if thumb_path:
++                try:
++                    if os.path.exists(thumb_path):
++                        thumb_file = open(thumb_path, "rb")
++                except Exception as thumb_err:
++                    logger.debug("[%s] Failed to open thumbnail %s: %s", self.name, thumb_path, thumb_err)
++                    thumb_file = None
++
+             with open(video_path, "rb") as f:
++                def _reset_media():
++                    f.seek(0)
++                    if thumb_file is not None:
++                        thumb_file.seek(0)
++
++                send_kwargs = {
++                    "chat_id": normalize_telegram_chat_id(chat_id),
++                    "video": f,
++                    "caption": caption[:1024] if caption else None,
++                    "reply_to_message_id": reply_to_id,
++                    "read_timeout": _MEDIA_SEND_READ_TIMEOUT,
++                    **extra,
++                    **thread_kwargs,
++                    **self._notification_kwargs(metadata),
++                }
++                if thumb_file is not None:
++                    send_kwargs["thumbnail"] = thumb_file
++
+                 msg = await self._send_with_dm_topic_reply_anchor_retry(
+                     self._bot.send_video,
+-                    {
+-                        "chat_id": normalize_telegram_chat_id(chat_id),
+-                        "video": f,
+-                        "caption": caption[:1024] if caption else None,
+-                        "reply_to_message_id": reply_to_id,
+-                        "read_timeout": _MEDIA_SEND_READ_TIMEOUT,
+-                        **thread_kwargs,
+-                        **self._notification_kwargs(metadata),
+-                    },
++                    send_kwargs,
+                     metadata,
+                     reply_to_id,
+                     "video",
+-                    reset_media=lambda: f.seek(0),
++                    reset_media=_reset_media,
+                 )
+             return SendResult(success=True, message_id=str(msg.message_id))
+         except Exception as e:
+@@ -10663,6 +10693,18 @@
+                 self.name, _redact_telegram_error_text(e),
+             )
+             return await super().send_video(chat_id, video_path, caption, reply_to, metadata=metadata)
++        finally:
++            if thumb_file is not None:
++                try:
++                    thumb_file.close()
++                except Exception:
++                    pass
++            if thumb_path:
++                try:
++                    if os.path.exists(thumb_path):
++                        os.unlink(thumb_path)
++                except Exception:
++                    pass
+ 
+     async def send_image(
+         self,
+--- a/plugins/platforms/telegram/video_meta.py
++++ b/plugins/platforms/telegram/video_meta.py
+@@ -0,0 +1,340 @@
++"""Telegram video metadata probing and thumbnail generation.
++
++Pure functions (no asyncio). Used by TelegramAdapter.send_video via
++asyncio.to_thread.
++"""
++from __future__ import annotations
++
++import json
++import logging
++import math
++import os
++import shutil
++import subprocess
++import tempfile
++from dataclasses import dataclass
++from typing import Optional
++
++logger = logging.getLogger(__name__)
++
++# Telegram thumbnail size cap is 200 KB
++MAX_THUMBNAIL_BYTES = 200 * 1024
++
++
++@dataclass
++class VideoMeta:
++    width: int
++    height: int
++    duration: int
++    rotation: int
++
++
++def _safe_unlink(path: Optional[str]) -> None:
++    if path:
++        try:
++            if os.path.exists(path):
++                os.unlink(path)
++        except OSError:
++            pass
++
++
++def probe_video(
++    path: str,
++    *,
++    ffprobe: Optional[str] = None,
++    timeout: float = 10.0,
++) -> Optional[VideoMeta]:
++    """Probe video dimensions, SAR, rotation and duration using ffprobe.
++
++    Returns VideoMeta with display dimensions (SAR-adjusted and rotation-swapped)
++    and ceiling whole-second duration (minimum 1s), or None on any failure.
++    """
++    if not path:
++        return None
++
++    ffprobe_bin = ffprobe or shutil.which("ffprobe")
++    if not ffprobe_bin:
++        logger.debug("ffprobe binary not found")
++        return None
++
++    cmd = [
++        ffprobe_bin,
++        "-v",
++        "error",
++        "-select_streams",
++        "v:0",
++        "-show_entries",
++        "stream=width,height,sample_aspect_ratio,codec_type:stream_tags=rotate:stream_side_data=rotation:format=duration",
++        "-of",
++        "json",
++        str(path),
++    ]
++
++    try:
++        proc = subprocess.run(
++            cmd,
++            capture_output=True,
++            text=True,
++            encoding="utf-8",
++            errors="replace",
++            timeout=timeout,
++        )
++    except subprocess.TimeoutExpired:
++        logger.debug("ffprobe timed out after %s s: %s", timeout, path)
++        return None
++    except Exception as exc:
++        logger.debug("ffprobe execution failed for %s: %s", path, exc)
++        return None
++
++    if proc.returncode != 0:
++        logger.debug("ffprobe returned non-zero code %s: %s", proc.returncode, proc.stderr)
++        return None
++
++    try:
++        data = json.loads(proc.stdout)
++    except Exception as exc:
++        logger.debug("Failed to parse ffprobe json output: %s", exc)
++        return None
++
++    streams = data.get("streams", [])
++    if not streams or not isinstance(streams, list):
++        logger.debug("No streams in ffprobe output for %s", path)
++        return None
++
++    stream = None
++    for s in streams:
++        if isinstance(s, dict) and s.get("codec_type") == "video":
++            stream = s
++            break
++    if stream is None:
++        if streams and isinstance(streams[0], dict):
++            stream = streams[0]
++        else:
++            logger.debug("No valid video stream in ffprobe output for %s", path)
++            return None
++
++    try:
++        raw_width = int(stream["width"])
++        raw_height = int(stream["height"])
++    except (KeyError, ValueError, TypeError) as exc:
++        logger.debug("Missing or invalid width/height in video stream: %s", exc)
++        return None
++
++    if raw_width <= 0 or raw_height <= 0:
++        logger.debug("Non-positive dimensions in video stream: %sx%s", raw_width, raw_height)
++        return None
++
++    # SAR adjustment: sample_aspect_ratio "a:b"
++    width = raw_width
++    height = raw_height
++    sar = stream.get("sample_aspect_ratio")
++    if isinstance(sar, str) and ":" in sar:
++        parts = sar.split(":", 1)
++        try:
++            num, den = float(parts[0]), float(parts[1])
++            if num > 0 and den > 0 and (num != den):
++                width = int(round((width * (num / den)) / 2.0)) * 2
++        except (ValueError, ZeroDivisionError) as exc:
++            logger.debug("Ignoring unparseable SAR %r: %s", sar, exc)
++
++    # Rotation adjustment: stream_tags=rotate or stream_side_data=rotation
++    rotation = 0
++    tags = stream.get("tags")
++    if isinstance(tags, dict) and "rotate" in tags:
++        try:
++            rotation = int(float(tags["rotate"]))
++        except (ValueError, TypeError):
++            pass
++
++    if rotation == 0:
++        side_data = stream.get("side_data_list") or stream.get("side_data") or []
++        if isinstance(side_data, list):
++            for sd in side_data:
++                if isinstance(sd, dict) and "rotation" in sd:
++                    try:
++                        rotation = int(float(sd["rotation"]))
++                        if rotation != 0:
++                            break
++                    except (ValueError, TypeError):
++                        pass
++
++    # For 90, 270, -90, -270 deg rotations, display width and height swap
++    if abs(rotation) % 180 == 90:
++        width, height = height, width
++
++    # Duration: ceil(format.duration), minimum 1
++    raw_duration = None
++    format_info = data.get("format")
++    if isinstance(format_info, dict):
++        raw_duration = format_info.get("duration")
++    if raw_duration is None or raw_duration == "N/A":
++        raw_duration = stream.get("duration")
++
++    if raw_duration is None:
++        logger.debug("No duration found in ffprobe output for %s", path)
++        return None
++
++    try:
++        dur_float = float(raw_duration)
++        duration = max(1, math.ceil(dur_float))
++    except (ValueError, TypeError) as exc:
++        logger.debug("Invalid duration value %r: %s", raw_duration, exc)
++        return None
++
++    return VideoMeta(
++        width=width,
++        height=height,
++        duration=duration,
++        rotation=rotation,
++    )
++
++
++def make_thumbnail(
++    path: str,
++    meta: VideoMeta,
++    *,
++    ffmpeg: Optional[str] = None,
++    timeout: float = 15.0,
++) -> Optional[str]:
++    """Extract a JPEG thumbnail preserving aspect ratio (longest side <= 320 px).
++
++    If the generated JPEG exceeds 200 KB, re-encodes at -q:v 10. If it still
++    exceeds 200 KB or any error occurs, returns None and cleans up the temporary file.
++    """
++    if not path:
++        return None
++
++    ffmpeg_bin = ffmpeg or shutil.which("ffmpeg")
++    if not ffmpeg_bin:
++        logger.debug("ffmpeg binary not found")
++        return None
++
++    if meta.duration <= 2:
++        t = min(1.0, max(0.0, meta.duration / 2.0))
++    else:
++        t = 1.0
++
++    t_str = f"{t:.3f}".rstrip("0").rstrip(".") if "." in f"{t:.3f}" else str(t)
++    vf_scale = "scale=w='min(320,iw)':h='min(320,ih)':force_original_aspect_ratio=decrease"
++
++    try:
++        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".jpg")
++        tmp_path = tmp.name
++        tmp.close()
++    except Exception as exc:
++        logger.debug("Failed to create temporary file for thumbnail: %s", exc)
++        return None
++
++    cmd = [
++        ffmpeg_bin,
++        "-v",
++        "error",
++        "-y",
++        "-ss",
++        t_str,
++        "-i",
++        str(path),
++        "-frames:v",
++        "1",
++        "-vf",
++        vf_scale,
++        "-q:v",
++        "5",
++        tmp_path,
++    ]
++
++    try:
++        proc = subprocess.run(
++            cmd,
++            capture_output=True,
++            timeout=timeout,
++        )
++    except subprocess.TimeoutExpired:
++        logger.debug("ffmpeg thumbnail generation timed out after %s s: %s", timeout, path)
++        _safe_unlink(tmp_path)
++        return None
++    except Exception as exc:
++        logger.debug("ffmpeg thumbnail generation failed: %s", exc)
++        _safe_unlink(tmp_path)
++        return None
++
++    if proc.returncode != 0 or not os.path.exists(tmp_path):
++        logger.debug("ffmpeg thumbnail failed (code %s): %s", proc.returncode, proc.stderr)
++        _safe_unlink(tmp_path)
++        return None
++
++    try:
++        size = os.path.getsize(tmp_path)
++        if size == 0:
++            logger.debug("Generated thumbnail is empty")
++            _safe_unlink(tmp_path)
++            return None
++
++        if size > MAX_THUMBNAIL_BYTES:
++            # Re-encode at -q:v 10
++            cmd_reencode = [
++                ffmpeg_bin,
++                "-v",
++                "error",
++                "-y",
++                "-ss",
++                t_str,
++                "-i",
++                str(path),
++                "-frames:v",
++                "1",
++                "-vf",
++                vf_scale,
++                "-q:v",
++                "10",
++                tmp_path,
++            ]
++            proc2 = subprocess.run(
++                cmd_reencode,
++                capture_output=True,
++                timeout=timeout,
++            )
++            if proc2.returncode != 0 or not os.path.exists(tmp_path):
++                logger.debug("ffmpeg re-encode failed (code %s): %s", proc2.returncode, proc2.stderr)
++                _safe_unlink(tmp_path)
++                return None
++
++            if os.path.getsize(tmp_path) > MAX_THUMBNAIL_BYTES:
++                logger.debug("Thumbnail still exceeds %s bytes after -q:v 10", MAX_THUMBNAIL_BYTES)
++                _safe_unlink(tmp_path)
++                return None
++
++        return tmp_path
++    except Exception as exc:
++        logger.debug("Thumbnail size check/re-encode error: %s", exc)
++        _safe_unlink(tmp_path)
++        return None
++
++
++def video_send_kwargs(
++    path: str,
++    *,
++    ffprobe: Optional[str] = None,
++    ffmpeg: Optional[str] = None,
++) -> tuple[dict, Optional[str]]:
++    """Probe video metadata and generate thumbnail for Telegram send_video.
++
++    Returns (kwargs_dict, thumb_path) where kwargs_dict contains:
++    {"width": int, "height": int, "duration": int, "supports_streaming": True}.
++    If probe fails, returns ({}, None).
++    """
++    try:
++        meta = probe_video(path, ffprobe=ffprobe)
++        if meta is None:
++            return {}, None
++        thumb_path = make_thumbnail(path, meta, ffmpeg=ffmpeg)
++        kwargs = {
++            "width": meta.width,
++            "height": meta.height,
++            "duration": meta.duration,
++            "supports_streaming": True,
++        }
++        return kwargs, thumb_path
++    except Exception as exc:
++        logger.debug("video_send_kwargs failed for %s: %s", path, exc)
++        return {}, None
+--- a/tests/gateway/test_telegram_video_meta.py
++++ b/tests/gateway/test_telegram_video_meta.py
+@@ -0,0 +1,536 @@
++"""Tests for Telegram video metadata probing and thumbnail generation.
++
++Covers:
++  - VideoMeta dataclass
++  - probe_video:
++      * vertical 1080x1920 without rotate -> (1080, 1920)
++      * horizontal 1920x1080 with tags.rotate=90 -> (1080, 1920)
++      * horizontal 1920x1080 with side_data rotation=-90 -> (1080, 1920)
++      * SAR 4:3 on 1440x1080 -> 1920x1080
++      * duration 12.2 -> 13
++      * missing ffprobe -> None
++      * ffprobe timeout -> None
++      * garbage JSON -> None
++  - make_thumbnail:
++      * missing ffmpeg -> None
++      * successful generation -> thumbnail exists and is cleaned up
++      * oversized thumbnail -> re-encodes, fails if still oversized
++  - video_send_kwargs
++  - TelegramAdapter.send_video integration:
++      * with metadata: receives width, height, duration, supports_streaming, thumbnail
++      * without metadata: exact keys as before (regression guard)
++      * reset_media rewinds both video and thumbnail files on retry
++      * thumbnail file closed and unlinked in finally block
++      * probe/thumbnail exceptions never fail the send operation
++"""
++import asyncio
++import json
++import os
++import subprocess
++from pathlib import Path
++from types import SimpleNamespace
++from unittest.mock import AsyncMock, MagicMock, patch
++
++import pytest
++
++from gateway.config import PlatformConfig
++from plugins.platforms.telegram import adapter as telegram_mod
++from plugins.platforms.telegram.adapter import TelegramAdapter
++from plugins.platforms.telegram.video_meta import (
++    VideoMeta,
++    make_thumbnail,
++    probe_video,
++    video_send_kwargs,
++)
++
++
++class FakeBadRequest(Exception):
++    pass
++
++
++def _make_adapter() -> TelegramAdapter:
++    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="***"))
++    adapter._bot = MagicMock()
++    adapter._bot.send_video = AsyncMock(return_value=SimpleNamespace(message_id=42))
++    return adapter
++
++
++def _make_dummy_video(tmp_path: Path, filename: str = "test.mp4") -> Path:
++    p = tmp_path / filename
++    p.write_bytes(b"\x00\x00\x00\x1c" + b"ftyp" + b"\x00" * 100)
++    return p
++
++
++# ===========================================================================
++# 1. probe_video tests
++# ===========================================================================
++
++def test_probe_vertical_no_rotate(monkeypatch):
++    """Vertical 1080x1920 video with no rotation -> (1080, 1920)."""
++    fake_payload = {
++        "streams": [
++            {
++                "codec_type": "video",
++                "width": 1080,
++                "height": 1920,
++                "sample_aspect_ratio": "1:1",
++                "tags": {},
++            }
++        ],
++        "format": {"duration": "10.0"},
++    }
++
++    monkeypatch.setattr(
++        subprocess,
++        "run",
++        lambda *args, **kwargs: MagicMock(
++            returncode=0, stdout=json.dumps(fake_payload), stderr=""
++        ),
++    )
++
++    meta = probe_video("/fake/clip.mp4", ffprobe="/usr/bin/ffprobe")
++    assert meta is not None
++    assert meta.width == 1080
++    assert meta.height == 1920
++    assert meta.duration == 10
++    assert meta.rotation == 0
++
++
++def test_probe_horizontal_rotate_90(monkeypatch):
++    """Horizontal 1920x1080 with tags.rotate=90 -> swapped display dims (1080, 1920)."""
++    fake_payload = {
++        "streams": [
++            {
++                "codec_type": "video",
++                "width": 1920,
++                "height": 1080,
++                "sample_aspect_ratio": "1:1",
++                "tags": {"rotate": "90"},
++            }
++        ],
++        "format": {"duration": "10.0"},
++    }
++
++    monkeypatch.setattr(
++        subprocess,
++        "run",
++        lambda *args, **kwargs: MagicMock(
++            returncode=0, stdout=json.dumps(fake_payload), stderr=""
++        ),
++    )
++
++    meta = probe_video("/fake/clip.mp4", ffprobe="/usr/bin/ffprobe")
++    assert meta is not None
++    assert meta.width == 1080
++    assert meta.height == 1920
++    assert meta.rotation == 90
++
++
++def test_probe_side_data_rotation_minus_90(monkeypatch):
++    """Side data rotation=-90 on 1920x1080 -> swapped display dims (1080, 1920)."""
++    fake_payload = {
++        "streams": [
++            {
++                "codec_type": "video",
++                "width": 1920,
++                "height": 1080,
++                "sample_aspect_ratio": "1:1",
++                "side_data_list": [{"rotation": -90}],
++            }
++        ],
++        "format": {"duration": "10.0"},
++    }
++
++    monkeypatch.setattr(
++        subprocess,
++        "run",
++        lambda *args, **kwargs: MagicMock(
++            returncode=0, stdout=json.dumps(fake_payload), stderr=""
++        ),
++    )
++
++    meta = probe_video("/fake/clip.mp4", ffprobe="/usr/bin/ffprobe")
++    assert meta is not None
++    assert meta.width == 1080
++    assert meta.height == 1920
++    assert meta.rotation == -90
++
++
++def test_probe_sar_4_3(monkeypatch):
++    """SAR 4:3 on 1440x1080 -> 1920x1080."""
++    fake_payload = {
++        "streams": [
++            {
++                "codec_type": "video",
++                "width": 1440,
++                "height": 1080,
++                "sample_aspect_ratio": "4:3",
++            }
++        ],
++        "format": {"duration": "10.0"},
++    }
++
++    monkeypatch.setattr(
++        subprocess,
++        "run",
++        lambda *args, **kwargs: MagicMock(
++            returncode=0, stdout=json.dumps(fake_payload), stderr=""
++        ),
++    )
++
++    meta = probe_video("/fake/clip.mp4", ffprobe="/usr/bin/ffprobe")
++    assert meta is not None
++    assert meta.width == 1920
++    assert meta.height == 1080
++
++
++def test_probe_duration_rounding(monkeypatch):
++    """Duration 12.2 -> ceil 13."""
++    fake_payload = {
++        "streams": [
++            {
++                "codec_type": "video",
++                "width": 1080,
++                "height": 1920,
++            }
++        ],
++        "format": {"duration": "12.2"},
++    }
++
++    monkeypatch.setattr(
++        subprocess,
++        "run",
++        lambda *args, **kwargs: MagicMock(
++            returncode=0, stdout=json.dumps(fake_payload), stderr=""
++        ),
++    )
++
++    meta = probe_video("/fake/clip.mp4", ffprobe="/usr/bin/ffprobe")
++    assert meta is not None
++    assert meta.duration == 13
++
++
++def test_probe_no_ffprobe(monkeypatch):
++    """Missing ffprobe binary -> None without exceptions."""
++    monkeypatch.setattr("shutil.which", lambda _b: None)
++    assert probe_video("/fake/clip.mp4", ffprobe=None) is None
++
++
++def test_probe_timeout(monkeypatch):
++    """TimeoutExpired during ffprobe execution -> None."""
++    def _timeout(*args, **kwargs):
++        raise subprocess.TimeoutExpired(cmd=["ffprobe"], timeout=10.0)
++
++    monkeypatch.setattr(subprocess, "run", _timeout)
++    assert probe_video("/fake/clip.mp4", ffprobe="/usr/bin/ffprobe") is None
++
++
++def test_probe_garbage_json(monkeypatch):
++    """Invalid JSON from ffprobe -> None."""
++    monkeypatch.setattr(
++        subprocess,
++        "run",
++        lambda *args, **kwargs: MagicMock(
++            returncode=0, stdout="not valid json {", stderr=""
++        ),
++    )
++    assert probe_video("/fake/clip.mp4", ffprobe="/usr/bin/ffprobe") is None
++
++
++def test_probe_empty_streams(monkeypatch):
++    """No streams in ffprobe -> None."""
++    monkeypatch.setattr(
++        subprocess,
++        "run",
++        lambda *args, **kwargs: MagicMock(
++            returncode=0, stdout=json.dumps({"streams": [], "format": {"duration": "5"}}), stderr=""
++        ),
++    )
++    assert probe_video("/fake/clip.mp4", ffprobe="/usr/bin/ffprobe") is None
++
++
++# ===========================================================================
++# 2. make_thumbnail tests
++# ===========================================================================
++
++def test_thumbnail_missing_ffmpeg(monkeypatch):
++    """Missing ffmpeg -> None without exceptions."""
++    monkeypatch.setattr("shutil.which", lambda _b: None)
++    meta = VideoMeta(width=1080, height=1920, duration=10, rotation=0)
++    assert make_thumbnail("/fake/clip.mp4", meta, ffmpeg=None) is None
++
++
++def test_thumbnail_success_creates_file(monkeypatch):
++    """Successful thumbnail generation creates temporary file."""
++    def _fake_run(cmd, *args, **kwargs):
++        out_path = cmd[-1]
++        Path(out_path).write_bytes(b"\xff\xd8\xff" + b"\x00" * 1000)
++        return MagicMock(returncode=0)
++
++    monkeypatch.setattr(subprocess, "run", _fake_run)
++    meta = VideoMeta(width=1080, height=1920, duration=10, rotation=0)
++    thumb_path = make_thumbnail("/fake/clip.mp4", meta, ffmpeg="/usr/bin/ffmpeg")
++    assert thumb_path is not None
++    assert os.path.exists(thumb_path)
++    os.unlink(thumb_path)
++
++
++def test_thumbnail_oversized_reencode_and_cleanup(monkeypatch):
++    """Thumbnail exceeding 200 KB even after -q:v 10 returns None and deletes file."""
++    calls = []
++
++    def _fake_run(cmd, *args, **kwargs):
++        calls.append(cmd)
++        out_path = cmd[-1]
++        # Write 250 KB
++        Path(out_path).write_bytes(b"\x00" * (250 * 1024))
++        return MagicMock(returncode=0)
++
++    monkeypatch.setattr(subprocess, "run", _fake_run)
++    meta = VideoMeta(width=1080, height=1920, duration=10, rotation=0)
++    thumb_path = make_thumbnail("/fake/clip.mp4", meta, ffmpeg="/usr/bin/ffmpeg")
++    assert thumb_path is None
++    assert len(calls) == 2  # initial + re-encode
++    assert "-q:v" in calls[1]
++    assert calls[1][calls[1].index("-q:v") + 1] == "10"
++
++
++def test_thumbnail_oversized_reencode_success(monkeypatch):
++    """Thumbnail exceeding 200 KB on first attempt, but succeeding on -q:v 10."""
++    call_count = 0
++
++    def _fake_run(cmd, *args, **kwargs):
++        nonlocal call_count
++        call_count += 1
++        out_path = cmd[-1]
++        if call_count == 1:
++            Path(out_path).write_bytes(b"\x00" * (250 * 1024))
++        else:
++            Path(out_path).write_bytes(b"\x00" * (50 * 1024))
++        return MagicMock(returncode=0)
++
++    monkeypatch.setattr(subprocess, "run", _fake_run)
++    meta = VideoMeta(width=1080, height=1920, duration=10, rotation=0)
++    thumb_path = make_thumbnail("/fake/clip.mp4", meta, ffmpeg="/usr/bin/ffmpeg")
++    assert thumb_path is not None
++    assert os.path.exists(thumb_path)
++    assert call_count == 2
++    os.unlink(thumb_path)
++
++
++# ===========================================================================
++# 3. video_send_kwargs tests
++# ===========================================================================
++
++def test_video_send_kwargs_none_on_probe_failure(monkeypatch):
++    """When probe_video returns None, video_send_kwargs returns ({}, None)."""
++    monkeypatch.setattr("plugins.platforms.telegram.video_meta.probe_video", lambda _p, **_kw: None)
++    kwargs, thumb = video_send_kwargs("/fake/clip.mp4")
++    assert kwargs == {}
++    assert thumb is None
++
++
++def test_video_send_kwargs_success(monkeypatch):
++    """When probe succeeds, returns width/height/duration/supports_streaming and thumb."""
++    meta = VideoMeta(width=1080, height=1920, duration=15, rotation=0)
++    with patch("plugins.platforms.telegram.video_meta.probe_video", return_value=meta):
++        with patch("plugins.platforms.telegram.video_meta.make_thumbnail", return_value="/tmp/thumb.jpg"):
++            kwargs, thumb = video_send_kwargs("/fake/clip.mp4")
++            assert kwargs == {
++                "width": 1080,
++                "height": 1920,
++                "duration": 15,
++                "supports_streaming": True,
++            }
++            assert thumb == "/tmp/thumb.jpg"
++
++
++# ===========================================================================
++# 4. TelegramAdapter.send_video integration tests
++# ===========================================================================
++
++def test_adapter_send_video_with_metadata(tmp_path, monkeypatch):
++    """send_video receives width, height, duration, supports_streaming, and thumbnail."""
++    adapter = _make_adapter()
++    video_file = _make_dummy_video(tmp_path)
++    thumb_file = tmp_path / "thumb.jpg"
++    thumb_file.write_bytes(b"\xff\xd8\xff\xe0" + b"\x00" * 200)
++
++    extra_kwargs = {
++        "width": 1080,
++        "height": 1920,
++        "duration": 13,
++        "supports_streaming": True,
++    }
++
++    monkeypatch.setattr(
++        telegram_mod,
++        "video_send_kwargs",
++        lambda _p: (extra_kwargs, str(thumb_file)),
++    )
++
++    result = asyncio.run(adapter.send_video("12345", str(video_file), caption="Vertical test"))
++
++    assert result.success is True
++    assert result.message_id == "42"
++
++    call_kwargs = adapter._bot.send_video.call_args.kwargs
++    assert call_kwargs["chat_id"] == 12345
++    assert call_kwargs["caption"] == "Vertical test"
++    assert call_kwargs["width"] == 1080
++    assert call_kwargs["height"] == 1920
++    assert call_kwargs["duration"] == 13
++    assert call_kwargs["supports_streaming"] is True
++    assert "thumbnail" in call_kwargs
++
++    thumb_handle = call_kwargs["thumbnail"]
++    assert thumb_handle.closed is True
++    # Temporary thumbnail must be deleted
++    assert not os.path.exists(str(thumb_file))
++
++
++def test_adapter_send_video_without_metadata_regression(tmp_path, monkeypatch):
++    """When metadata probe fails, send_video keys are exactly as before (regression guard)."""
++    adapter = _make_adapter()
++    video_file = _make_dummy_video(tmp_path)
++
++    monkeypatch.setattr(
++        telegram_mod,
++        "video_send_kwargs",
++        lambda _p: ({}, None),
++    )
++
++    result = asyncio.run(adapter.send_video("12345", str(video_file), caption="Plain test"))
++
++    assert result.success is True
++    call_kwargs = adapter._bot.send_video.call_args.kwargs
++    # No video metadata keys added
++    for omitted_key in ("width", "height", "duration", "supports_streaming", "thumbnail"):
++        assert omitted_key not in call_kwargs
++
++
++def test_adapter_send_video_retry_resets_media_and_thumbnail(tmp_path, monkeypatch):
++    """Retry logic in _send_with_dm_topic_reply_anchor_retry seeks both video and thumbnail to 0."""
++    adapter = _make_adapter()
++    video_file = _make_dummy_video(tmp_path)
++    thumb_file = tmp_path / "thumb_retry.jpg"
++    thumb_file.write_bytes(b"\xff\xd8" + b"\x00" * 300)
++
++    extra_kwargs = {
++        "width": 1080,
++        "height": 1920,
++        "duration": 5,
++        "supports_streaming": True,
++    }
++
++    monkeypatch.setattr(
++        telegram_mod,
++        "video_send_kwargs",
++        lambda _p: (extra_kwargs, str(thumb_file)),
++    )
++
++    seek_calls = []
++
++    async def _mock_send_video(**kwargs):
++        video = kwargs["video"]
++        thumb = kwargs.get("thumbnail")
++
++        if len(seek_calls) == 0:
++            seek_calls.append("attempt_1")
++            # Read from streams during first attempt
++            video.read(10)
++            if thumb:
++                thumb.read(10)
++            raise FakeBadRequest("message thread not found")
++
++        # Second attempt checks positions before reading
++        assert video.tell() == 0, "Video file was not rewound to 0"
++        assert thumb.tell() == 0, "Thumbnail file was not rewound to 0"
++        seek_calls.append("attempt_2")
++        return SimpleNamespace(message_id=99)
++
++    adapter._bot.send_video = _mock_send_video
++
++    metadata = {
++        "thread_id": "555",
++        "telegram_dm_topic_reply_fallback": True,
++        "direct_messages_topic_id": "555",
++    }
++    result = asyncio.run(
++        adapter.send_video("12345", str(video_file), caption="Retry test", metadata=metadata)
++    )
++
++    assert result.success is True
++    assert result.message_id == "99"
++    assert seek_calls == ["attempt_1", "attempt_2"]
++    assert not os.path.exists(str(thumb_file))
++
++
++def test_adapter_send_video_probe_exception_does_not_fail_send(tmp_path, monkeypatch):
++    """Exceptions from video_send_kwargs never prevent the video from sending."""
++    adapter = _make_adapter()
++    video_file = _make_dummy_video(tmp_path)
++
++    def _failing_probe(_p):
++        raise RuntimeError("ffprobe crashed")
++
++    monkeypatch.setattr(telegram_mod, "video_send_kwargs", _failing_probe)
++
++    result = asyncio.run(adapter.send_video("12345", str(video_file), caption="Resilient test"))
++
++    assert result.success is True
++    call_kwargs = adapter._bot.send_video.call_args.kwargs
++    assert "width" not in call_kwargs
++    assert "thumbnail" not in call_kwargs
++
++
++# ===========================================================================
++# 5. End-to-end test with real /usr/bin/ffprobe and /usr/bin/ffmpeg
++# ===========================================================================
++
++def test_probe_and_thumbnail_real_binaries(tmp_path):
++    """End-to-end verification using actual /usr/bin/ffprobe and /usr/bin/ffmpeg."""
++    ffprobe_bin = "/usr/bin/ffprobe"
++    ffmpeg_bin = "/usr/bin/ffmpeg"
++    if not os.path.exists(ffprobe_bin) or not os.path.exists(ffmpeg_bin):
++        pytest.skip("ffprobe/ffmpeg not present")
++
++    # Generate a real 1080x1920 1.5s vertical video
++    real_video = tmp_path / "real_vertical.mp4"
++    gen_cmd = [
++        ffmpeg_bin,
++        "-v", "error",
++        "-y",
++        "-f", "lavfi",
++        "-i", "color=c=navy:s=1080x1920:d=1.5",
++        "-pix_fmt", "yuv420p",
++        str(real_video),
++    ]
++    subprocess.run(gen_cmd, check=True)
++
++    meta = probe_video(str(real_video), ffprobe=ffprobe_bin)
++    assert meta is not None
++    assert meta.width == 1080
++    assert meta.height == 1920
++    assert meta.duration == 2  # ceil(1.5) = 2
++
++    thumb_path = make_thumbnail(str(real_video), meta, ffmpeg=ffmpeg_bin)
++    assert thumb_path is not None
++    assert os.path.exists(thumb_path)
++    assert os.path.getsize(thumb_path) <= 200 * 1024
++
++    # Verify thumbnail dimensions with ffprobe: longest side (height) must be 320 px
++    probe_thumb_cmd = [
++        ffprobe_bin,
++        "-v", "error",
++        "-select_streams", "v:0",
++        "-show_entries", "stream=width,height",
++        "-of", "json",
++        thumb_path,
++    ]
++    res = subprocess.run(probe_thumb_cmd, capture_output=True, text=True, check=True)
++    thumb_info = json.loads(res.stdout)["streams"][0]
++    assert thumb_info["height"] == 320
++    assert thumb_info["width"] == 180  # 1080 * 320 / 1920 = 180
++
++    os.unlink(thumb_path)

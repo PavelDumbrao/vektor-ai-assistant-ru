@@ -10,7 +10,9 @@ from urllib.parse import urlparse
 
 from core import proposal_tool_schema, state_for_model, transcript_for_model
 
-MODEL = "gpt-5.6-sol"
+MODEL = "gpt-6.1-sol"
+FALLBACK_MODEL = "claude-sonnet-5-5"
+FALLBACK_BASE = "https://api.lingsuan.si/v1"
 REASONING = {"enabled": True, "effort": "high"}
 TOOL_NAME = "living_memory_submit_changes"
 
@@ -73,16 +75,16 @@ def resolve_routes(home: Path, config: dict[str, Any]) -> tuple[dict[str, str], 
         primary_model = primary_model or MODEL
     primary = {"provider": "custom", "model": primary_model, "base_url": primary_base, "api_key": primary_key}
 
-    # Preferred failover: the same GPT-5.6 Sol through OpenRouter on its
-    # separate profile key. This keeps model quality stable while separating
-    # both provider and credential from the primary Lingsuan route.
-    openrouter_key = str(os.getenv("OPENROUTER_API_KEY", "") or "").strip()
-    if openrouter_key and not hmac.compare_digest(openrouter_key, primary_key):
+    # Preferred failover (decision 2026-10-22): Claude Sonnet 5.5 through Lingsuan's
+    # OpenAI-compatible facade on the separate Opus key and a separate host.
+    # OpenRouter is reserved for STT only.
+    opus_key = str(os.getenv("LINGSUAN_OPUS_KEY", "") or "").strip()
+    if opus_key and not hmac.compare_digest(opus_key, primary_key):
         fallback = {
-            "provider": "openrouter",
-            "model": "openai/gpt-5.6-sol",
-            "base_url": "https://openrouter.ai/api/v1",
-            "api_key": openrouter_key,
+            "provider": "custom",
+            "model": FALLBACK_MODEL,
+            "base_url": FALLBACK_BASE,
+            "api_key": opus_key,
         }
         return primary, fallback
 

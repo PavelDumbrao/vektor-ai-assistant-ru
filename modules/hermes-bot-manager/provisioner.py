@@ -16,6 +16,7 @@ import runpy
 import shutil
 import stat
 import subprocess
+import sys
 import tempfile
 import time
 import urllib.request
@@ -39,7 +40,8 @@ SYSTEM_PYTHON = Path("/usr/bin/python3")
 TECH_ADMIN_ID = 450206471
 TOKEN_RE = re.compile(r"^\d{5,}:[A-Za-z0-9_-]{20,}$")
 REQUIRED_PLATFORM_KEYS = ("LLM_API_KEY", "FALLBACK_LLM_API_KEY", "GEMINI_LLM_API_KEY")
-OPTIONAL_PLATFORM_KEYS = ("OPENROUTER_API_KEY", "TAVILY_API_KEY", "GRSAI_API_KEY")
+OPTIONAL_PLATFORM_KEYS = ("OPENROUTER_API_KEY", "TAVILY_API_KEY", "GRSAI_API_KEY", "PROAISAVER_MCP_TOKEN",
+                          "LINGSUAN_OPUS_KEY", "UNOROUTER_API_KEY", "ELEVENLABS_API_KEY")
 
 
 class ProvisionError(RuntimeError):
@@ -144,7 +146,8 @@ def _render_profile(instance: HermesInstance, entry: pwd.struct_passwd) -> Path:
     for relative in (
         ".", "bin", "plugins", "memories", "logs", "cron", "runtime",
         "skills", "tools", "hooks", "cache", "cache/audio", "backups",
-        "telemetry", "telemetry/shared_metrics", "telemetry/shared_metrics/outbox",
+        "telemetry", "telemetry/shared_metrics", "telemetry/shared_metrics/outbox", "downloads",
+        "lazy-packages",
     ):
         _ensure_private_dir(hermes / relative, entry)
     for relative in ("workspace", "workspace/knowledge", "workspace/documents", "workspace/data"):
@@ -154,6 +157,8 @@ def _render_profile(instance: HermesInstance, entry: pwd.struct_passwd) -> Path:
         "@OWNER@": instance.owner_linux,
         "@OWNER_TELEGRAM_ID@": str(instance.owner_telegram_id),
         "@TECH_ADMIN_TELEGRAM_ID@": str(TECH_ADMIN_ID),
+        "@BOT_NAME@": instance.bot_name,
+        "@BOT_USERNAME@": instance.bot_username,
     }
     for name in ("config.yaml", "SOUL.md", "USER.md"):
         source = template_root / name
@@ -188,11 +193,100 @@ def _ensure_profile_env(
         "HERMES_DOC_WORKSPACE": str(Path(entry.pw_dir) / "workspace"),
         "HERMES_DOC_AUTHOR": instance.bot_name,
         "HERMES_TELEGRAM_DISABLE_FALLBACK_IPS": "1",
+        "HERMES_LAZY_INSTALL_TARGET": str(hermes / "lazy-packages"),
     })
     if any("\n" in value or "\r" in value for value in desired.values()):
         raise ProvisionError("environment_value_invalid")
     content = "".join(f"{key}={value}\n" for key, value in sorted(desired.items()))
     _atomic_write(path, content, uid=entry.pw_uid, gid=entry.pw_gid)
+
+
+def _ensure_proaisaver_header(entry: pwd.struct_passwd, hermes: Path, platform_values: dict[str, str]) -> None:
+    """Fill the template's empty `Authorization: Bearer` of mcp_servers.proaisaver
+    in config.yaml from the platform token; idempotent, text-level (no YAML re-dump)."""
+    token = platform_values.get("PROAISAVER_MCP_TOKEN", "")
+    if not token:
+        return
+    path = hermes / "config.yaml"
+    if path.is_symlink() or not path.is_file():
+        raise ProvisionError("profile_config_missing")
+    lines = path.read_text(encoding="utf-8").splitlines()
+    inside = False
+    for index, line in enumerate(lines):
+        if line.startswith("  proaisaver:"):
+            inside = True
+            continue
+        if inside and re.match(r"^  \S", line):
+            inside = False
+        if inside and line.strip().startswith("Authorization:"):
+            current = line.split("Bearer", 1)[1].strip().strip("\"'") if "Bearer" in line else ""
+            if current == token:
+                return
+            if current:
+                raise ProvisionError("proaisaver_token_conflict")
+            indent = line[: len(line) - len(line.lstrip())]
+            lines[index] = f"{indent}Authorization: Bearer {token}"
+            _atomic_write(path, "\n".join(lines) + "\n", uid=entry.pw_uid, gid=entry.pw_gid)
+            return
+    # No proaisaver block in this profile: nothing to fill.
+
+
+def _install_profile_hooks(instance: HermesInstance, entry: pwd.struct_passwd, hermes: Path) -> None:
+    """Install the document-metadata hook into the profile and pre-consent it
+    (shell hooks need an allowlist entry, otherwise Hermes silently skips them)."""
+    source = MANAGER_ROOT / "templates" / "personal" / "hooks" / "clean-docmeta.py"
+    if source.is_symlink() or not source.is_file():
+        raise ProvisionError("profile_hook_template_missing")
+    hooks_dir = hermes / "hooks"
+    _ensure_private_dir(hooks_dir, entry)
+    target = hooks_dir / "clean-docmeta.py"
+    if target.is_symlink():
+        raise ProvisionError("profile_hook_symlink")
+    content = source.read_text(encoding="utf-8")
+    if not target.exists() or target.read_text(encoding="utf-8") != content:
+        _atomic_write(target, content, uid=entry.pw_uid, gid=entry.pw_gid, mode=0o700)
+    command = f"{hermes}/hermes-agent/venv/bin/python {target}"
+    allowlist = hermes / "shell-hooks-allowlist.json"
+    if allowlist.is_symlink():
+        raise ProvisionError("profile_hook_allowlist_symlink")
+    data = {"approvals": []}
+    if allowlist.is_file():
+        try:
+            data = json.loads(allowlist.read_text(encoding="utf-8"))
+        except ValueError:
+            data = {"approvals": []}
+    approvals = data.setdefault("approvals", [])
+    if not any(a.get("event") == "post_tool_call" and a.get("command") == command for a in approvals):
+        approvals.append({
+            "approved_at": time.strftime("%Y-%m-%dT%H:%M:%S.000000Z", time.gmtime()),
+            "command": command,
+            "event": "post_tool_call",
+            "script_mtime_at_approval": None,
+        })
+        _atomic_write(allowlist, json.dumps(data, ensure_ascii=False, indent=2) + "\n",
+                      uid=entry.pw_uid, gid=entry.pw_gid)
+
+
+def _prepare_lazy_packages(entry: pwd.struct_passwd, hermes: Path) -> None:
+    """Pre-install optional Hermes deps (ElevenLabs TTS SDK) into the profile's durable lazy-install
+    target so the first voice reply does not wait for PyPI. Non-fatal: Hermes installs on first use."""
+    target = hermes / "lazy-packages"
+    _ensure_private_dir(target, entry)
+    code = (
+        "import os, sys; sys.path.insert(0, os.path.join(os.environ['HERMES_HOME'], 'hermes-agent'))\n"
+        "from tools import lazy_deps; lazy_deps.ensure('tts.elevenlabs', prompt=False)\n"
+        "lazy_deps.activate_durable_lazy_target(); import elevenlabs\n"
+    )
+    env = {
+        "HOME": entry.pw_dir, "USER": entry.pw_name, "LOGNAME": entry.pw_name, "HERMES_HOME": str(hermes),
+        "HERMES_LAZY_INSTALL_TARGET": str(target), "PATH": f"{hermes}/bin:/usr/local/bin:/usr/bin:/bin",
+        "LANG": "C.UTF-8",
+    }
+    try:
+        _run([str(hermes / "hermes-agent/venv/bin/python"), "-c", code],
+             timeout=240, user=entry.pw_uid, group=entry.pw_gid, env=env, cwd=str(hermes))
+    except ProvisionError:
+        print("lazy_packages_preinstall_skipped=true", file=sys.stderr)
 
 
 def _ensure_symlink(path: Path, target: Path, entry: pwd.struct_passwd) -> None:
@@ -255,8 +349,9 @@ def _install_service(instance: HermesInstance, entry: pwd.struct_passwd) -> Path
     return unit
 
 
-def _run(args: list[str], *, timeout: int = 300, user: int | None = None, group: int | None = None, env: dict[str, str] | None = None) -> None:
+def _run(args: list[str], *, timeout: int = 300, user: int | None = None, group: int | None = None, env: dict[str, str] | None = None, cwd: str | None = None) -> None:
     kwargs = {
+        "cwd": cwd,
         "capture_output": True,
         "text": True,
         "timeout": timeout,
@@ -268,7 +363,22 @@ def _run(args: list[str], *, timeout: int = 300, user: int | None = None, group:
         kwargs["env"] = env
     result = subprocess.run(args, **kwargs)
     if result.returncode:
+        _log_subprocess_failure(args, result)
         raise ProvisionError("subprocess_failed:" + Path(args[0]).name)
+
+
+_STDERR_REDACT = re.compile(
+    r"(postgres(?:ql)?://\S+)|((?:TOKEN|KEY|SECRET|PASSWORD|DSN)[A-Z_]*\s*[=:]\s*\S+)",
+    re.IGNORECASE,
+)
+
+
+def _log_subprocess_failure(args: list[str], result: subprocess.CompletedProcess) -> None:
+    """Surface a short, redacted stderr tail in the journal (root-only); installers
+    print only safe `error=` lines, but redact DSN/token-looking values anyway."""
+    tail = (result.stderr or "").strip().replace("\n", " | ")[-600:]
+    tail = _STDERR_REDACT.sub("<redacted>", tail)
+    print(f"subprocess_failed:{Path(args[0]).name} rc={result.returncode} stderr={tail}", file=sys.stderr)
 
 
 def _provision_database(instance: HermesInstance, entry: pwd.struct_passwd, hermes: Path) -> None:
@@ -334,6 +444,22 @@ def _install_maton(entry: pwd.struct_passwd, hermes: Path, release: Path) -> Non
     }
     _run([str(release / "venv/bin/python"), str(script), "--hermes-home", str(hermes)],
          timeout=60, user=entry.pw_uid, group=entry.pw_gid, env=env)
+
+
+def _install_voice_picker(entry: pwd.struct_passwd, hermes: Path) -> None:
+    """ElevenLabs voice picker (/golos): reply-keyboard choice written straight into config.yaml."""
+    script = MANAGER_ROOT / "vendor" / "voice-picker" / "install.py"
+    if script.is_symlink() or not script.is_file():
+        raise ProvisionError("voice_picker_installer_missing")
+    _run([str(SYSTEM_PYTHON), str(script), "--hermes-home", str(hermes)], timeout=60)
+    target = hermes / "plugins" / "voice-picker"
+    for root, directories, files in os.walk(target):
+        os.chown(root, entry.pw_uid, entry.pw_gid)
+        os.chmod(root, 0o700)
+        for filename in files:
+            path = Path(root) / filename
+            os.chown(path, entry.pw_uid, entry.pw_gid)
+            os.chmod(path, 0o600)
 
 
 def _install_grsai(instance: HermesInstance, platform_values: dict[str, str]) -> None:
@@ -483,12 +609,16 @@ def provision(instance: HermesInstance, token_file: Path | None = None) -> dict[
         entry = _ensure_account(instance.owner_linux)
         hermes = _render_profile(instance, entry)
         _ensure_profile_env(instance, entry, hermes, token, platform_values)
+        _ensure_proaisaver_header(entry, hermes, platform_values)
+        _install_profile_hooks(instance, entry, hermes)
         _bind_runtime(instance, entry, hermes, release)
+        _prepare_lazy_packages(entry, hermes)
         _install_service(instance, entry)
         _provision_database(instance, entry, hermes)
         _install_passive_secretary(instance, entry, hermes)
         _install_workspace_members(entry, hermes)
         _install_maton(entry, hermes, release)
+        _install_voice_picker(entry, hermes)
         _install_grsai(instance, platform_values)
         _prepare_living_memory(instance, entry, hermes)
         memory_prepared = True

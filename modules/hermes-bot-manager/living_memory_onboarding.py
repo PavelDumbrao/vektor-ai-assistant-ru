@@ -11,8 +11,8 @@ from pathlib import Path
 HOME_ROOT = Path('/home')
 ROOT = Path('/opt/vektor/living-memory')
 SYSTEMCTL = '/usr/bin/systemctl'
-PRIMARY = 'gpt-5.6-sol'
-FALLBACK = 'openai/gpt-5.6-sol'
+PRIMARY = 'gpt-6.1-sol'
+FALLBACK = 'claude-sonnet-5-5'
 
 
 class MemoryOnboardingError(RuntimeError):

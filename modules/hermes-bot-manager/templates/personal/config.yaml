@@ -1,7 +1,7 @@
 model:
   provider: custom
   base_url: https://lingsuan.top/v1
-  default: gpt-5.6-sol
+  default: gpt-6.1-sol
   api_key: ${LLM_API_KEY}
   context_length: 180000
 providers:
@@ -11,6 +11,8 @@ providers:
     transport: chat_completions
     models:
       gpt-5.6-sol:
+        supports_vision: true
+      gpt-6.1-sol:
         supports_vision: true
   lingsuan-terra-vision:
     api: https://lingsuan.top/v1
@@ -28,13 +30,17 @@ providers:
         supports_vision: true
 fallback_providers:
 - provider: custom
+  model: claude-opus-5-5
+  base_url: https://api.lingsuan.si/v1
+  key_env: LINGSUAN_OPUS_KEY
+- provider: custom
+  model: glm-5.3
+  base_url: https://api.unorouter.com/v1
+  key_env: UNOROUTER_API_KEY
+- provider: custom
   model: gpt-5.6-terra
   base_url: https://lingsuan.top/v1
   key_env: FALLBACK_LLM_API_KEY
-- provider: custom
-  model: gemini-3.8-flash-medium
-  base_url: https://lingsuan.top/v1
-  key_env: GEMINI_LLM_API_KEY
 max_concurrent_sessions: 2
 max_live_sessions: 4
 agent:
@@ -60,7 +66,7 @@ agent:
 auxiliary:
   vision:
     provider: lingsuan-vision
-    model: gpt-5.6-sol
+    model: gpt-6.1-sol
     timeout: 45
     fallback_chain:
     - provider: lingsuan-terra-vision
@@ -75,7 +81,7 @@ terminal:
   timeout: 180
   home_mode: auto
 approvals:
-  mode: "off"
+  mode: 'off'
   timeout: 300
   cron_mode: approve
   deny:
@@ -92,7 +98,7 @@ curator:
 kanban:
   dispatch_in_gateway: false
 memory:
-  nudge_interval: 0  # Living Memory performs the daily review.
+  nudge_interval: 0
   memory_enabled: true
   user_profile_enabled: true
   write_approval: false
@@ -105,6 +111,10 @@ stt:
   language: ru
   openrouter:
     model: openai/whisper-large-v3-turbo
+    fallback_models:
+    - microsoft/mai-transcribe-2
+    - openai/whisper-large-v3
+    timeout: 30
 voice:
   auto_tts: false
 search:
@@ -203,27 +213,31 @@ plugins:
 goals:
   max_turns: 5
 _config_version: 33
-
 mcp_servers:
   proaisaver:
     enabled: true
     url: https://saver-mcp.proaicommunity.online/mcp/
     headers:
-      Authorization: Bearer 
+      Authorization: Bearer
     connect_timeout: 30
     timeout: 300
     skip_preflight: true
     tools:
       include:
-        - inspect_media
-        - inspect_collection
-        - download_media
-        - transcribe_media
-        - transform_content
-        - get_job
-        - get_artifact_info
-        - cancel_job
+      - inspect_media
+      - inspect_collection
+      - download_media
+      - transcribe_media
+      - transform_content
+      - get_job
+      - get_artifact_info
+      - cancel_job
 hooks:
   post_tool_call:
   - command: /home/@OWNER@/.hermes/hermes-agent/venv/bin/python /home/@OWNER@/.hermes/hooks/clean-docmeta.py
     timeout: 30
+tts:
+  provider: elevenlabs
+  elevenlabs:
+    voice_id: rQOBu7YxCDxGiFdTm28w
+    model_id: eleven_v4_turbo

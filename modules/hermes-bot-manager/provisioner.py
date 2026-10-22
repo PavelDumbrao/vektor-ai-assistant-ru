@@ -40,7 +40,8 @@ SYSTEM_PYTHON = Path("/usr/bin/python3")
 TECH_ADMIN_ID = 450206471
 TOKEN_RE = re.compile(r"^\d{5,}:[A-Za-z0-9_-]{20,}$")
 REQUIRED_PLATFORM_KEYS = ("LLM_API_KEY", "FALLBACK_LLM_API_KEY", "GEMINI_LLM_API_KEY")
-OPTIONAL_PLATFORM_KEYS = ("OPENROUTER_API_KEY", "TAVILY_API_KEY", "GRSAI_API_KEY", "PROAISAVER_MCP_TOKEN")
+OPTIONAL_PLATFORM_KEYS = ("OPENROUTER_API_KEY", "TAVILY_API_KEY", "GRSAI_API_KEY", "PROAISAVER_MCP_TOKEN",
+                          "LINGSUAN_OPUS_KEY", "UNOROUTER_API_KEY", "ELEVENLABS_API_KEY")
 
 
 class ProvisionError(RuntimeError):
@@ -146,6 +147,7 @@ def _render_profile(instance: HermesInstance, entry: pwd.struct_passwd) -> Path:
         ".", "bin", "plugins", "memories", "logs", "cron", "runtime",
         "skills", "tools", "hooks", "cache", "cache/audio", "backups",
         "telemetry", "telemetry/shared_metrics", "telemetry/shared_metrics/outbox", "downloads",
+        "lazy-packages",
     ):
         _ensure_private_dir(hermes / relative, entry)
     for relative in ("workspace", "workspace/knowledge", "workspace/documents", "workspace/data"):
@@ -191,6 +193,7 @@ def _ensure_profile_env(
         "HERMES_DOC_WORKSPACE": str(Path(entry.pw_dir) / "workspace"),
         "HERMES_DOC_AUTHOR": instance.bot_name,
         "HERMES_TELEGRAM_DISABLE_FALLBACK_IPS": "1",
+        "HERMES_LAZY_INSTALL_TARGET": str(hermes / "lazy-packages"),
     })
     if any("\n" in value or "\r" in value for value in desired.values()):
         raise ProvisionError("environment_value_invalid")
@@ -264,6 +267,28 @@ def _install_profile_hooks(instance: HermesInstance, entry: pwd.struct_passwd, h
                       uid=entry.pw_uid, gid=entry.pw_gid)
 
 
+def _prepare_lazy_packages(entry: pwd.struct_passwd, hermes: Path) -> None:
+    """Pre-install optional Hermes deps (ElevenLabs TTS SDK) into the profile's durable lazy-install
+    target so the first voice reply does not wait for PyPI. Non-fatal: Hermes installs on first use."""
+    target = hermes / "lazy-packages"
+    _ensure_private_dir(target, entry)
+    code = (
+        "import os, sys; sys.path.insert(0, os.path.join(os.environ['HERMES_HOME'], 'hermes-agent'))\n"
+        "from tools import lazy_deps; lazy_deps.ensure('tts.elevenlabs', prompt=False)\n"
+        "lazy_deps.activate_durable_lazy_target(); import elevenlabs\n"
+    )
+    env = {
+        "HOME": entry.pw_dir, "USER": entry.pw_name, "LOGNAME": entry.pw_name, "HERMES_HOME": str(hermes),
+        "HERMES_LAZY_INSTALL_TARGET": str(target), "PATH": f"{hermes}/bin:/usr/local/bin:/usr/bin:/bin",
+        "LANG": "C.UTF-8",
+    }
+    try:
+        _run([str(hermes / "hermes-agent/venv/bin/python"), "-c", code],
+             timeout=240, user=entry.pw_uid, group=entry.pw_gid, env=env, cwd=str(hermes))
+    except ProvisionError:
+        print("lazy_packages_preinstall_skipped=true", file=sys.stderr)
+
+
 def _ensure_symlink(path: Path, target: Path, entry: pwd.struct_passwd) -> None:
     if path.is_symlink():
         if path.resolve() != target.resolve():
@@ -324,8 +349,9 @@ def _install_service(instance: HermesInstance, entry: pwd.struct_passwd) -> Path
     return unit
 
 
-def _run(args: list[str], *, timeout: int = 300, user: int | None = None, group: int | None = None, env: dict[str, str] | None = None) -> None:
+def _run(args: list[str], *, timeout: int = 300, user: int | None = None, group: int | None = None, env: dict[str, str] | None = None, cwd: str | None = None) -> None:
     kwargs = {
+        "cwd": cwd,
         "capture_output": True,
         "text": True,
         "timeout": timeout,
@@ -418,6 +444,22 @@ def _install_maton(entry: pwd.struct_passwd, hermes: Path, release: Path) -> Non
     }
     _run([str(release / "venv/bin/python"), str(script), "--hermes-home", str(hermes)],
          timeout=60, user=entry.pw_uid, group=entry.pw_gid, env=env)
+
+
+def _install_voice_picker(entry: pwd.struct_passwd, hermes: Path) -> None:
+    """ElevenLabs voice picker (/golos): reply-keyboard choice written straight into config.yaml."""
+    script = MANAGER_ROOT / "vendor" / "voice-picker" / "install.py"
+    if script.is_symlink() or not script.is_file():
+        raise ProvisionError("voice_picker_installer_missing")
+    _run([str(SYSTEM_PYTHON), str(script), "--hermes-home", str(hermes)], timeout=60)
+    target = hermes / "plugins" / "voice-picker"
+    for root, directories, files in os.walk(target):
+        os.chown(root, entry.pw_uid, entry.pw_gid)
+        os.chmod(root, 0o700)
+        for filename in files:
+            path = Path(root) / filename
+            os.chown(path, entry.pw_uid, entry.pw_gid)
+            os.chmod(path, 0o600)
 
 
 def _install_grsai(instance: HermesInstance, platform_values: dict[str, str]) -> None:
@@ -570,11 +612,13 @@ def provision(instance: HermesInstance, token_file: Path | None = None) -> dict[
         _ensure_proaisaver_header(entry, hermes, platform_values)
         _install_profile_hooks(instance, entry, hermes)
         _bind_runtime(instance, entry, hermes, release)
+        _prepare_lazy_packages(entry, hermes)
         _install_service(instance, entry)
         _provision_database(instance, entry, hermes)
         _install_passive_secretary(instance, entry, hermes)
         _install_workspace_members(entry, hermes)
         _install_maton(entry, hermes, release)
+        _install_voice_picker(entry, hermes)
         _install_grsai(instance, platform_values)
         _prepare_living_memory(instance, entry, hermes)
         memory_prepared = True

@@ -41,6 +41,16 @@ def fake_entry(home_path: Path, profile: str = "pavel") -> SimpleNamespace:
     )
 
 
+def fake_profile(monkeypatch, tmp_path, profile: str = "pavel"):
+    """Point control at a throwaway home for `profile` and return (entry, hermes_dir)."""
+    home = tmp_path / "home" / profile
+    hermes = home / ".hermes"
+    hermes.mkdir(parents=True, exist_ok=True)
+    entry = fake_entry(home, profile)
+    monkeypatch.setattr(control, "_profile_paths", lambda _p: (entry, hermes / ".env", hermes / "config.yaml"))
+    return entry, hermes
+
+
 # ---------------------------------------------------------------------------
 # 1. File Helper Tests
 # ---------------------------------------------------------------------------
@@ -209,11 +219,14 @@ def test_invite_double_accept_returns_404(tmp_path, monkeypatch):
 
     monkeypatch.setattr(control, "_owned_item", lambda uid, prof: {"profile": prof, "owner_user_id": uid})
     monkeypatch.setattr(control, "_ws_sync_env", lambda prof, actor, add: False)
+    _entry, hermes = fake_profile(monkeypatch, tmp_path, "pavel")
     notifications = []
     monkeypatch.setattr(control, "_send_manager_telegram_message", lambda cid, msg: notifications.append((cid, msg)) or True)
 
     first = control._ws_accept(actor=222, name="Bob", token=token)
     assert first["accepted"] is True
+    tenant_copy = json.loads((hermes / "workspace-members.json").read_text(encoding="utf-8"))
+    assert tenant_copy["owner_user_id"] == 111 and [m["user_id"] for m in tenant_copy["members"]] == [222]
     assert len(notifications) == 1
     assert "Bob" in notifications[0][1]
 
@@ -270,12 +283,14 @@ def test_invite_send_message_called_on_accept(tmp_path, monkeypatch):
 
     monkeypatch.setattr(control, "_owned_item", lambda uid, prof: {"profile": prof, "owner_user_id": uid})
     monkeypatch.setattr(control, "_ws_sync_env", lambda prof, actor, add: False)
+    _entry, hermes = fake_profile(monkeypatch, tmp_path, "pavel")
 
     sent_messages = []
     monkeypatch.setattr(control, "_send_manager_telegram_message", lambda chat_id, text: sent_messages.append((chat_id, text)) or True)
 
     res = control._ws_accept(actor=888, name="David", token=token)
     assert res["accepted"] is True
+    assert (hermes / "workspace-members.json").is_file()
     assert len(sent_messages) == 1
     chat_id, text = sent_messages[0]
     assert chat_id == 777
@@ -534,3 +549,23 @@ def test_team_ops_are_audited(tmp_path, monkeypatch):
     assert "invite_url" in res
     entry = json.loads(audit_file.read_text(encoding="utf-8").strip().splitlines()[-1])
     assert entry["op"] == "create_workspace_invite" and entry["result"] == "success" and entry["profile"] == "pavel"
+
+
+def test_guard_blocks_live_profile_lookup(tmp_path, monkeypatch):
+    """Without an explicit tmp home a profile operation must fail loudly instead of reaching /home."""
+    invites_dir = tmp_path / "invites"
+    invites_dir.mkdir()
+    monkeypatch.setattr(control, "WORKSPACE_INVITE_DIR", invites_dir)
+    monkeypatch.setattr(control, "WORKSPACE_STATE_DIR", tmp_path / "ws_state")
+    monkeypatch.setattr(control, "_owned_item", lambda uid, prof: {"profile": prof, "owner_user_id": uid})
+    monkeypatch.setattr(control, "_ws_sync_env", lambda prof, actor, add: False)
+    monkeypatch.setattr(control, "_send_manager_telegram_message", lambda cid, msg: True)
+    token = "guardguardguardguardguardguard12"
+    (invites_dir / f"{token}.json").write_text(json.dumps({
+        "schema": "hermes.workspace-invite/v1", "profile": "pavel", "owner_user_id": 111,
+        "expires_at": int(time.time()) + 3600, "used": False,
+    }), encoding="utf-8")
+    with pytest.raises(RuntimeError, match="live profile lookup"):
+        control._ws_accept(actor=222, name="Bob", token=token)
+    with pytest.raises(KeyError):
+        control.pwd.getpwnam("pavel")

@@ -363,7 +363,8 @@ def test_admin_commands_access_and_behavior(monkeypatch, tmp_path):
     assert state["managed"]["9000000001"]["profile_status"] == "offboarded"
     assert "offboarded_at" in state["managed"]["9000000001"]
     assert any("отключён" in text or "выведен из эксплуатации" in text for _chat, text, _markup in sent)
-    assert any("userdel" in text for _chat, text, _markup in sent)
+    assert any("/offboard-cancel 50004" in text and "удалены автоматически" in text for _chat, text, _markup in sent)
+    assert not any("<!--" in text for _chat, text, _markup in sent)
     assert any("lanectl" in a[0] for a in subp_calls)
 
 
@@ -399,7 +400,7 @@ def test_offboard_legacy_imported_client_uses_named_profile(monkeypatch, tmp_pat
     assert not any(u.startswith("h50005") for u in units)
     assert any(a[:3] == ["/usr/local/sbin/lanectl", "remove", "--client"] and a[3] == "legacyowner" for a in subp_calls)
     assert state["imported"]["8651847038"]["profile_status"] == "offboarded"
-    assert any("hermes_legacyowner" in text and "passive-secretary-postgres" in text for _c, text, _m in sent)
+    assert any("/offboard-cancel 50005" in text for _c, text, _m in sent)
 
 
 def test_imported_owner_never_gets_second_hire_flow(monkeypatch):

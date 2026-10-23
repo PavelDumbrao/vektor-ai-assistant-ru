@@ -180,7 +180,8 @@ def load_state() -> dict:
         return {
             'offset': 0, 'managed': {}, 'imported': {}, 'drafts': {},
             'locales': {}, 'allowed_users': {}, 'denied_users': {},
-            'pending_confirmations': {},
+            'pending_confirmations': {}, 'users': {}, 'access_requests': {},
+            'support': {},
         }
     try:
         content = STATE_FILE.read_text(encoding='utf-8')
@@ -194,6 +195,9 @@ def load_state() -> dict:
         state.setdefault('allowed_users', {})
         state.setdefault('denied_users', {})
         state.setdefault('pending_confirmations', {})
+        state.setdefault('users', {})
+        state.setdefault('access_requests', {})
+        state.setdefault('support', {})
         return state
     except Exception as exc:
         ts = int(time.time())
@@ -214,6 +218,9 @@ def load_state() -> dict:
                     state.setdefault('allowed_users', {})
                     state.setdefault('denied_users', {})
                     state.setdefault('pending_confirmations', {})
+                    state.setdefault('users', {})
+                    state.setdefault('access_requests', {})
+                    state.setdefault('support', {})
                     return state
             except Exception:
                 pass
@@ -222,7 +229,8 @@ def load_state() -> dict:
             return {
                 'offset': 0, 'managed': {}, 'imported': {}, 'drafts': {},
                 'locales': {}, 'allowed_users': {}, 'denied_users': {},
-                'pending_confirmations': {},
+                'pending_confirmations': {}, 'users': {}, 'access_requests': {},
+                'support': {},
             }
         sys.exit(2)
 
@@ -309,9 +317,87 @@ def is_authorized_user(user_id: int, state: dict) -> bool:
     return False
 
 
-def access_denied(chat_id: int, locale: str = "ru") -> None:
+def user_link(uid: int | str) -> str:
+    return f"tg://user?id={uid}"
+
+
+def user_label(uid: int | str, state: dict, user: dict | None = None) -> str:
+    username = ""
+    first_name = ""
+    last_name = ""
+
+    if isinstance(user, dict):
+        username = str(user.get("username") or "").strip().lstrip("@")
+        first_name = str(user.get("first_name") or "").strip()
+        last_name = str(user.get("last_name") or "").strip()
+
+    uid_str = str(uid)
+    for source in (state.get("users", {}).get(uid_str),
+                   state.get("access_requests", {}).get(uid_str),
+                   state.get("allowed_users", {}).get(uid_str)):
+        if isinstance(source, dict):
+            if not username and source.get("username"):
+                username = str(source["username"]).strip().lstrip("@")
+            if not first_name and source.get("first_name"):
+                first_name = str(source["first_name"]).strip()
+            if not last_name and source.get("last_name"):
+                last_name = str(source["last_name"]).strip()
+
+    if not username:
+        uid_int = int(uid) if str(uid).isdigit() else 0
+        for sec in ("managed", "imported"):
+            for item in state.get(sec, {}).values():
+                if isinstance(item, dict) and int(item.get("owner_user_id") or item.get("owner_id") or 0) == uid_int:
+                    if item.get("owner_username"):
+                        username = str(item["owner_username"]).strip().lstrip("@")
+                        break
+            if username:
+                break
+
+    name = html.escape(f"{first_name} {last_name}".strip()) if (first_name or last_name) else ""
+    username = html.escape(username)
+    if not name:
+        name = f"id:{uid}" if not username else ""
+
+    if username:
+        if name:
+            return f"@{username} ({name})"
+        return f"@{username}"
+    else:
+        name_str = name or f"id:{uid}"
+        return f"{name_str} (без username)"
+
+
+def update_user_cache(user: dict, state: dict) -> dict:
+    uid = int(user.get("id") or 0)
+    if not uid:
+        return {}
+    users = state.setdefault("users", {})
+    entry = users.setdefault(str(uid), {})
+    now = int(time.time())
+
+    uname = str(user.get("username") or "").strip().lstrip("@")
+    first = str(user.get("first_name") or "").strip()
+    last = str(user.get("last_name") or "").strip()
+
+    if uname or "username" not in entry:
+        entry["username"] = uname
+    if first or "first_name" not in entry:
+        entry["first_name"] = first
+    if last or "last_name" not in entry:
+        entry["last_name"] = last
+    entry["seen_at"] = now
+    return entry
+
+
+def access_denied(chat_id: int, locale: str = "ru", user: dict | None = None) -> None:
+    markup = {
+        'inline_keyboard': [[
+            {'text': i18n.t(locale, 'btn_request_access'), 'callback_data': 'request_access'}
+        ]]
+    }
     try:
-        send(chat_id, i18n.t(locale, 'access_denied'))
+        send(chat_id, i18n.t(locale, 'access_denied'), markup)
     except Exception:
         pass
 
@@ -451,8 +537,10 @@ def complete_token_and_provision(bot_id: int, item: dict, state: dict, locale: s
              main_menu(locale))
         if owner_id != PAVEL_ID:
             try:
+                owner_label = user_label(owner_id, state)
                 send(PAVEL_ID,
                      '<b>🛠 Новый Managed Hermes</b>\n\n'
+                     f'Клиент: {owner_label} (id: <code>{owner_id}</code>)\n'
                      f'Бот: <b>@{uname}</b>\n'
                      f'Профиль: <code>{instance.owner_linux}</code>\n'
                      f'Статус: <b>provisioning</b>\n'
@@ -477,7 +565,8 @@ def complete_token_and_provision(bot_id: int, item: dict, state: dict, locale: s
                  main_menu(locale))
             if owner_id != PAVEL_ID:
                 try:
-                    send(PAVEL_ID, f"⚠️ Не удалось получить токен для @{uname} (bot_id={bot_id}) после 5 попыток: {exc}")
+                    owner_label = user_label(owner_id, state)
+                    send(PAVEL_ID, f"⚠️ Не удалось получить токен для @{uname} ({owner_label}, bot_id={bot_id}) после 5 попыток: {exc}")
                 except Exception:
                     pass
         else:
@@ -500,17 +589,21 @@ def managed_event(update: dict, state: dict):
     if not owner_id or not bot_id:
         return
 
+    update_user_cache(user, state)
+
     if not is_authorized_user(owner_id, state):
         log_hire_event(bot_id, owner_id, 'unauthorized', 'access_denied')
         locale = i18n.locale_for(owner_id, state, user)
         try:
+            label = user_label(owner_id, state, user=user)
             send(PAVEL_ID,
                  '<b>🚫 Заблокирована попытка Managed Hermes</b>\n\n'
+                 f'Пользователь: {label}\n'
                  f'Telegram ID: <code>{owner_id}</code>\n'
                  'Пользователь не был авторизован, токен бота не запрашивался.')
         except Exception:
             pass
-        access_denied(owner_id, locale)
+        access_denied(owner_id, locale, user=user)
         return
 
     locale = i18n.remember_locale(user, state)
@@ -530,9 +623,14 @@ def managed_event(update: dict, state: dict):
     bot_name = str(bot.get('first_name') or uname)[:64]
     now = int(time.time())
 
+    owner_username = str(user.get('username') or '').strip().lstrip('@')
+    if not owner_username:
+        owner_username = state.get('users', {}).get(str(owner_id), {}).get('username', '')
+
     item = {
         'owner_user_id': owner_id,
         'owner_id': owner_id,
+        'owner_username': owner_username,
         'bot_id': bot_id,
         'username': uname,
         'name': bot_name,
@@ -559,6 +657,8 @@ def main_menu(locale: str = "ru"):
             [{'text': i18n.t(locale, 'menu_panel'), 'web_app': {'url': forge_webapp_url()}}],
             [{'text': i18n.t(locale, 'menu_my'), 'callback_data': 'my'},
              {'text': i18n.t(locale, 'menu_how'), 'callback_data': 'how'}],
+            [{'text': i18n.t(locale, 'menu_pay'), 'callback_data': 'pay'},
+             {'text': i18n.t(locale, 'menu_support'), 'callback_data': 'support'}],
             [{'text': i18n.t(locale, 'menu_security'), 'callback_data': 'security'},
              {'text': i18n.t(locale, 'menu_help'), 'callback_data': 'help'}],
             [{'text': i18n.t(locale, 'menu_language'), 'callback_data': 'language'}],
@@ -584,7 +684,39 @@ def answer_callback(callback_id: str, text: str = ''):
         pass
 
 
+LANES_FILE = Path('/etc/proai-keybroker/lanes.json')
+
+
+def _broker_lane(owner: str) -> dict:
+    """Lane record (port, limits) of a client from the broker config; {} when absent or unreadable."""
+    try:
+        data = json.loads(LANES_FILE.read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        return {}
+    for lane in data.get('lanes', []) if isinstance(data, dict) else []:
+        if isinstance(lane, dict) and lane.get('client') == owner:
+            return {'port': lane.get('port'), 'limits': dict(lane.get('limits') or {})}
+    return {}
+
+
+def purge_due(state: dict) -> list[dict]:
+    now = int(time.time())
+    due = []
+    for section in ('managed', 'imported'):
+        for bot_id_str, item in state.get(section, {}).items():
+            if not isinstance(item, dict):
+                continue
+            purge_after = item.get('purge_after')
+            if purge_after is not None and int(purge_after) <= now and 'purged_at' not in item:
+                bot_id = item.get('bot_id', bot_id_str)
+                owner_id = int(item.get('owner_user_id') or item.get('owner_id') or 0)
+                log_hire_event(bot_id, owner_id, 'purge_due', 'pending_arch_purge')
+                due.append(item)
+    return due
+
+
 def reconcile_provisioning(state: dict) -> None:
+    purge_due(state)
     changed = False
     now = int(time.time())
 
@@ -650,8 +782,11 @@ def reconcile_provisioning(state: dict) -> None:
                     item['updated_at'] = int(time.time())
                     if item.get('last_health_alert') != item['last_error']:
                         try:
+                            owner_id = int(item.get('owner_user_id') or item.get('owner_id') or 0)
+                            label = user_label(owner_id, state)
                             send(PAVEL_ID,
                                  f"⚠️ <b>Health Alert: @{item.get('username')}</b>\n\n"
+                                 f"Владелец: {label} (id: <code>{owner_id}</code>)\n"
                                  f"Профиль: <code>{item.get('profile')}</code>\n"
                                  f"Ошибка: <code>{html.escape(item['last_error'])}</code>")
                             item['last_health_alert'] = item['last_error']
@@ -713,8 +848,10 @@ def reconcile_provisioning(state: dict) -> None:
             if owner_id != PAVEL_ID and item.get('admin_notified_state') != cur_status:
                 try:
                     detail = item.get('error_code') or 'healthy'
+                    label = user_label(owner_id, state)
                     send(PAVEL_ID,
                          '<b>Hermes Forge provisioning</b>\n\n'
+                         f'Клиент: {label} (id: <code>{owner_id}</code>)\n'
                          f'Бот: <b>@{username}</b>\n'
                          f'Профиль: <code>{item.get("profile") or ""}</code>\n'
                          f'Статус: <b>{cur_status}</b>\n'
@@ -817,7 +954,8 @@ def show_create(chat_id: int, user: dict, state: dict):
         send(chat_id, i18n.t(locale, 'hire_already_active', username=uname), main_menu(locale))
         if user_id != PAVEL_ID:
             try:
-                send(PAVEL_ID, f"ℹ️ Пользователь <code>{user_id}</code> запросил второго бота, имея активного @{uname}.")
+                label = user_label(user_id, state, user=user)
+                send(PAVEL_ID, f"ℹ️ Пользователь {label} (id: <code>{user_id}</code>) запросил второго бота, имея активного @{uname}.")
             except Exception:
                 pass
         return
@@ -980,6 +1118,20 @@ def handle_hire_text(chat_id: int, user_id: int, text: str, state: dict) -> bool
     return False
 
 
+def open_support(chat_id: int, user_id: int, state: dict) -> None:
+    locale = i18n.locale_for(user_id, state)
+    send(chat_id, i18n.t(locale, 'support_soon'), main_menu(locale))
+
+
+def open_pay(chat_id: int, user_id: int, state: dict) -> None:
+    locale = i18n.locale_for(user_id, state)
+    send(chat_id, i18n.t(locale, 'pay_soon'), main_menu(locale))
+
+
+def support_message(chat_id: int, user_id: int, text: str, state: dict) -> bool:
+    return False
+
+
 def handle_message(msg: dict, state: dict):
     chat = msg.get('chat') or {}
     user = msg.get('from') or {}
@@ -992,14 +1144,20 @@ def handle_message(msg: dict, state: dict):
     # Do not save locale for unauthorized users
     if not is_authorized_user(user_id, state):
         locale = i18n.locale_for(user_id, state, user)
-        access_denied(chat_id, locale)
+        access_denied(chat_id, locale, user=user)
         return
+
+    update_user_cache(user, state)
 
     locale_key = str(user_id)
     previous_locale = state.setdefault('locales', {}).get(locale_key)
     locale = i18n.remember_locale(user, state)
     if previous_locale != locale:
         save_state(state)
+
+    if state.get('support', {}).get(str(user_id), {}).get('active'):
+        if support_message(chat_id, user_id, text, state):
+            return
 
     if msg.get('managed_bot_created'):
         send(chat_id, i18n.t(locale, 'created_finishing'))
@@ -1010,7 +1168,7 @@ def handle_message(msg: dict, state: dict):
 
     if command == '/importprofile':
         if not is_admin(user_id):
-            access_denied(chat_id, locale)
+            access_denied(chat_id, locale, user=user)
             return
         if len(parts) != 2:
             send(chat_id, 'Формат: <code>/importprofile PROFILE</code>', main_menu(locale))
@@ -1027,9 +1185,24 @@ def handle_message(msg: dict, state: dict):
              'Бот не пересоздавался, текущий токен остался на месте.', main_menu(locale))
         return
 
+    if command == '/requests':
+        if not is_admin(user_id):
+            access_denied(chat_id, locale, user=user)
+            return
+        rows = []
+        for uid_str, req in state.get('access_requests', {}).items():
+            if isinstance(req, dict) and req.get('status') == 'pending':
+                uid = int(uid_str) if uid_str.isdigit() else uid_str
+                label = user_label(uid, state)
+                when = time.strftime('%Y-%m-%d %H:%M', time.localtime(req.get('requested_at', 0))) if req.get('requested_at') else '-'
+                rows.append(f"• {label}, id: <code>{uid}</code>, когда: {when}")
+        body = '\n\n'.join(rows) if rows else 'Нет ожидающих заявок.'
+        send(chat_id, f"<b>Заявки на доступ (pending):</b>\n\n{body}", main_menu(locale))
+        return
+
     if command in {'/allow', '/deny', '/allowed'}:
         if not is_admin(user_id):
-            access_denied(chat_id, locale)
+            access_denied(chat_id, locale, user=user)
             return
         if command == '/allowed':
             explicit = sorted(int(x) for x in state.get('allowed_users', {}) if str(x).isdigit())
@@ -1046,13 +1219,27 @@ def handle_message(msg: dict, state: dict):
             return
         allowed = state.setdefault('allowed_users', {})
         denied = state.setdefault('denied_users', {})
+        target_str = str(target)
         if command == '/allow':
-            denied.pop(str(target), None)
-            allowed[str(target)] = {'added_by': PAVEL_ID, 'added_at': int(time.time())}
+            denied.pop(target_str, None)
+            req = state.get('access_requests', {}).get(target_str, {})
+            u_info = state.get('users', {}).get(target_str, {})
+            uname = req.get('username') or u_info.get('username') or ''
+            allowed[target_str] = {
+                'added_by': PAVEL_ID,
+                'added_at': int(time.time()),
+                'username': uname,
+            }
+            if target_str in state.get('access_requests', {}):
+                state['access_requests'][target_str]['status'] = 'approved'
+                state['access_requests'][target_str]['decided_at'] = int(time.time())
             result = f'✅ <code>{target}</code> разрешён.'
         else:
-            allowed.pop(str(target), None)
-            denied[str(target)] = {'denied_by': PAVEL_ID, 'denied_at': int(time.time())}
+            allowed.pop(target_str, None)
+            denied[target_str] = {'denied_by': PAVEL_ID, 'denied_at': int(time.time())}
+            if target_str in state.get('access_requests', {}):
+                state['access_requests'][target_str]['status'] = 'denied'
+                state['access_requests'][target_str]['decided_at'] = int(time.time())
             result = f'🔒 <code>{target}</code> заблокирован (доступ запрещён).'
         save_state(state)
         send(chat_id, result, main_menu(locale))
@@ -1060,41 +1247,45 @@ def handle_message(msg: dict, state: dict):
 
     if command == '/tenants':
         if not is_admin(user_id):
-            access_denied(chat_id, locale)
+            access_denied(chat_id, locale, user=user)
             return
         rows = []
         for bot_id, item in state.get('managed', {}).items():
             owner = item.get('profile') or f"u{item.get('owner_user_id')}"
+            owner_id = int(item.get('owner_user_id') or item.get('owner_id') or 0)
+            label = user_label(owner_id, state)
             uname = item.get('username') or bot_id
             status = item.get('profile_status') or 'unknown'
             attempt = item.get('attempt', 0)
             upd = time.strftime('%Y-%m-%d %H:%M', time.localtime(item.get('updated_at', 0))) if item.get('updated_at') else '-'
             err = item.get('error_code') or item.get('last_error') or '-'
-            rows.append(f"• <b>{owner}</b> (@{uname})\n  Статус: <code>{status}</code> | Попытка: {attempt}\n  Обновлено: {upd}\n  Ошибка: <code>{html.escape(str(err))}</code>")
+            rows.append(f"• <b>{owner}</b> (@{uname}) — {label} (id: <code>{owner_id}</code>)\n  Статус: <code>{status}</code> | Попытка: {attempt}\n  Обновлено: {upd}\n  Ошибка: <code>{html.escape(str(err))}</code>")
         body = '\n\n'.join(rows) if rows else 'Нет зарегистрированных тенантов.'
         send(chat_id, f"<b>Таблица тенантов Forge:</b>\n\n{body}", main_menu(locale))
         return
 
     if command == '/failed':
         if not is_admin(user_id):
-            access_denied(chat_id, locale)
+            access_denied(chat_id, locale, user=user)
             return
         rows = []
         for bot_id, item in state.get('managed', {}).items():
             status = item.get('profile_status')
             if status in ('provision_failed', 'token_pending'):
                 owner = item.get('profile') or f"u{item.get('owner_user_id')}"
+                owner_id = int(item.get('owner_user_id') or item.get('owner_id') or 0)
+                label = user_label(owner_id, state)
                 uname = item.get('username') or bot_id
                 reason = item.get('error_code') or item.get('last_error') or 'неизвестно'
                 attempt = item.get('attempt', 0)
-                rows.append(f"• <b>@{uname}</b> (owner: <code>{owner}</code>, ID: <code>{bot_id}</code>)\n  Статус: <code>{status}</code>\n  Причина: <code>{html.escape(str(reason))}</code>\n  Попытка: {attempt}")
+                rows.append(f"• <b>@{uname}</b> (owner: <code>{owner}</code>, клиент: {label}, ID: <code>{bot_id}</code>)\n  Статус: <code>{status}</code>\n  Причина: <code>{html.escape(str(reason))}</code>\n  Попытка: {attempt}")
         body = '\n\n'.join(rows) if rows else 'Нет сбойных записей.'
         send(chat_id, f"<b>Сбойные тенанты Forge:</b>\n\n{body}", main_menu(locale))
         return
 
     if command == '/retry':
         if not is_admin(user_id):
-            access_denied(chat_id, locale)
+            access_denied(chat_id, locale, user=user)
             return
         if len(parts) != 2:
             send(chat_id, 'Формат: <code>/retry BOT_ID|TG_ID</code>', main_menu(locale))
@@ -1149,7 +1340,7 @@ def handle_message(msg: dict, state: dict):
 
     if command == '/offboard':
         if not is_admin(user_id):
-            access_denied(chat_id, locale)
+            access_denied(chat_id, locale, user=user)
             return
         if len(parts) < 2 or not parts[1].isdigit():
             send(chat_id, 'Формат: <code>/offboard TELEGRAM_ID [confirm]</code>', main_menu(locale))
@@ -1160,10 +1351,11 @@ def handle_message(msg: dict, state: dict):
         now = int(time.time())
 
         if not is_confirm:
+            label = user_label(target_id, state)
             state.setdefault('pending_confirmations', {})[confirm_key] = {'expires_at': now + 300}
             save_state(state)
             send(chat_id,
-                 f"⚠️ <b>Подтверждение offboard для {target_id}</b>\n\n"
+                 f"⚠️ <b>Подтверждение offboard для {label} (ID: <code>{target_id}</code>)</b>\n\n"
                  f"Для подтверждения отправьте:\n<code>/offboard {target_id} confirm</code>\n\n"
                  "(команда активна 5 минут)", main_menu(locale))
             return
@@ -1207,6 +1399,9 @@ def handle_message(msg: dict, state: dict):
             subprocess.run(['/usr/bin/systemctl', 'disable', '--now', unit],
                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=20, check=False)
 
+        lane = _broker_lane(owner_linux)
+        if target_item is not None and lane:
+            target_item['lane'] = lane
         subprocess.run(['/usr/local/sbin/lanectl', 'remove', '--client', owner_linux],
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=20, check=False)
 
@@ -1236,9 +1431,12 @@ def handle_message(msg: dict, state: dict):
             except Exception:
                 pass
 
+        purge_after = now + 30 * 86400
         if target_item:
             target_item['profile_status'] = 'offboarded'
             target_item['offboarded_at'] = now
+            target_item['purge_after'] = purge_after
+            target_item.pop('purged_at', None)
             target_item['updated_at'] = now
         save_state(state)
         rebuild_instance_owners()
@@ -1246,21 +1444,81 @@ def handle_message(msg: dict, state: dict):
 
         owner_locale = i18n.locale_for(target_id, state)
         uname = target_item.get('username', '') if target_item else str(target_id)
+        purge_date = time.strftime('%d.%m.%Y', time.localtime(purge_after))
         try:
-            send(target_id, i18n.t(owner_locale, 'offboard_notice', username=uname), main_menu(owner_locale))
+            send(target_id, i18n.t(owner_locale, 'offboard_notice', username=uname, purge_date=purge_date), main_menu(owner_locale))
         except Exception:
             pass
 
+        label = user_label(target_id, state)
         manual_msg = (
-            f"✅ <b>Клиент {owner_linux} (ID: <code>{target_id}</code>) выведен из эксплуатации.</b>\n\n"
+            f"✅ <b>Клиент {owner_linux} ({label}, ID: <code>{target_id}</code>) выведен из эксплуатации.</b>\n\n"
             f"Файлы перемещены в: <code>{dest_dir}</code>\n\n"
-            "<b>Ручные шаги для окончательной зачистки:</b>\n"
-            f"1. Удалить Linux-пользователя:\n<code>userdel -r {owner_linux}</code>\n"
-            '2. Удалить базу PostgreSQL (ночной бэкап лежит в /var/backups/proai-hermes):\n'
-            f'<code>docker exec passive-secretary-postgres sh -c \'PGPASSWORD="$POSTGRES_PASSWORD" dropdb -U "$POSTGRES_USER" -h localhost hermes_{owner_linux}\'</code>\n'
-            f"3. Проверить реестр профилей:\n<code>rm -f /opt/vektor/profiles/{owner_linux}.json</code>"
+            f"Данные будут удалены автоматически {purge_date} (процедура purge в reconcile).\n"
+            f"Отменить: <code>/offboard-cancel {target_id}</code>"
         )
         send(chat_id, manual_msg, main_menu(locale))
+        return
+
+    if command == '/offboard-cancel':
+        if not is_admin(user_id):
+            access_denied(chat_id, locale, user=user)
+            return
+        if len(parts) != 2 or not parts[1].isdigit():
+            send(chat_id, 'Формат: <code>/offboard-cancel TELEGRAM_ID</code>', main_menu(locale))
+            return
+        target_id = int(parts[1])
+        target_item = None
+        bot_id = None
+        for section in ('managed', 'imported'):
+            for b_id, it in state.get(section, {}).items():
+                if isinstance(it, dict) and int(it.get('owner_user_id') or it.get('owner_id') or 0) == target_id:
+                    target_item = it
+                    bot_id = int(it.get('bot_id') or b_id)
+                    break
+            if target_item:
+                break
+
+        if not target_item or 'purge_after' not in target_item or 'purged_at' in target_item:
+            send(chat_id, f"Для ID <code>{target_id}</code> нет отменяемого offboard (запись не найдена, не offboarded или уже purged).", main_menu(locale))
+            return
+
+        target_item.pop('purge_after', None)
+        target_item.pop('offboarded_at', None)
+        target_item['profile_status'] = 'active'
+        target_item['updated_at'] = int(time.time())
+
+        owner_linux = str(target_item.get('profile') or '') or owner_for_telegram_id(target_id)
+        subprocess.run(['/usr/bin/systemctl', 'enable', '--now', f'{owner_linux}-hermes.service'],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=20, check=False)
+        subprocess.run(['/usr/bin/systemctl', 'enable', '--now', f'{owner_linux}-hermes-passive-secretary-retention.timer'],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=20, check=False)
+        lane = target_item.pop('lane', None) or {}
+        lane_cmd = ['/usr/local/sbin/lanectl', 'add', '--client', owner_linux]
+        if lane.get('port'):
+            lane_cmd += ['--port', str(int(lane['port']))]
+        limits = lane.get('limits') or {}
+        if limits.get('elevenlabs_chars_month'):
+            lane_cmd += ['--elevenlabs-chars', str(int(limits['elevenlabs_chars_month']))]
+        if limits.get('rpm'):
+            lane_cmd += ['--rpm', str(int(limits['rpm']))]
+        subprocess.run(lane_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=20, check=False)
+        subprocess.run(['/usr/local/sbin/lanectl', 'apply'],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=60, check=False)
+
+        save_state(state)
+        rebuild_instance_owners()
+        log_hire_event(bot_id or target_id, target_id, 'offboard_cancel', 'completed')
+
+        owner_locale = i18n.locale_for(target_id, state)
+        uname = target_item.get('username', '') or str(target_id)
+        try:
+            send(target_id, i18n.t(owner_locale, 'offboard_cancelled', username=uname), main_menu(owner_locale))
+        except Exception:
+            pass
+
+        label = user_label(target_id, state)
+        send(chat_id, f"✅ <b>Offboard для {label} (ID: <code>{target_id}</code>) отменён.</b>\nСервис {owner_linux}-hermes.service запущен, статус: <code>active</code>.", main_menu(locale))
         return
 
     if command == '/cancel':
@@ -1303,12 +1561,186 @@ def handle_callback(q: dict, state: dict):
         answer_callback(callback_id, 'Access denied')
         return
 
-    # Do not save locale for unauthorized users
+    # Callback request_access is processed BEFORE authorization check
+    if data == 'request_access':
+        locale = i18n.locale_for(user_id, state, user)
+        update_user_cache(user, state)
+        uid_str = str(user_id)
+        requests = state.setdefault('access_requests', {})
+        req = requests.get(uid_str)
+        now = int(time.time())
+
+        if req:
+            status = req.get('status')
+            req_at = int(req.get('requested_at') or 0)
+            decided_at = int(req.get('decided_at') or req_at)
+            if status == 'pending' and (now - req_at) < 86400:
+                answer_callback(callback_id, i18n.t(locale, 'access_already_requested'))
+                return
+            if status == 'denied' and (now - decided_at) < 7 * 86400:
+                answer_callback(callback_id, i18n.t(locale, 'access_wait_retry'))
+                return
+
+        username = str(user.get('username') or '').strip().lstrip('@')
+        first_name = str(user.get('first_name') or '').strip()
+        last_name = str(user.get('last_name') or '').strip()
+        requests[uid_str] = {
+            'username': username,
+            'first_name': first_name,
+            'last_name': last_name,
+            'requested_at': now,
+            'status': 'pending',
+        }
+        save_state(state)
+        answer_callback(callback_id)
+        send(chat_id, i18n.t(locale, 'access_requested'))
+
+        full_name = f"{first_name} {last_name}".strip() or first_name or "Пользователь"
+        if username:
+            user_line = f"@{html.escape(username)} — {html.escape(full_name)}"
+        else:
+            user_line = f"без username — {html.escape(full_name)} (<a href=\"{user_link(user_id)}\">профиль</a>)"
+
+        admin_text = (
+            "🔔 <b>Заявка на доступ</b>\n"
+            f"{user_line}\n"
+            f"id: <code>{user_id}</code>"
+        )
+        admin_markup = {
+            'inline_keyboard': [[
+                {'text': i18n.t('ru', 'btn_access_allow'), 'callback_data': f'access_allow:{user_id}'},
+                {'text': i18n.t('ru', 'btn_access_deny'), 'callback_data': f'access_deny:{user_id}'},
+            ]]
+        }
+        try:
+            send(PAVEL_ID, admin_text, admin_markup)
+        except Exception:
+            pass
+        return
+
+    # Handle access_allow / access_deny callbacks (admin only)
+    if data.startswith('access_allow:'):
+        if not is_admin(user_id):
+            answer_callback(callback_id, 'Access denied')
+            return
+        target_str = data.split(':', 1)[1].strip()
+        if not target_str.isdigit():
+            answer_callback(callback_id, 'Invalid ID')
+            return
+        target_uid = int(target_str)
+        now = int(time.time())
+        requests = state.setdefault('access_requests', {})
+        req = requests.get(target_str, {})
+        u_info = state.setdefault('users', {}).get(target_str, {})
+        uname = req.get('username') or u_info.get('username') or ''
+
+        allowed = state.setdefault('allowed_users', {})
+        denied = state.setdefault('denied_users', {})
+        denied.pop(target_str, None)
+        allowed[target_str] = {
+            'added_by': PAVEL_ID,
+            'added_at': now,
+            'username': uname,
+        }
+        if target_str in requests:
+            requests[target_str]['status'] = 'approved'
+            requests[target_str]['decided_at'] = now
+        save_state(state)
+        answer_callback(callback_id, 'Доступ разрешён')
+
+        target_locale = i18n.locale_for(target_uid, state)
+        try:
+            send(target_uid, i18n.t(target_locale, 'access_granted'), main_menu(target_locale))
+        except Exception:
+            pass
+
+        label = user_label(target_uid, state)
+        edited_text = (
+            "🔔 <b>Заявка на доступ</b>\n"
+            f"{label}\n"
+            f"id: <code>{target_uid}</code>\n\n"
+            "✅ <b>Доступ разрешён</b>"
+        )
+        if msg.get('message_id'):
+            try:
+                api('editMessageText', {
+                    'chat_id': chat_id,
+                    'message_id': msg.get('message_id'),
+                    'text': edited_text,
+                    'parse_mode': 'HTML',
+                    'disable_web_page_preview': True,
+                })
+            except Exception:
+                try:
+                    api('editMessageReplyMarkup', {
+                        'chat_id': chat_id,
+                        'message_id': msg.get('message_id'),
+                        'reply_markup': {'inline_keyboard': []},
+                    })
+                except Exception:
+                    pass
+        return
+
+    if data.startswith('access_deny:'):
+        if not is_admin(user_id):
+            answer_callback(callback_id, 'Access denied')
+            return
+        target_str = data.split(':', 1)[1].strip()
+        if not target_str.isdigit():
+            answer_callback(callback_id, 'Invalid ID')
+            return
+        target_uid = int(target_str)
+        now = int(time.time())
+        requests = state.setdefault('access_requests', {})
+        if target_str in requests:
+            requests[target_str]['status'] = 'denied'
+            requests[target_str]['decided_at'] = now
+        else:
+            requests[target_str] = {'status': 'denied', 'requested_at': now, 'decided_at': now}
+        save_state(state)
+        answer_callback(callback_id, 'Заявка отклонена')
+
+        target_locale = i18n.locale_for(target_uid, state)
+        try:
+            send(target_uid, i18n.t(target_locale, 'access_rejected'))
+        except Exception:
+            pass
+
+        label = user_label(target_uid, state)
+        edited_text = (
+            "🔔 <b>Заявка на доступ</b>\n"
+            f"{label}\n"
+            f"id: <code>{target_uid}</code>\n\n"
+            "❌ <b>Доступ отклонён</b>"
+        )
+        if msg.get('message_id'):
+            try:
+                api('editMessageText', {
+                    'chat_id': chat_id,
+                    'message_id': msg.get('message_id'),
+                    'text': edited_text,
+                    'parse_mode': 'HTML',
+                    'disable_web_page_preview': True,
+                })
+            except Exception:
+                try:
+                    api('editMessageReplyMarkup', {
+                        'chat_id': chat_id,
+                        'message_id': msg.get('message_id'),
+                        'reply_markup': {'inline_keyboard': []},
+                    })
+                except Exception:
+                    pass
+        return
+
+    # Check authorization for other callbacks
     if not is_authorized_user(user_id, state):
         answer_callback(callback_id, 'Access denied')
         locale = i18n.locale_for(user_id, state, user)
-        access_denied(chat_id, locale)
+        access_denied(chat_id, locale, user=user)
         return
+
+    update_user_cache(user, state)
 
     locale_key = str(user_id)
     previous_locale = state.setdefault('locales', {}).get(locale_key)
@@ -1329,7 +1761,11 @@ def handle_callback(q: dict, state: dict):
              main_menu(selected))
         return
 
-    if data == 'language':
+    if data == 'support':
+        open_support(chat_id, user_id, state)
+    elif data == 'pay':
+        open_pay(chat_id, user_id, state)
+    elif data == 'language':
         send(chat_id, i18n.t(locale, 'language_title'), i18n.language_keyboard())
     elif data == 'create':
         show_create(chat_id, user, state)

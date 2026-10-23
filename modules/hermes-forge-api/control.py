@@ -6,6 +6,7 @@ import copy
 import hashlib
 import hmac
 import http.client
+import importlib.util
 import json
 import logging
 import os
@@ -72,6 +73,27 @@ WORKSPACE_MEMBER_LIMIT = 1
 WORKSPACE_STATE_DIR = ACTION_STATE_ROOT / "workspace-members"
 WORKSPACE_INVITE_DIR = ACTION_STATE_ROOT / "workspace-invites"
 ZOOM_BINDINGS_DIR = ACTION_STATE_ROOT / "zoom-bindings"
+BILLING_DIR = Path(os.environ.get("FORGE_BILLING_DIR", str(ACTION_STATE_ROOT / "billing")))
+
+
+def _load_billing_module() -> Any:
+    local = Path(__file__).resolve().with_name("billing.py")
+    if local.is_file():
+        spec = importlib.util.spec_from_file_location("hermes_forge_billing", local)
+        if spec is not None and spec.loader is not None:
+            module = importlib.util.module_from_spec(spec)
+            sys.modules[spec.name] = module
+            spec.loader.exec_module(module)
+            return module
+    try:
+        import billing
+        return billing
+    except ImportError:
+        return None
+
+
+BILLING = _load_billing_module()
+billing = BILLING
 INVITE_TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{16,96}$")
 ZOOM_CONNECTION_ID_RE = re.compile(r"^[A-Za-z0-9_-]{8,128}$")
 UNIT_NAME_RE = re.compile(r"^[a-z0-9@_.-]+$")
@@ -2116,6 +2138,91 @@ def _require_session(payload: dict[str, Any], sensitive: bool = False) -> int:
     return SESSIONS.resolve(token, sensitive=sensitive)
 
 
+def _forge_admin_id() -> int:
+    try:
+        env_vars = _read_env(SECRET_FILE)
+        raw = str(env_vars.get("FORGE_ADMIN_ID") or "").strip()
+        if raw.isdigit():
+            return int(raw)
+    except Exception:
+        pass
+    return 450206471
+
+
+def _billing_payment(payload: dict[str, Any]) -> dict[str, Any]:
+    if BILLING is None:
+        raise ControlError("billing_module_unavailable", 503)
+    notification = payload.get("notification")
+    if not isinstance(notification, dict):
+        raise ControlError("billing_notification_invalid", 400)
+
+    raw_user_id = str(notification.get("customer_extra") or notification.get("user_id") or "").strip()
+    if not re.fullmatch(r"^\d{5,20}$", raw_user_id):
+        raise ControlError("billing_customer_invalid", 400)
+    if not BILLING.is_forge_payment(notification):
+        raise ControlError("billing_order_foreign", 400)
+    user_id = int(raw_user_id)
+
+    try:
+        plan_days = int(notification.get("plan_days") or os.environ.get("FORGE_PLAN_DAYS", "30"))
+    except ValueError:
+        plan_days = 30
+
+    now_val = payload.get("now")
+    now_int = int(now_val) if isinstance(now_val, (int, float)) else None
+
+    res = BILLING.apply_payment(BILLING_DIR, user_id, notification, plan_days=plan_days, now=now_int)
+    if res.get("duplicate"):
+        return {"duplicate": True}
+
+    order_id = str(notification.get("order_id") or "")
+    sum_val = str(notification.get("sum") or "")
+    _audit_op("billing_payment", user_id, "", "success", details={"order_id": order_id, "sum": sum_val})
+
+    admin_id = _forge_admin_id()
+    paid_until = res.get("paid_until", 0)
+    paid_until_str = time.strftime("%d.%m.%Y", time.localtime(paid_until))
+    msg = f"💳 Оплата Hermes Forge: {sum_val} ₽ от {_user_label_from_manager_state(user_id)}, подписка до {paid_until_str}"
+    _send_manager_telegram_message(admin_id, msg)
+
+    return {"ok": True, "paid_until": paid_until}
+
+
+def _user_label_from_manager_state(user_id: int) -> str:
+    """@username (name) from the manager's user cache; falls back to the id. Admin wants usernames, not ids."""
+    try:
+        state = _safe_json(STATE_FILE)
+    except Exception:  # noqa: BLE001
+        state = {}
+    uid = str(user_id)
+    rec = (state.get("users") or {}).get(uid) or (state.get("allowed_users") or {}).get(uid) or {}
+    username = str(rec.get("username") or "").strip().lstrip("@")
+    name = " ".join(str(rec.get(k) or "").strip() for k in ("first_name", "last_name")).strip()
+    if username and name:
+        return f"@{username} ({name}, id {user_id})"
+    if username:
+        return f"@{username} (id {user_id})"
+    return f"{name or 'пользователь'} (id {user_id})"
+
+
+def _billing_status(user_id: int) -> dict[str, Any]:
+    if BILLING is None:
+        raise ControlError("billing_module_unavailable", 503)
+    state = BILLING.read_state(BILLING_DIR, user_id)
+    if state is None:
+        return {"active": None}
+    now = int(time.time())
+    paid_until = int(state.get("paid_until") or 0)
+    active = paid_until > now
+    days_left = max(0, (paid_until - now) // 86400)
+    return {
+        "plan": str(state.get("plan") or ""),
+        "paid_until": paid_until,
+        "active": active,
+        "days_left": days_left,
+    }
+
+
 def dispatch(payload: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise ControlError("request_invalid", 400)
@@ -2125,6 +2232,8 @@ def dispatch(payload: dict[str, Any]) -> dict[str, Any]:
     if op == "zoom_webhook_event":
         event = payload.get("event")
         return _queue_zoom_event(event if isinstance(event, dict) else {})
+    if op == "billing_payment":
+        return _billing_payment(payload)
     if op == "logout":
         token = str(payload.get("session") or "")
         if not token or len(token) > 128:
@@ -2136,6 +2245,8 @@ def dispatch(payload: dict[str, Any]) -> dict[str, Any]:
     sensitive = op in SENSITIVE_OPS
     user_id = _require_session(payload, sensitive=sensitive)
 
+    if op == "billing_status":
+        return _billing_status(user_id)
     if op == "list_hermes":
         return {"items": [_public_hermes(item) for item in _owned_items(user_id)]}
     if op == "accept_workspace_invite":

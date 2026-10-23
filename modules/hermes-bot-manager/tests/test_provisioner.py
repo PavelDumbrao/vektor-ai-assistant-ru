@@ -270,7 +270,7 @@ def test_ensure_proaisaver_header(monkeypatch, tmp_path):
     provisioner._ensure_proaisaver_header(entry, hermes, {"PROAISAVER_MCP_TOKEN": "real-saver-secret-token"})
     assert config_file.read_text(encoding="utf-8") == template_with_broker
 
-    # Config with empty Bearer is populated as before
+    # Config with empty Bearer is populated with keybroker-saver
     template_empty_bearer = (
         "mcp_servers:\n"
         "  proaisaver:\n"
@@ -280,7 +280,19 @@ def test_ensure_proaisaver_header(monkeypatch, tmp_path):
     )
     config_file.write_text(template_empty_bearer, encoding="utf-8")
     provisioner._ensure_proaisaver_header(entry, hermes, {"PROAISAVER_MCP_TOKEN": "real-saver-secret-token"})
-    assert "Authorization: Bearer real-saver-secret-token" in config_file.read_text(encoding="utf-8")
+    assert "Authorization: Bearer keybroker-saver" in config_file.read_text(encoding="utf-8")
+
+    # Config with real token is replaced with Bearer keybroker-saver (broker era)
+    template_with_real_token = (
+        "mcp_servers:\n"
+        "  proaisaver:\n"
+        "    enabled: true\n"
+        "    headers:\n"
+        "      Authorization: Bearer real-saver-secret-token\n"
+    )
+    config_file.write_text(template_with_real_token, encoding="utf-8")
+    provisioner._ensure_proaisaver_header(entry, hermes, {"PROAISAVER_MCP_TOKEN": "real-saver-secret-token"})
+    assert "Authorization: Bearer keybroker-saver" in config_file.read_text(encoding="utf-8")
 
 
 def test_allocate_broker_lane(monkeypatch, tmp_path):
@@ -290,24 +302,56 @@ def test_allocate_broker_lane(monkeypatch, tmp_path):
     inst = instance()
     run_calls = []
 
-    # (a) Successful add -> port from file
-    lanes_file.write_text(json.dumps({"lanes": [{"client": inst.owner_linux, "port": 21005}]}), encoding="utf-8")
+    # (a) Lane exists in file with correct uid -> no add, only check
+    lanes_file.write_text(json.dumps({"lanes": [{"client": inst.owner_linux, "port": 21005, "uid": 1001}]}), encoding="utf-8")
     monkeypatch.setattr(provisioner, "_run", lambda args, **k: run_calls.append(args))
     port = provisioner._allocate_broker_lane(inst, entry)
     assert port == 21005
     assert len(run_calls) == 1
-    assert run_calls[0] == [str(provisioner.LANECTL), "add", "--client", inst.owner_linux, *provisioner.LANE_LIMITS]
+    assert run_calls[0] == [str(provisioner.LANECTL), "check", "--client", inst.owner_linux]
 
-    # (b) _run raises ProvisionError, lane exists in file -> return its port
-    lanes_file.write_text(json.dumps({"lanes": [{"client": inst.owner_linux, "port": 21010}]}), encoding="utf-8")
-    def failing_run(*args, **kwargs):
-        raise provisioner.ProvisionError("subprocess_failed:lanectl")
-    monkeypatch.setattr(provisioner, "_run", failing_run)
+    # (b) Lane missing in file -> lanectl add, then lanectl check
+    run_calls.clear()
+    lanes_file.write_text(json.dumps({"lanes": []}), encoding="utf-8")
+    def run_and_add(args, **k):
+        run_calls.append(args)
+        if args[1] == "add":
+            lanes_file.write_text(json.dumps({"lanes": [{"client": inst.owner_linux, "port": 21010, "uid": 1001}]}), encoding="utf-8")
+    monkeypatch.setattr(provisioner, "_run", run_and_add)
     assert provisioner._allocate_broker_lane(inst, entry) == 21010
+    assert len(run_calls) == 2
+    assert run_calls[0] == [str(provisioner.LANECTL), "add", "--client", inst.owner_linux, *provisioner.LANE_LIMITS]
+    assert run_calls[1] == [str(provisioner.LANECTL), "check", "--client", inst.owner_linux]
 
-    # (c) Lane missing in file -> ProvisionError("broker_lane_unavailable")
-    lanes_file.write_text(json.dumps({"lanes": [{"client": "other-user", "port": 21015}]}), encoding="utf-8")
+    # (c) Lane missing in file even after add -> ProvisionError("broker_lane_unavailable")
+    run_calls.clear()
+    lanes_file.write_text(json.dumps({"lanes": [{"client": "other-user", "port": 21015, "uid": 1002}]}), encoding="utf-8")
+    monkeypatch.setattr(provisioner, "_run", lambda args, **k: run_calls.append(args))
     with pytest.raises(provisioner.ProvisionError, match="broker_lane_unavailable"):
+        provisioner._allocate_broker_lane(inst, entry)
+
+
+def test_allocate_broker_lane_uid_mismatch(monkeypatch, tmp_path):
+    lanes_file = tmp_path / "lanes.json"
+    monkeypatch.setattr(provisioner, "LANES_PATH", lanes_file)
+    entry = SimpleNamespace(pw_uid=1001, pw_gid=1001, pw_dir=str(tmp_path), pw_name="h503899482")
+    inst = instance()
+    lanes_file.write_text(json.dumps({"lanes": [{"client": inst.owner_linux, "port": 21005, "uid": 9999}]}), encoding="utf-8")
+    with pytest.raises(provisioner.ProvisionError, match="broker_lane_uid_mismatch"):
+        provisioner._allocate_broker_lane(inst, entry)
+
+
+def test_allocate_broker_lane_check_failed(monkeypatch, tmp_path):
+    lanes_file = tmp_path / "lanes.json"
+    monkeypatch.setattr(provisioner, "LANES_PATH", lanes_file)
+    entry = SimpleNamespace(pw_uid=1001, pw_gid=1001, pw_dir=str(tmp_path), pw_name="h503899482")
+    inst = instance()
+    lanes_file.write_text(json.dumps({"lanes": [{"client": inst.owner_linux, "port": 21005, "uid": 1001}]}), encoding="utf-8")
+    def fail_check(args, **k):
+        if "check" in args:
+            raise provisioner.ProvisionError("subprocess_failed:lanectl")
+    monkeypatch.setattr(provisioner, "_run", fail_check)
+    with pytest.raises(provisioner.ProvisionError, match="broker_lane_check_failed"):
         provisioner._allocate_broker_lane(inst, entry)
 
 
@@ -332,3 +376,73 @@ def test_render_profile_replaces_broker_port(monkeypatch, tmp_path):
     rendered_soul = (hermes / "SOUL.md").read_text(encoding="utf-8")
     assert "21042" in rendered_soul
     assert "@BROKER_PORT@" not in rendered_soul
+
+
+def test_render_profile_unrendered_placeholder_raises(monkeypatch, tmp_path):
+    template_dir = tmp_path / "templates" / "personal"
+    template_dir.mkdir(parents=True)
+    (template_dir / "config.yaml").write_text("url: http://127.0.0.1:@BROKER_PORT@/@UNKNOWN_VAR@\n", encoding="utf-8")
+    (template_dir / "SOUL.md").write_text("Hello\n", encoding="utf-8")
+    (template_dir / "USER.md").write_text("User\n", encoding="utf-8")
+
+    monkeypatch.setattr(provisioner, "MANAGER_ROOT", tmp_path)
+    monkeypatch.setattr(provisioner, "_atomic_write", lambda p, c, **k: p.write_text(c, encoding="utf-8"))
+
+    home = tmp_path / "home" / "h503899482"
+    entry = SimpleNamespace(pw_uid=1001, pw_gid=1001, pw_dir=str(home), pw_name="h503899482")
+
+    with pytest.raises(provisioner.ProvisionError, match="profile_template_unrendered_placeholder"):
+        provisioner._render_profile(instance(), entry, 21042)
+
+
+def test_render_profile_port_mismatch_raises(monkeypatch, tmp_path):
+    template_dir = tmp_path / "templates" / "personal"
+    template_dir.mkdir(parents=True)
+    (template_dir / "config.yaml").write_text("url: http://127.0.0.1:9999/other\n", encoding="utf-8")
+    (template_dir / "SOUL.md").write_text("Hello\n", encoding="utf-8")
+    (template_dir / "USER.md").write_text("User\n", encoding="utf-8")
+
+    monkeypatch.setattr(provisioner, "MANAGER_ROOT", tmp_path)
+    monkeypatch.setattr(provisioner, "_atomic_write", lambda p, c, **k: p.write_text(c, encoding="utf-8"))
+
+    home = tmp_path / "home" / "h503899482"
+    entry = SimpleNamespace(pw_uid=1001, pw_gid=1001, pw_dir=str(home), pw_name="h503899482")
+
+    with pytest.raises(provisioner.ProvisionError, match="profile_template_port_mismatch"):
+        provisioner._render_profile(instance(), entry, 21042)
+
+
+def test_ensure_profile_env_replaces_real_keys_on_reapply(monkeypatch, tmp_path):
+    hermes = tmp_path / ".hermes"
+    hermes.mkdir(parents=True)
+    entry = SimpleNamespace(pw_uid=1001, pw_gid=1001, pw_dir=str(tmp_path), pw_name="h503899482")
+    token = "9000000001:AAABBBCCCDDDEEEFFFGGGHHHJJJ"
+    existing_env = (
+        "LLM_API_KEY=sk-real-secret-llm-123\n"
+        "FALLBACK_LLM_API_KEY=sk-real-fallback-456\n"
+        "OPENROUTER_API_KEY=sk-real-openrouter-789\n"
+        "MINIMAX_API_KEY=sk-real-minimax-000\n"
+        "TELEGRAM_BOT_TOKEN=" + token + "\n"
+    )
+    (hermes / ".env").write_text(existing_env, encoding="utf-8")
+    platform_values = {
+        "LLM_API_KEY": "sk-real-secret-llm-123",
+        "FALLBACK_LLM_API_KEY": "sk-real-fallback-456",
+        "OPENROUTER_API_KEY": "sk-real-openrouter-789",
+        "TAVILY_API_KEY": "tvly-real-tavily-999",
+    }
+    monkeypatch.setattr(provisioner, "_atomic_write", lambda p, c, **k: p.write_text(c, encoding="utf-8"))
+    provisioner._ensure_profile_env(instance(), entry, hermes, token, platform_values, 21001)
+
+    result_env = (hermes / ".env").read_text(encoding="utf-8")
+    result_dict = provisioner._read_env(hermes / ".env")
+
+    assert result_dict["LLM_API_KEY"] == "keybroker-lingsuan"
+    assert result_dict["FALLBACK_LLM_API_KEY"] == "keybroker-lingsuan-fb"
+    assert result_dict["OPENROUTER_API_KEY"] == "keybroker-openrouter"
+    assert "MINIMAX_API_KEY" not in result_dict
+    assert result_dict["TAVILY_API_KEY"] == "tvly-real-tavily-999"
+    assert "sk-real-secret-llm-123" not in result_env
+    assert "sk-real-fallback-456" not in result_env
+    assert "sk-real-openrouter-789" not in result_env
+    assert "sk-real-minimax-000" not in result_env

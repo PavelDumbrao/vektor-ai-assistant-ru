@@ -63,7 +63,9 @@ class TestAdminEndpoints(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(resp.status, 200)
                 data = await resp.json()
                 self.assertTrue(data["ok"])
-                self.assertEqual(data["lanes"], 1)
+                self.assertEqual(len(data["lanes"]), 1)
+                self.assertEqual(data["lanes"][0]["client"], "bebov")
+                self.assertEqual(data["lanes"][0]["state"], "ok")
                 self.assertEqual(data["routes"], 2)
                 self.assertEqual(data["routes_without_key"], ["/offline/v1"])
 

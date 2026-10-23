@@ -15,6 +15,25 @@ from typing import Any
 logger = logging.getLogger("keybroker.usage")
 
 
+def safe_int(v: Any) -> int | None:
+    if v is None:
+        return None
+    try:
+        return int(v)
+    except (ValueError, TypeError):
+        return None
+
+
+EXCLUDED_RPM_ERRORS = {
+    "lane_limit",
+    "bad_path",
+    "unknown_route",
+    "path_not_allowed",
+    "not_implemented",
+    "route_unavailable",
+}
+
+
 @dataclass
 class RequestRecord:
     ts: float
@@ -33,6 +52,15 @@ class RequestRecord:
     completion_tokens: int | None = None
     chars: int | None = None
     error: str | None = None
+
+    def __post_init__(self):
+        self.path = self.path[:200] if self.path else ""
+        self.prompt_tokens = safe_int(self.prompt_tokens)
+        self.completion_tokens = safe_int(self.completion_tokens)
+        self.chars = safe_int(self.chars)
+        self.req_bytes = safe_int(self.req_bytes) or 0
+        self.resp_bytes = safe_int(self.resp_bytes) or 0
+        self.duration_ms = safe_int(self.duration_ms) or 0
 
 
 class MonthTotals(dict):
@@ -79,14 +107,18 @@ class MonthTotals(dict):
 
 
 def _get_utc_month_range(month_str: str) -> tuple[float, float]:
-    """Return (start_ts, end_ts) in UTC for 'YYYY-MM'."""
+    """Return (start_ts, end_ts) in UTC for 'YYYY-MM'. Raises ValueError on invalid format."""
+    parts = month_str.strip().split("-")
+    if len(parts) != 2:
+        raise ValueError(f"Invalid month format '{month_str}', expected 'YYYY-MM'")
     try:
-        parts = month_str.strip().split("-")
         year = int(parts[0])
         month = int(parts[1])
-    except (ValueError, IndexError):
-        now_dt = datetime.datetime.now(datetime.timezone.utc)
-        year, month = now_dt.year, now_dt.month
+    except ValueError:
+        raise ValueError(f"Invalid month format '{month_str}', expected 'YYYY-MM'")
+
+    if not (1 <= month <= 12):
+        raise ValueError(f"Month must be between 1 and 12, got {month}")
 
     start_dt = datetime.datetime(year, month, 1, 0, 0, 0, tzinfo=datetime.timezone.utc)
     start_ts = start_dt.timestamp()
@@ -111,6 +143,11 @@ class UsageTracker:
         self._queue: asyncio.Queue[RequestRecord | None] = asyncio.Queue()
         self._writer_task: asyncio.Task[None] | None = None
         self._closed = False
+        self.dropped_records: int = 0
+
+    @property
+    def queue_depth(self) -> int:
+        return self._queue.qsize()
 
     def _init_db(self) -> None:
         """Create tables and indexes, set WAL mode."""
@@ -163,22 +200,31 @@ class UsageTracker:
                 break
 
             batch = [item]
+            sentinel_encountered = False
             # Gather up to 100 pending records to batch insert
             while not self._queue.empty() and len(batch) < 100:
                 nxt = self._queue.get_nowait()
                 if nxt is None:
-                    # Re-enqueue sentinel and finish current batch
-                    self._queue.put_nowait(None)
+                    sentinel_encountered = True
+                    self._queue.task_done()
                     break
                 batch.append(nxt)
 
             try:
                 self._insert_batch(batch)
             except Exception:
-                logger.exception("Failed to insert usage records batch into DB")
+                logger.exception("Failed to insert usage records batch into DB, retrying row-by-row")
+                for rec in batch:
+                    try:
+                        self._insert_batch([rec])
+                    except Exception:
+                        self.dropped_records += 1
             finally:
                 for _ in range(len(batch)):
                     self._queue.task_done()
+
+            if sentinel_encountered:
+                break
 
     def _insert_batch(self, batch: list[RequestRecord]) -> None:
         sql = """
@@ -223,15 +269,19 @@ class UsageTracker:
             self._queue.put_nowait(row)
 
     def rpm_count(self, port: int, now: float | None = None) -> int:
-        """Return count of requests in the last 60 seconds for given port."""
+        """Return count of successful/upstream requests in the last 60 seconds for given port."""
         if now is None:
             now = time.time()
         window_start = now - 60.0
 
-        cursor = self._conn.execute(
-            "SELECT COUNT(*) FROM requests WHERE port = ? AND ts >= ? AND ts <= ?",
-            (port, window_start, now),
-        )
+        placeholders = ",".join("?" for _ in EXCLUDED_RPM_ERRORS)
+        sql = f"""
+            SELECT COUNT(*) FROM requests
+            WHERE port = ? AND ts >= ? AND ts <= ?
+              AND (error IS NULL OR error = '' OR error NOT IN ({placeholders}))
+        """
+        params = (port, window_start, now, *EXCLUDED_RPM_ERRORS)
+        cursor = self._conn.execute(sql, params)
         row = cursor.fetchone()
         db_count = row[0] if row else 0
 
@@ -239,7 +289,10 @@ class UsageTracker:
         pending_count = sum(
             1
             for item in list(self._queue._queue)
-            if item is not None and item.port == port and window_start <= item.ts <= now
+            if item is not None
+            and item.port == port
+            and window_start <= item.ts <= now
+            and (not item.error or item.error not in EXCLUDED_RPM_ERRORS)
         )
         return db_count + pending_count
 
@@ -377,6 +430,8 @@ class UsageTracker:
 
     async def flush(self) -> None:
         """Wait until all pending items in queue are written to SQLite."""
+        if self._closed:
+            return
         await self._queue.join()
 
     async def close(self) -> None:

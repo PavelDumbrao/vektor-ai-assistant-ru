@@ -45,8 +45,15 @@ def create_test_broker(
     with open(lanes_path, "w", encoding="utf-8") as f:
         json.dump({"lanes": lanes}, f)
 
+    formatted_routes = []
+    for r in routes:
+        r_copy = dict(r)
+        if "allow" not in r_copy:
+            r_copy["allow"] = "*"
+        formatted_routes.append(r_copy)
+
     with open(routes_path, "w", encoding="utf-8") as f:
-        json.dump({"routes": routes}, f)
+        json.dump({"routes": formatted_routes}, f)
 
     app = BrokerApp(
         bind="127.0.0.1",

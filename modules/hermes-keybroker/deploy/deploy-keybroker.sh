@@ -16,18 +16,19 @@ install -m 644 "$SRC/README.md" "$DST/README.md"
 if [ ! -x $DST/.venv/bin/python ]; then uv venv -q $DST/.venv --python 3.12; fi
 uv pip install -q --python $DST/.venv/bin/python "aiohttp==3.14.5"
 chown -R root:root $DST
-install -m 644 "$HERE/keybroker-routes.json" $ETC/routes.json
+ROUTES_SRC="$HERE/routes.json"; [ -f "$ROUTES_SRC" ] || ROUTES_SRC="$HERE/keybroker-routes.json"
+install -m 640 -o root -g $SVC_USER "$ROUTES_SRC" $ETC/routes.json
 [ -f $ETC/lanes.json ] || printf '{"lanes": []}\n' > $ETC/lanes.json
-chmod 644 $ETC/lanes.json
+chown root:$SVC_USER $ETC/lanes.json; chmod 640 $ETC/lanes.json   # lanes/limits are not for other local users
 install -m 755 "$HERE/lanectl.py" /usr/local/sbin/lanectl
 
+# Oneshot WITHOUT RemainAfterExit: the timer must really re-run it (an active oneshot is a no-op for `start`).
 cat > /etc/systemd/system/proai-keybroker-lanes.service <<'UNIT'
 [Unit]
 Description=ProAI key broker: per-client lane firewall rules (iptables owner match)
 After=network-pre.target ufw.service
 [Service]
 Type=oneshot
-RemainAfterExit=yes
 ExecStart=/usr/local/sbin/lanectl apply
 [Install]
 WantedBy=multi-user.target
@@ -37,25 +38,32 @@ cat > /etc/systemd/system/proai-keybroker-lanes.timer <<'UNIT'
 Description=Re-apply key broker lane rules (survives ufw reloads)
 [Timer]
 OnBootSec=2min
-OnUnitActiveSec=15min
+OnCalendar=*:0/15
+Persistent=true
 [Install]
 WantedBy=timers.target
 UNIT
 cat > /etc/systemd/system/proai-keybroker.service <<UNIT
 [Unit]
 Description=ProAI key broker for Hermes client bots (platform keys stay here; clients get per-uid lanes)
-Requires=proai-keybroker-lanes.service
+Wants=proai-keybroker-lanes.service network-online.target
 After=network-online.target proai-keybroker-lanes.service
+StartLimitIntervalSec=0
 [Service]
 User=$SVC_USER
 Group=$SVC_USER
 EnvironmentFile=/etc/proai-hermes-platform.env
-Environment=KEYBROKER_LANES=$ETC/lanes.json KEYBROKER_ROUTES=$ETC/routes.json KEYBROKER_STATE_DIR=/var/lib/$SVC_USER KEYBROKER_ADMIN_PORT=21000
+Environment=KEYBROKER_LANES=$ETC/lanes.json KEYBROKER_ROUTES=$ETC/routes.json KEYBROKER_STATE_DIR=/var/lib/$SVC_USER KEYBROKER_ADMIN_PORT=21000 KEYBROKER_BIND=127.0.0.1
 WorkingDirectory=$DST
+ExecStartPre=+/usr/local/sbin/lanectl apply
 ExecStart=$DST/.venv/bin/python -m keybroker
 ExecReload=/bin/kill -HUP \$MAINPID
 Restart=always
 RestartSec=2
+TimeoutStopSec=60
+LimitNOFILE=65536
+TasksMax=512
+MemoryMax=1G
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
@@ -66,6 +74,8 @@ RestrictSUIDSGID=true
 LockPersonality=true
 CapabilityBoundingSet=
 RestrictAddressFamilies=AF_INET AF_INET6
+StateDirectory=$SVC_USER
+StateDirectoryMode=0750
 ReadWritePaths=/var/lib/$SVC_USER
 UMask=0077
 [Install]

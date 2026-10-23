@@ -1,0 +1,57 @@
+--- /opt/vektor/releases/hermes-0.21.0-29112bef-vektor4-modern-tglf1-vtm1-tgrel2-pmfix2-pi2-li2-groupss3-lm2-tv1/hermes-agent/tools/transcription_tools.py	2026-09-22 18:33:08.023338610 +0300
++++ /opt/vektor/releases/hermes-0.21.0-29112bef-vektor4-modern-tglf1-vtm1-tgrel2-pmfix2-pi2-li2-groupss3-lm2-tk2/hermes-agent/tools/transcription_tools.py	2026-10-23 08:02:52.416947046 +0300
+@@ -121,7 +121,9 @@
+     "openai/whisper-large-v3",
+ )
+ DEFAULT_OPENROUTER_STT_TIMEOUT = 30.0
+-OPENROUTER_STT_ENDPOINT = "https://openrouter.ai/api/v1/audio/transcriptions"
++OPENROUTER_STT_ENDPOINT = (
++    os.getenv("HERMES_OPENROUTER_STT_ENDPOINT") or "https://openrouter.ai/api/v1/audio/transcriptions"
++)
+ LOCAL_STT_COMMAND_ENV = "HERMES_LOCAL_STT_COMMAND"
+ LOCAL_STT_LANGUAGE_ENV = "HERMES_LOCAL_STT_LANGUAGE"
+ COMMON_LOCAL_BIN_DIRS = ("/opt/homebrew/bin", "/usr/local/bin")
+--- /opt/vektor/releases/hermes-0.21.0-29112bef-vektor4-modern-tglf1-vtm1-tgrel2-pmfix2-pi2-li2-groupss3-lm2-tv1/hermes-agent/plugins/platforms/telegram/passive_media.py	2026-09-09 10:32:05.805012799 +0300
++++ /opt/vektor/releases/hermes-0.21.0-29112bef-vektor4-modern-tglf1-vtm1-tgrel2-pmfix2-pi2-li2-groupss3-lm2-tk2/hermes-agent/plugins/platforms/telegram/passive_media.py	2026-10-23 08:02:52.416947046 +0300
+@@ -38,7 +38,9 @@
+ DEFAULT_PROCESSOR_VERSION = "whisper-asr-webservice:1.9.1/small-int8"
+ OPENROUTER_WHISPER_TURBO_MODEL = "openai/whisper-large-v3-turbo"
+ OPENROUTER_PROCESSOR_VERSION = "openrouter:openai/whisper-large-v3-turbo:v1"
+-OPENROUTER_STT_ENDPOINT = "https://openrouter.ai/api/v1/audio/transcriptions"
++OPENROUTER_STT_ENDPOINT = (
++    os.getenv("HERMES_OPENROUTER_STT_ENDPOINT") or "https://openrouter.ai/api/v1/audio/transcriptions"
++)
+ DEFAULT_RELATIVE_MEDIA_SPOOL = Path("passive-secretary") / "media"
+ MAX_MEDIA_FILE_BYTES = 20 * 1024 * 1024
+ MAX_MEDIA_DURATION_SECONDS = 1_800
+@@ -1077,16 +1079,20 @@
+         timeout_seconds: float = 90.0,
+     ) -> None:
+         parsed = urlsplit(endpoint)
+-        if (
+-            parsed.scheme != "https"
+-            or parsed.hostname != "openrouter.ai"
+-            or parsed.port not in {None, 443}
+-            or parsed.username is not None
+-            or parsed.password is not None
+-            or parsed.query
+-            or parsed.fragment
+-            or parsed.path != "/api/v1/audio/transcriptions"
+-        ):
++        _clean = parsed.username is None and parsed.password is None and not parsed.query and not parsed.fragment
++        _official = (
++            parsed.scheme == "https"
++            and parsed.hostname == "openrouter.ai"
++            and parsed.port in {None, 443}
++            and parsed.path == "/api/v1/audio/transcriptions"
++        )
++        # Key-broker lane (kb2): a loopback http endpoint that forwards to OpenRouter with the platform key.
++        _lane = (
++            parsed.scheme == "http"
++            and parsed.hostname == "127.0.0.1"
++            and parsed.path.endswith("/audio/transcriptions")
++        )
++        if not (_clean and (_official or _lane)):
+             raise ValueError("Passive media OpenRouter endpoint is not trusted")
+         if (
+             not isinstance(api_key, str)

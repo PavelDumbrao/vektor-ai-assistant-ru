@@ -421,7 +421,7 @@ def test_support_and_pay_stubs(monkeypatch):
         "data": "support",
     }
     manager.handle_callback(cb_support, state)
-    assert any("Служба поддержки" in t for c, t, _ in sent if c == 77777)
+    assert any("поддержка" in t for c, t, _ in sent if c == 77777)
 
     # Test callback pay
     sent.clear()

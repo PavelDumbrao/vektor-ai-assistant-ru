@@ -21,6 +21,27 @@ if str(HERE) not in sys.path:
     sys.path.insert(0, str(HERE))
 from hermes_instance import HermesInstance, normalize_bot_username, owner_for_telegram_id
 import i18n
+import support
+import offboard_purge
+
+BILLING: Any | None = None
+_prod_billing = Path('/opt/proai-hermes-forge-api/billing.py')
+_repo_billing = Path(__file__).resolve().parents[1] / 'hermes-forge-api' / 'billing.py'
+_billing_file = _prod_billing if _prod_billing.is_file() else (_repo_billing if _repo_billing.is_file() else None)
+if _billing_file:
+    try:
+        import importlib.util
+        _spec = importlib.util.spec_from_file_location('hermes_forge_billing', _billing_file)
+        if _spec and _spec.loader:
+            _mod = importlib.util.module_from_spec(_spec)
+            sys.modules['hermes_forge_billing'] = _mod
+            _spec.loader.exec_module(_mod)
+            BILLING = _mod
+    except Exception:
+        BILLING = None
+
+BILLING_STATE_ROOT = Path('/var/lib/proai-hermes-forge/billing')
+PROFILE_NAME_RE = re.compile(r'^[a-z0-9][a-z0-9_-]{1,39}$')
 
 SECRET_FILE = Path('/etc/proai-hermes-manager.env')
 ROOT = Path('/opt/proai-hermes-manager')
@@ -63,7 +84,13 @@ def load_token() -> str:
 
 def load_manager_settings() -> dict[str, str]:
     values: dict[str, str] = {}
-    for raw in SECRET_FILE.read_text(encoding='utf-8').splitlines():
+    if not SECRET_FILE.is_file():
+        return values
+    try:
+        raw_text = SECRET_FILE.read_text(encoding='utf-8')
+    except Exception:
+        return values
+    for raw in raw_text.splitlines():
         line = raw.strip()
         if not line or line.startswith('#') or '=' not in line:
             continue
@@ -699,24 +726,202 @@ def _broker_lane(owner: str) -> dict:
     return {}
 
 
-def purge_due(state: dict) -> list[dict]:
+def purge_due(state: dict, force: bool = False) -> list[dict]:
     now = int(time.time())
-    due = []
+    if not force:
+        last_checked = int(state.get('purge_checked_at') or 0)
+        if now - last_checked < 3600:
+            return []
+    state['purge_checked_at'] = now
+
+    admin_id = state.get('admin_id') or PAVEL_ID
+    due: list[dict] = []
+    changed = False
+
     for section in ('managed', 'imported'):
-        for bot_id_str, item in state.get(section, {}).items():
+        for bot_id_str, item in list(state.get(section, {}).items()):
             if not isinstance(item, dict):
                 continue
             purge_after = item.get('purge_after')
-            if purge_after is not None and int(purge_after) <= now and 'purged_at' not in item:
-                bot_id = item.get('bot_id', bot_id_str)
-                owner_id = int(item.get('owner_user_id') or item.get('owner_id') or 0)
-                log_hire_event(bot_id, owner_id, 'purge_due', 'pending_arch_purge')
+            if purge_after is None or int(purge_after) > now:
+                continue
+            if 'purged_at' in item:
+                continue
+            if item.get('profile_status') != 'offboarded':
+                continue
+
+            bot_id = int(item.get('bot_id') or (int(bot_id_str) if str(bot_id_str).isdigit() else 0))
+            owner_id = int(item.get('owner_user_id') or item.get('owner_id') or 0)
+            owner = str(item.get('profile') or '')
+            if not owner and owner_id > 0:
+                try:
+                    owner = owner_for_telegram_id(owner_id)
+                except Exception:
+                    owner = f"u{owner_id}"
+            if not owner:
+                owner = f"u{owner_id}" if owner_id > 0 else f"b{bot_id}"
+            uname = item.get('username') or item.get('owner_username') or str(bot_id)
+
+            try:
+                if not PROFILE_NAME_RE.fullmatch(owner):
+                    raise ValueError('owner_invalid')
+                res = offboard_purge.purge(owner)
+            except Exception as exc:
+                res = {'ok': False, 'failed_step': f'exception_{type(exc).__name__}'}
+
+            if isinstance(res, dict) and res.get('ok'):
+                item['purged_at'] = res.get('purged_at') or now
+                item['purge_archive'] = res.get('archive') or ''
+                item['updated_at'] = now
+                log_hire_event(bot_id, owner_id, 'purged', 'ok')
+                try:
+                    send(admin_id, f"🗑 Данные @{uname} ({owner}) удалены, архив: {item['purge_archive']}")
+                except Exception:
+                    pass
                 due.append(item)
+                changed = True
+            else:
+                failed_step = (res.get('failed_step') if isinstance(res, dict) else None) or 'unknown'
+                item['purge_error'] = failed_step
+                item['purge_after'] = now + 86400
+                item['updated_at'] = now
+                log_hire_event(bot_id, owner_id, 'purge_failed', str(failed_step))
+                try:
+                    send(admin_id, f"⚠️ Не удалось удалить {owner}: {failed_step}")
+                except Exception:
+                    pass
+                due.append(item)
+                changed = True
+
+    if changed:
+        try:
+            save_state(state)
+        except Exception:
+            pass
+
     return due
+
+
+def billing_enforce(state: dict, force: bool = False) -> None:
+    now = int(time.time())
+    if not force:
+        last_enforced = int(state.get('billing_enforced_at') or 0)
+        if now - last_enforced < 3600:
+            return
+    state['billing_enforced_at'] = now
+
+    billing_req = state.get('billing_required', {})
+    if not isinstance(billing_req, dict) or not billing_req:
+        return
+
+    admin_id = state.get('admin_id') or PAVEL_ID
+    changed = False
+
+    for uid_str in list(billing_req.keys()):
+        try:
+            uid = int(uid_str)
+        except ValueError:
+            continue
+
+        item = None
+        for sec in ('managed', 'imported'):
+            for b_id, entry in state.get(sec, {}).items():
+                if isinstance(entry, dict) and int(entry.get('owner_user_id') or entry.get('owner_id') or 0) == uid:
+                    item = entry
+                    break
+            if item is not None:
+                break
+
+        if item is None:
+            continue
+
+        owner = str(item.get('profile') or '')
+        if not owner and uid > 0:
+            try:
+                owner = owner_for_telegram_id(uid)
+            except Exception:
+                owner = f"u{uid}"
+        if not owner or not PROFILE_NAME_RE.fullmatch(owner):
+            continue
+
+        st = BILLING.read_state(BILLING_STATE_ROOT, uid) if BILLING else None
+        paid_until = int(st.get('paid_until') or 0) if isinstance(st, dict) else 0
+        # Grace counts from the later of the last paid day and the moment the admin switched the client to paid mode,
+        # so `/billing <id> require` never stops a bot on the spot: the client gets 3 days to pay.
+        req_info = billing_req.get(uid_str) if isinstance(billing_req.get(uid_str), dict) else {}
+        grace_base = max(paid_until, int(req_info.get('since') or 0))
+
+        uname = item.get('username') or item.get('owner_username') or ''
+        user_str = f"@{uname}" if uname else f"ID {uid}"
+
+        # Case 1: Overdue past 3-day grace period
+        if grace_base + 3 * 86400 < now:
+            unit = f'{owner}-hermes.service'
+            check_res = subprocess.run(['/usr/bin/systemctl', 'is-active', '--quiet', unit], timeout=10, check=False)
+            if check_res.returncode == 0:
+                subprocess.run(['/usr/bin/systemctl', 'stop', '--', unit], timeout=60, check=False)
+                item['paused_for_billing'] = now
+                item['updated_at'] = now
+                changed = True
+
+                client_locale = i18n.locale_for(uid, state)
+                pay_markup = {
+                    'inline_keyboard': [
+                        [{'text': i18n.t(client_locale, 'btn_pay'), 'callback_data': 'pay'}]
+                    ]
+                }
+                try:
+                    send(uid, i18n.t(client_locale, 'pay_expired'), pay_markup)
+                except Exception:
+                    pass
+
+                try:
+                    paid_date_str = time.strftime('%d.%m.%Y', time.localtime(paid_until)) if paid_until else 'нет оплаты'
+                    send(admin_id,
+                         f"⚠️ <b>Остановка за неуплату: {user_str}</b>\n\n"
+                         f"Сервис <code>{unit}</code> остановлен.\n"
+                         f"Оплачено до: {paid_date_str}")
+                except Exception:
+                    pass
+
+        # Case 2: Paid and was paused
+        elif paid_until > now and item.get('paused_for_billing'):
+            unit = f'{owner}-hermes.service'
+            subprocess.run(['/usr/bin/systemctl', 'start', '--', unit], timeout=60, check=False)
+            item.pop('paused_for_billing', None)
+            item['updated_at'] = now
+            changed = True
+
+            client_locale = i18n.locale_for(uid, state)
+            try:
+                send(uid, i18n.t(client_locale, 'pay_resumed'), main_menu(client_locale))
+            except Exception:
+                pass
+
+            try:
+                paid_date_str = time.strftime('%d.%m.%Y', time.localtime(paid_until))
+                send(admin_id,
+                     f"✅ <b>Возобновление работы: {user_str}</b>\n\n"
+                     f"Сервис <code>{unit}</code> запущен после оплаты.\n"
+                     f"Оплачено до: {paid_date_str}")
+            except Exception:
+                pass
+
+    if changed:
+        try:
+            save_state(state)
+        except Exception:
+            pass
 
 
 def reconcile_provisioning(state: dict) -> None:
     purge_due(state)
+    billing_enforce(state)
+    if support.expire(state):
+        try:
+            save_state(state)
+        except Exception:
+            pass
     changed = False
     now = int(time.time())
 
@@ -1120,15 +1325,78 @@ def handle_hire_text(chat_id: int, user_id: int, text: str, state: dict) -> bool
 
 def open_support(chat_id: int, user_id: int, state: dict) -> None:
     locale = i18n.locale_for(user_id, state)
-    send(chat_id, i18n.t(locale, 'support_soon'), main_menu(locale))
+    label = user_label(user_id, state)
+    support.start(chat_id, user_id, state, send, locale=locale, user_label=label)
+    try:
+        save_state(state)
+    except Exception:
+        pass
 
 
 def open_pay(chat_id: int, user_id: int, state: dict) -> None:
     locale = i18n.locale_for(user_id, state)
-    send(chat_id, i18n.t(locale, 'pay_soon'), main_menu(locale))
+    if BILLING is None:
+        send(chat_id, i18n.t(locale, 'pay_soon'), main_menu(locale))
+        return
+
+    settings = BILLING.load_settings()
+    if settings is None:
+        send(chat_id, i18n.t(locale, 'pay_soon'), main_menu(locale))
+        return
+
+    st = BILLING.read_state(BILLING_STATE_ROOT, user_id)
+    now = int(time.time())
+    paid_until = int(st.get('paid_until') or 0) if isinstance(st, dict) else 0
+
+    if paid_until > now:
+        paid_date = time.strftime('%d.%m.%Y', time.localtime(paid_until))
+        status_text = i18n.t(locale, 'pay_active_until', date=paid_date)
+    else:
+        status_text = i18n.t(locale, 'pay_inactive')
+
+    plan_name = getattr(settings, 'plan_name', 'Подписка Hermes Forge')
+    plan_price = getattr(settings, 'plan_price_rub', 0)
+
+    username = ''
+    u_info = state.get('users', {}).get(str(user_id))
+    if isinstance(u_info, dict) and u_info.get('username'):
+        username = str(u_info['username']).strip().lstrip('@')
+    if not username:
+        for sec in ('managed', 'imported'):
+            for item in state.get(sec, {}).values():
+                if isinstance(item, dict) and int(item.get('owner_user_id') or item.get('owner_id') or 0) == user_id:
+                    username = str(item.get('username') or item.get('owner_username') or '').strip().lstrip('@')
+                    if username:
+                        break
+            if username:
+                break
+
+    order_id = BILLING.forge_order_id(user_id) if hasattr(BILLING, 'forge_order_id') else f"forge_{user_id}_{now}"
+
+    if hasattr(BILLING, 'create_payment_link'):
+        url = BILLING.create_payment_link(settings, user_id=user_id, username=username, order_id=order_id)
+    else:
+        url = BILLING.payment_link(settings, user_id=user_id, username=username, order_id=order_id)
+
+    markup = {
+        'inline_keyboard': [
+            [{'text': i18n.t(locale, 'btn_pay'), 'url': url}]
+        ]
+    }
+    text = i18n.t(locale, 'pay_status', plan=plan_name, price=plan_price, status=status_text)
+    send(chat_id, text, markup)
 
 
 def support_message(chat_id: int, user_id: int, text: str, state: dict) -> bool:
+    if text.startswith('/'):
+        return False
+    handled = support.handle_message(chat_id, user_id, text, state, send, settings=load_manager_settings())
+    if handled:
+        try:
+            save_state(state)
+        except Exception:
+            pass
+        return True
     return False
 
 
@@ -1521,11 +1789,174 @@ def handle_message(msg: dict, state: dict):
         send(chat_id, f"✅ <b>Offboard для {label} (ID: <code>{target_id}</code>) отменён.</b>\nСервис {owner_linux}-hermes.service запущен, статус: <code>active</code>.", main_menu(locale))
         return
 
+    if command == '/reply':
+        if not is_admin(user_id):
+            access_denied(chat_id, locale, user=user)
+            return
+        if len(parts) < 3:
+            send(chat_id, 'Формат: <code>/reply TG_ID текст</code>', main_menu(locale))
+            return
+        target_uid_str = parts[1].strip()
+        if not target_uid_str.isdigit():
+            send(chat_id, 'Некорректный Telegram ID.', main_menu(locale))
+            return
+        target_uid = int(target_uid_str)
+        reply_text = text.split(None, 2)[2]
+        support.admin_reply(target_uid, reply_text, state, send)
+        save_state(state)
+
+        uname = ''
+        u_info = state.get('users', {}).get(target_uid_str)
+        if isinstance(u_info, dict) and u_info.get('username'):
+            uname = str(u_info['username']).strip().lstrip('@')
+        if not uname:
+            req = state.get('access_requests', {}).get(target_uid_str)
+            if isinstance(req, dict) and req.get('username'):
+                uname = str(req['username']).strip().lstrip('@')
+        if not uname:
+            for sec in ('managed', 'imported'):
+                for item in state.get(sec, {}).values():
+                    if isinstance(item, dict) and int(item.get('owner_user_id') or item.get('owner_id') or 0) == target_uid:
+                        if item.get('owner_username'):
+                            uname = str(item['owner_username']).strip().lstrip('@')
+                            break
+                        elif item.get('username'):
+                            uname = str(item['username']).strip().lstrip('@')
+                            break
+                if uname:
+                    break
+        recipient_label = f"@{uname}" if uname else f"id: <code>{target_uid}</code>"
+        send(chat_id, f"Отправлено {recipient_label}.", main_menu(locale))
+        return
+
+    if command == '/billing':
+        if not is_admin(user_id):
+            access_denied(chat_id, locale, user=user)
+            return
+        if len(parts) < 2:
+            send(chat_id, 'Формат: <code>/billing &lt;tg_id|@username&gt; [require|free|status]</code>', main_menu(locale))
+            return
+
+        target_raw = parts[1].strip()
+        target_uid: int | None = None
+
+        if target_raw.isdigit() or (target_raw.startswith('-') and target_raw[1:].isdigit()):
+            target_uid = int(target_raw)
+        else:
+            search_name = target_raw.lstrip('@').lower()
+            for u_id, u_data in state.get('users', {}).items():
+                if isinstance(u_data, dict):
+                    u_name = str(u_data.get('username') or '').lstrip('@').lower()
+                    if u_name == search_name:
+                        try:
+                            target_uid = int(u_id)
+                            break
+                        except ValueError:
+                            pass
+            if target_uid is None:
+                for u_id, u_data in state.get('allowed_users', {}).items():
+                    if isinstance(u_data, dict):
+                        u_name = str(u_data.get('username') or '').lstrip('@').lower()
+                        if u_name == search_name:
+                            try:
+                                target_uid = int(u_id)
+                                break
+                            except ValueError:
+                                pass
+            if target_uid is None:
+                for sec in ('managed', 'imported'):
+                    for entry in state.get(sec, {}).values():
+                        if isinstance(entry, dict):
+                            u_name1 = str(entry.get('owner_username') or '').lstrip('@').lower()
+                            u_name2 = str(entry.get('username') or '').lstrip('@').lower()
+                            if search_name in (u_name1, u_name2):
+                                target_uid = int(entry.get('owner_user_id') or entry.get('owner_id') or 0)
+                                if target_uid:
+                                    break
+                    if target_uid is not None:
+                        break
+
+        if target_uid is None or target_uid <= 0:
+            send(chat_id, f'Пользователь <code>{html.escape(target_raw)}</code> не найден.', main_menu(locale))
+            return
+
+        uid_str = str(target_uid)
+        action = parts[2].lower() if len(parts) >= 3 else 'status'
+        now = int(time.time())
+
+        if action == 'require':
+            state.setdefault('billing_required', {})[uid_str] = {'since': now, 'by': PAVEL_ID}
+            save_state(state)
+            label = user_label(target_uid, state)
+            send(chat_id, f"✅ Обязательная оплата включена для {label} (ID: <code>{target_uid}</code>).", main_menu(locale))
+            return
+        elif action == 'free':
+            state.setdefault('billing_required', {}).pop(uid_str, None)
+            save_state(state)
+            label = user_label(target_uid, state)
+            send(chat_id, f"✅ Обязательная оплата снята для {label} (ID: <code>{target_uid}</code>).", main_menu(locale))
+            return
+        elif action == 'status':
+            label = user_label(target_uid, state)
+            is_required = uid_str in state.get('billing_required', {})
+            req_info = state.get('billing_required', {}).get(uid_str)
+            if is_required and isinstance(req_info, dict):
+                since_ts = req_info.get('since')
+                since_str = time.strftime('%Y-%m-%d %H:%M', time.localtime(since_ts)) if since_ts else '-'
+                flag_str = f"Обязательно (с {since_str})"
+            else:
+                flag_str = "Бесплатно (не требуется)"
+
+            st = BILLING.read_state(BILLING_STATE_ROOT, target_uid) if BILLING else None
+            if st and isinstance(st, dict):
+                paid_until = st.get('paid_until')
+                if paid_until:
+                    paid_str = time.strftime('%Y-%m-%d %H:%M', time.localtime(paid_until))
+                    if paid_until > now:
+                        paid_str += " (активна)"
+                    else:
+                        paid_str += " (истекла)"
+                else:
+                    paid_str = "не оплачено"
+
+                payments = st.get('payments', [])
+                if payments:
+                    p_rows = []
+                    for p in payments[-3:]:
+                        p_date = p.get('date') or (time.strftime('%Y-%m-%d', time.localtime(p.get('received_at', 0))) if p.get('received_at') else '-')
+                        p_sum = p.get('sum', '-')
+                        p_curr = p.get('currency', 'RUB')
+                        p_rows.append(f"• {p_date}: {p_sum} {p_curr} ({p.get('order_id', '-')})")
+                    payments_str = '\n'.join(p_rows)
+                else:
+                    payments_str = "• нет платежей"
+            else:
+                paid_str = "нет данных"
+                payments_str = "• нет записей в биллинге"
+
+            msg_text = (
+                f"💳 <b>Биллинг: {label}</b> (ID: <code>{target_uid}</code>)\n\n"
+                f"Флаг: <b>{flag_str}</b>\n"
+                f"Оплачено до: <b>{paid_str}</b>\n\n"
+                f"<b>Последние платежи:</b>\n{payments_str}"
+            )
+            send(chat_id, msg_text, main_menu(locale))
+            return
+        else:
+            send(chat_id, 'Формат: <code>/billing &lt;tg_id|@username&gt; [require|free|status]</code>', main_menu(locale))
+            return
+
     if command == '/cancel':
+        if state.get('support', {}).get(str(user_id), {}).get('active'):
+            support.handle_callback(chat_id, user_id, 'support_close', state, send)
+            save_state(state)
         state.setdefault('drafts', {}).pop(hire_key(user_id), None)
         save_state(state)
         send(chat_id, i18n.t(locale, 'hire_cancelled_menu'), main_menu(locale))
     elif command in {'/start', '/menu'}:
+        if state.get('support', {}).get(str(user_id), {}).get('active'):
+            support.handle_callback(chat_id, user_id, 'support_close', state, send)
+            save_state(state)
         state.setdefault('drafts', {}).pop(hire_key(user_id), None)
         save_state(state)
         send(chat_id, welcome_text(locale), main_menu(locale))
@@ -1765,6 +2196,11 @@ def handle_callback(q: dict, state: dict):
         open_support(chat_id, user_id, state)
     elif data == 'pay':
         open_pay(chat_id, user_id, state)
+    elif data in {'support_human', 'support_close'}:
+        label = user_label(user_id, state, user)
+        if support.handle_callback(chat_id, user_id, data, state, send, user_label=label):
+            save_state(state)
+        return
     elif data == 'language':
         send(chat_id, i18n.t(locale, 'language_title'), i18n.language_keyboard())
     elif data == 'create':

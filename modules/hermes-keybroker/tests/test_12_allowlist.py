@@ -46,7 +46,7 @@ class TestRouteAllowlist(unittest.IsolatedAsyncioTestCase):
                 "client": "bebov",
                 "uid": 1009,
                 "port": lane_port,
-                "limits": {"rpm": 1},  # Strict limit: 1 request per 60s
+                "limits": {"rpm": 10},
             }
         ]
         routes = [
@@ -98,12 +98,12 @@ class TestRouteAllowlist(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(data.get("error"), "path_not_allowed")
             self.assertEqual(upstream_calls, 1)
 
-            # 4. Route without allow -> passes through (open route)
-            # Wait, on /open route, rpm limit (1) was reached by request #1!
-            # If we call allowed path on lane with rpm=1, it will hit 429
+            # 4. Route with allow="*" -> passes through (open route)
             async with session.get(f"http://127.0.0.1:{lane_port}/open/any/path") as resp:
-                # Since rpm=1 and 1 request already succeeded, lane returns 429
-                self.assertEqual(resp.status, 429)
+                self.assertEqual(resp.status, 200)
+                data = await resp.json()
+                self.assertEqual(data.get("result"), "open_ok")
+            self.assertEqual(upstream_calls, 2)
 
         # 5. Flush and verify accounting for 403
         await self.app.usage_tracker.flush()

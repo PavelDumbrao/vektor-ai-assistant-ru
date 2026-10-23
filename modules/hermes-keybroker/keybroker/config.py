@@ -8,6 +8,7 @@ import os
 import re
 from dataclasses import dataclass, field
 from typing import Any
+from urllib.parse import urlparse
 
 logger = logging.getLogger("keybroker.config")
 
@@ -23,6 +24,7 @@ DEFAULT_LOG_LEVEL = "INFO"
 class LaneLimits:
     elevenlabs_chars_month: int | None = None
     rpm: int | None = None
+    concurrency: int = 16
 
     @classmethod
     def from_dict(cls, data: dict[str, Any] | None) -> LaneLimits:
@@ -40,7 +42,13 @@ class LaneLimits:
             if rpm < 0:
                 raise ValueError("rpm limit must be non-negative")
 
-        return cls(elevenlabs_chars_month=elevenlabs_chars_month, rpm=rpm)
+        concurrency = data.get("concurrency", 16)
+        if concurrency is not None:
+            concurrency = int(concurrency)
+            if concurrency <= 0:
+                raise ValueError("concurrency limit must be positive")
+
+        return cls(elevenlabs_chars_month=elevenlabs_chars_month, rpm=rpm, concurrency=concurrency)
 
 
 @dataclass
@@ -113,7 +121,7 @@ class Route:
     timeout_s: float
     max_body_mb: int = 64
     ladder: list[str] = field(default_factory=list)
-    allow: list[RouteAllowRule] | None = None
+    allow: list[RouteAllowRule] | str | None = None
 
     def get_api_key(self) -> str | None:
         key = os.environ.get(self.auth.key_env)
@@ -123,8 +131,10 @@ class Route:
         return None
 
     def is_allowed(self, method: str, subpath: str) -> bool:
-        if self.allow is None:
+        if self.allow == "*":
             return True
+        if not self.allow or not isinstance(self.allow, list):
+            return False
         check_path = subpath if subpath else "/"
         if not check_path.startswith("/"):
             check_path = "/" + check_path
@@ -132,7 +142,7 @@ class Route:
         for rule in self.allow:
             if rule.methods is not None and method_upper not in rule.methods:
                 continue
-            if rule.pattern.search(check_path):
+            if rule.pattern.fullmatch(check_path):
                 return True
         return False
 
@@ -146,10 +156,23 @@ class Route:
             prefix = prefix.rstrip("/")
 
         upstream = data.get("upstream")
-        if not upstream or not isinstance(upstream, str) or not (
-            upstream.startswith("http://") or upstream.startswith("https://")
-        ):
+        if not upstream or not isinstance(upstream, str):
             raise ValueError(f"Invalid route upstream URL: {upstream}")
+
+        parsed_up = urlparse(upstream)
+        scheme = (parsed_up.scheme or "").lower()
+        hostname = (parsed_up.hostname or "").lower()
+        if scheme == "https":
+            pass
+        elif scheme == "http":
+            if hostname not in ("127.0.0.1", "localhost", "::1"):
+                raise ValueError(
+                    f"Route '{prefix}': http:// upstream is only allowed for loopback/localhost (got '{upstream}')"
+                )
+        else:
+            raise ValueError(
+                f"Route '{prefix}': invalid upstream scheme '{scheme}', must be https:// (or http:// for localhost)"
+            )
 
         kind = data.get("kind", "generic")
         valid_kinds = {"openai", "stt", "elevenlabs", "generic", "mcp"}
@@ -174,15 +197,24 @@ class Route:
         max_body_mb = int(data.get("max_body_mb", 64))
         ladder = [str(m).strip() for m in data.get("ladder", []) if str(m).strip()]
 
+        if "allow" not in data:
+            raise ValueError(f"Route '{prefix}' missing required 'allow' field")
+
         allow_raw = data.get("allow")
-        allow_rules: list[RouteAllowRule] | None = None
-        if allow_raw is not None:
-            if not isinstance(allow_raw, list):
-                raise ValueError(f"Route '{prefix}': 'allow' must be a list")
-            allow_rules = []
+        allow_val: list[RouteAllowRule] | str
+        if allow_raw == "*":
+            allow_val = "*"
+        elif isinstance(allow_raw, list):
+            allow_rules: list[RouteAllowRule] = []
+            allowed_rule_keys = {"path", "methods"}
             for idx, rule in enumerate(allow_raw):
                 if not isinstance(rule, dict):
                     raise ValueError(f"Route '{prefix}': allow rule #{idx} must be a dict")
+                extra_keys = set(rule.keys()) - allowed_rule_keys
+                if extra_keys:
+                    raise ValueError(
+                        f"Route '{prefix}': unknown key(s) {extra_keys} in allow rule #{idx} (did you mean 'methods'?)"
+                    )
                 p = rule.get("path")
                 if not p or not isinstance(p, str):
                     raise ValueError(f"Route '{prefix}': allow rule #{idx} missing or invalid 'path'")
@@ -201,6 +233,9 @@ class Route:
                     else:
                         raise ValueError(f"Route '{prefix}': allow rule 'methods' must be list or string")
                 allow_rules.append(RouteAllowRule(path=p, pattern=compiled_pattern, methods=methods_set))
+            allow_val = allow_rules
+        else:
+            raise ValueError(f"Route '{prefix}': 'allow' must be '*' or a list of rules")
 
         return cls(
             prefix=prefix,
@@ -210,7 +245,7 @@ class Route:
             timeout_s=timeout_s,
             max_body_mb=max_body_mb,
             ladder=ladder,
-            allow=allow_rules,
+            allow=allow_val,
         )
 
 
@@ -246,14 +281,18 @@ def load_routes(path: str) -> list[Route]:
         raise ValueError(f"Expected 'routes' list in {path}")
 
     routes: list[Route] = []
+    seen_prefixes: set[str] = set()
     for item in routes_raw:
         route = Route.from_dict(item)
+        if route.prefix in seen_prefixes:
+            raise ValueError(f"Duplicate route prefix '{route.prefix}' in routes config")
+        seen_prefixes.add(route.prefix)
         routes.append(route)
 
     # Sort descending by prefix length for longest-prefix match
     routes.sort(key=lambda r: len(r.prefix), reverse=True)
 
-    # Log warnings for missing keys or missing allow list at startup
+    # Log warnings for missing keys or open allow list at startup
     for r in routes:
         if not r.get_api_key():
             logger.warning(
@@ -262,8 +301,8 @@ def load_routes(path: str) -> list[Route]:
                 r.kind,
                 r.auth.key_env,
             )
-        if r.allow is None:
-            logger.warning("Route %s has no allow list", r.prefix)
+        if r.allow == "*":
+            logger.warning("Route %s has open allow list ('*')", r.prefix)
 
     return routes
 

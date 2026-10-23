@@ -79,16 +79,22 @@ def _atomic_write(path: Path, content: str, *, uid: int, gid: int, mode: int = 0
     fd, raw = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     temp = Path(raw)
     try:
+        try:
+            os.fchown(fd, uid, gid)
+        except PermissionError:
+            pass
+        os.fchmod(fd, mode)
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             handle.write(content)
             handle.flush()
             os.fsync(handle.fileno())
-        os.chown(temp, uid, gid)
-        os.chmod(temp, mode)
         os.replace(temp, path)
     finally:
         if temp.exists():
-            temp.unlink()
+            try:
+                temp.unlink()
+            except OSError:
+                pass
 
 
 def _safe_token(path: Path, bot_id: int) -> str:
@@ -155,15 +161,20 @@ def _ensure_private_dir(path: Path, entry: pwd.struct_passwd) -> None:
     os.chmod(path, 0o700)
 
 
-def _read_lane_port(owner: str) -> int:
+def _read_lanes_data() -> list[dict]:
     if LANES_PATH.is_symlink() or not LANES_PATH.is_file():
-        raise ProvisionError("broker_lane_unavailable")
+        return []
     try:
         data = json.loads(LANES_PATH.read_text(encoding="utf-8"))
-    except Exception as exc:
-        raise ProvisionError("broker_lane_unavailable") from exc
+    except Exception:
+        return []
     lanes = data.get("lanes", []) if isinstance(data, dict) else []
-    lane = next((l for l in lanes if isinstance(l, dict) and l.get("client") == owner), None)
+    return [l for l in lanes if isinstance(l, dict)]
+
+
+def _read_lane_port(owner: str) -> int:
+    lanes = _read_lanes_data()
+    lane = next((l for l in lanes if l.get("client") == owner), None)
     if not lane:
         raise ProvisionError("broker_lane_unavailable")
     port = lane.get("port")
@@ -173,11 +184,19 @@ def _read_lane_port(owner: str) -> int:
 
 
 def _allocate_broker_lane(instance: HermesInstance, entry: pwd.struct_passwd) -> int:
-    cmd = [str(LANECTL), "add", "--client", instance.owner_linux, *LANE_LIMITS]
-    try:
+    lanes = _read_lanes_data()
+    lane = next((l for l in lanes if l.get("client") == instance.owner_linux), None)
+    if lane is not None:
+        if lane.get("uid") != entry.pw_uid:
+            raise ProvisionError("broker_lane_uid_mismatch")
+    else:
+        cmd = [str(LANECTL), "add", "--client", instance.owner_linux, *LANE_LIMITS]
         _run(cmd, timeout=60)
-    except ProvisionError:
-        pass
+    cmd_check = [str(LANECTL), "check", "--client", instance.owner_linux]
+    try:
+        _run(cmd_check, timeout=30)
+    except ProvisionError as exc:
+        raise ProvisionError("broker_lane_check_failed") from exc
     return _read_lane_port(instance.owner_linux)
 
 
@@ -202,6 +221,7 @@ def _render_profile(instance: HermesInstance, entry: pwd.struct_passwd, broker_p
         "@BOT_USERNAME@": instance.bot_username,
         "@BROKER_PORT@": str(broker_port),
     }
+    rendered: dict[str, tuple[Path, str]] = {}
     for name in ("config.yaml", "SOUL.md", "USER.md"):
         source = template_root / name
         if source.is_symlink() or not source.is_file():
@@ -210,6 +230,16 @@ def _render_profile(instance: HermesInstance, entry: pwd.struct_passwd, broker_p
         for old, new in replacements.items():
             text = text.replace(old, new)
         target = hermes / ("memories/USER.md" if name == "USER.md" else name)
+        rendered[name] = (target, text)
+
+    _cfg_target, cfg_text = rendered["config.yaml"]
+    if re.search(r"@[A-Za-z0-9_]+@", cfg_text):
+        raise ProvisionError("profile_template_unrendered_placeholder")
+    for port_str in re.findall(r"http://127\.0\.0\.1:(\d+)", cfg_text):
+        if int(port_str) != broker_port:
+            raise ProvisionError("profile_template_port_mismatch")
+
+    for name, (target, text) in rendered.items():
         if not target.exists():
             _atomic_write(target, text, uid=entry.pw_uid, gid=entry.pw_gid)
     return hermes
@@ -251,8 +281,8 @@ def _ensure_profile_env(
 
 
 def _ensure_proaisaver_header(entry: pwd.struct_passwd, hermes: Path, platform_values: dict[str, str]) -> None:
-    """Fill the template's empty `Authorization: Bearer` of mcp_servers.proaisaver
-    in config.yaml from the platform token; idempotent, text-level (no YAML re-dump)."""
+    """Ensure Authorization of mcp_servers.proaisaver in config.yaml is Bearer keybroker-saver;
+    idempotent, text-level (no YAML re-dump)."""
     token = platform_values.get("PROAISAVER_MCP_TOKEN", "")
     if not token:
         return
@@ -271,12 +301,8 @@ def _ensure_proaisaver_header(entry: pwd.struct_passwd, hermes: Path, platform_v
             current = line.split("Bearer", 1)[1].strip().strip("\"'") if "Bearer" in line else ""
             if current.startswith("keybroker-"):
                 return
-            if current == token:
-                return
-            if current:
-                raise ProvisionError("proaisaver_token_conflict")
             indent = line[: len(line) - len(line.lstrip())]
-            lines[index] = f"{indent}Authorization: Bearer {token}"
+            lines[index] = f"{indent}Authorization: Bearer {BROKER_PLACEHOLDERS['PROAISAVER_MCP_TOKEN']}"
             _atomic_write(path, "\n".join(lines) + "\n", uid=entry.pw_uid, gid=entry.pw_gid)
             return
     # No proaisaver block in this profile: nothing to fill.

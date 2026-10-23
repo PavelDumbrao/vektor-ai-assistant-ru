@@ -12,7 +12,7 @@ from core import proposal_tool_schema, state_for_model, transcript_for_model
 
 MODEL = "gpt-6.1-sol"
 FALLBACK_MODEL = "claude-sonnet-5-5"
-FALLBACK_BASE = os.getenv("LIVING_MEMORY_FALLBACK_BASE", "https://api.lingsuan.si/v1").rstrip("/")
+FALLBACK_BASE = (os.getenv("LIVING_MEMORY_FALLBACK_BASE") or "https://api.lingsuan.si/v1").rstrip("/")
 REASONING = {"enabled": True, "effort": "high"}
 TOOL_NAME = "living_memory_submit_changes"
 
@@ -83,7 +83,7 @@ def resolve_routes(home: Path, config: dict[str, Any]) -> tuple[dict[str, str], 
         fallback = {
             "provider": "custom",
             "model": FALLBACK_MODEL,
-            "base_url": os.getenv("LIVING_MEMORY_FALLBACK_BASE", FALLBACK_BASE).rstrip("/"),  # .env is loaded after import
+            "base_url": (os.getenv("LIVING_MEMORY_FALLBACK_BASE") or FALLBACK_BASE).rstrip("/"),  # .env is loaded after import
             "api_key": opus_key,
         }
         return primary, fallback

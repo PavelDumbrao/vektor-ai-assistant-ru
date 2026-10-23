@@ -79,6 +79,7 @@ def test_curate_batch_uses_primary_when_healthy(monkeypatch,tmp_path):
 
 def test_resolve_routes_prefers_lingsuan_sonnet_on_opus_key(monkeypatch,tmp_path):
     monkeypatch.setattr(provider,"_hermes_imports",lambda home:(lambda **kw:None,lambda e:e.get("_resolved_key"),lambda **kw:None))
+    monkeypatch.delenv("LIVING_MEMORY_FALLBACK_BASE",raising=False)
     monkeypatch.setenv("LINGSUAN_OPUS_KEY","opus-separate-key")
     monkeypatch.setenv("OPENROUTER_API_KEY","openrouter-separate-key")  # STT-only key: must be ignored here
     cfg={"model":{"default":"gpt-6.1-sol","base_url":"https://primary.example","api_key":"primary-key"},"fallback_providers":[]}
@@ -88,6 +89,16 @@ def test_resolve_routes_prefers_lingsuan_sonnet_on_opus_key(monkeypatch,tmp_path
     assert fallback["model"] == "claude-sonnet-5-5"
     assert fallback["base_url"] == "https://api.lingsuan.si/v1"
     assert fallback["api_key"] == "opus-separate-key" and fallback["api_key"] != primary["api_key"]
+
+
+def test_resolve_routes_empty_fallback_base_uses_default(monkeypatch,tmp_path):
+    monkeypatch.setattr(provider,"_hermes_imports",lambda home:(lambda **kw:None,lambda e:e.get("_resolved_key"),lambda **kw:None))
+    monkeypatch.setenv("LIVING_MEMORY_FALLBACK_BASE","")
+    monkeypatch.setenv("LINGSUAN_OPUS_KEY","opus-separate-key")
+    monkeypatch.setenv("OPENROUTER_API_KEY","openrouter-separate-key")
+    cfg={"model":{"default":"gpt-6.1-sol","base_url":"https://primary.example","api_key":"primary-key"},"fallback_providers":[]}
+    primary,fallback=provider.resolve_routes(tmp_path,cfg)
+    assert fallback["base_url"] == "https://api.lingsuan.si/v1"
 
 
 def test_resolve_routes_openrouter_key_alone_is_not_a_fallback(monkeypatch,tmp_path):

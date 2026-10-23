@@ -78,3 +78,8 @@ The per-profile observation row also includes whether shared telemetry is enable
 SharedMetrics delivery is local-only: each tenant exporter runs as that Linux user with networking disabled and writes only to its own telemetry outbox. The root collector validates and ingests those bounded packages. The enrollment timer discovers new registered profiles and enables their fixed exporter timers automatically.
 
 Operator check: `python3 /opt/proai-hermes-fleet-ops/report.py summary`. A healthy rollout has all managed profiles enabled for shared telemetry, active exporter timers, active Living Memory timers, and no recent Living Memory failures.
+
+## Бэкапы и алерты (23.10.2026)
+
+- `backup/proai-hermes-backup.sh` — ночной бэкап (таймер 03:10, `backup/deploy-backup.sh`): для каждого профиля из `/opt/vektor/profiles` — консистентная копия `state.db` через sqlite `.backup`, tar `~/.hermes` (без `video_editor/jobs`, кэшей; симлинки не раскрываются), `pg_dump -Fc hermes_<owner>` из контейнера `passive-secretary-postgres` (учётные данные берутся из env контейнера); плюс state менеджера, профили, политика флота, lanes/routes брокера, pg-globals. Каталог `/var/backups/proai-hermes/<дата>/` (0700 root), хранится 7 дней, маркер `last-ok`. Внешнее хранилище не подключено (решение Павла).
+- `alerts/proai-hermes-alerts.py` — watchdog каждые 10 минут (`alerts/deploy-alerts.sh`): юниты клиентов и платформы (2 подряд провала = алерт), `/healthz` брокера, зависший/упавший найм по `state.json` менеджера, пауза канала релизов, бэкап старше 26 ч, диск < 10 %. Сообщения в Telegram администратору (`PAVEL_ID` из manager.py, токен бота менеджера) только на переходах состояния, напоминание раз в 6 ч; `--check` печатает статус без отправки, `--test` шлёт тестовое сообщение.

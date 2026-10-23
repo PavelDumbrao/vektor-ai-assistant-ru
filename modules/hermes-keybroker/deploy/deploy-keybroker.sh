@@ -38,7 +38,8 @@ cat > /etc/systemd/system/proai-keybroker-lanes.timer <<'UNIT'
 Description=Re-apply key broker lane rules (survives ufw reloads)
 [Timer]
 OnBootSec=2min
-OnUnitActiveSec=15min
+OnCalendar=*:0/15
+Persistent=true
 [Install]
 WantedBy=timers.target
 UNIT

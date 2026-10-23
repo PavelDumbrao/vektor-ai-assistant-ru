@@ -125,17 +125,19 @@ web:
 timezone: Europe/Moscow
 display:
   language: ru
-  busy_input_mode: queue
+  busy_input_mode: steer
   busy_ack_enabled: true
   platforms:
     telegram:
       streaming: true
-      tool_progress: all
+      tool_progress: 'off'
       tool_progress_grouping: accumulate
       interim_assistant_messages: false
       thinking_progress: false
       long_running_notifications: generic
       cleanup_progress: true
+      busy_ack_detail: false
+      busy_steer_ack_enabled: false
 gateway:
   delivery_ledger: true
   platform_connect_timeout: 60
@@ -149,45 +151,29 @@ platforms:
       name: Owner
     extra:
       allow_admin_from:
-      - '@OWNER_TELEGRAM_ID@'
       - '@TECH_ADMIN_TELEGRAM_ID@'
       user_allowed_commands:
       - start
       - help
-      - status
       - new
-      - reset
       - retry
       - undo
-      - title
-      - resume
-      - sessions
-      - usage
+      - stop
       - voice
-      - memory
-      - context
-      - compress
-      - whoami
       - golos
+      - maton
+      - maton_cancel
       command_menu:
         max_commands: 16
         priority_mode: replace
         priority:
         - golos
-        - help
+        - maton
         - new
-        - status
-        - resume
-        - sessions
+        - voice
         - retry
         - undo
-        - title
-        - context
-        - compress
-        - usage
-        - voice
-        - memory
-        - whoami
+        - help
       business_updates_mode: passive
       business_owner_ids:
       - '@OWNER_TELEGRAM_ID@'

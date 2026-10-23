@@ -23,13 +23,24 @@
     capability_rollback_failed:"Не удалось безопасно завершить откат. Требуется техническая проверка.",
     planned_restart_contract_missing:"Безопасный механизм перезапуска ещё не установлен для этого Hermes.",
     restart_signal_failed:"Hermes не принял безопасную команду перезапуска.",
+    reauth_required:"Сессия устарела: закройте и снова откройте мини-приложение.",
+    secret_not_allowed:"Недопустимое имя секрета.",
+    member_not_found:"Участник не найден.",
+    workspace_owner_cannot_be_removed:"Нельзя удалить владельца команды.",
   })[code] || code || "request_failed";
 
-  async function request(path, options={}) {
+  const ID_RE = /^\d{5,20}$/;
+
+  async function request(path, options={}, isRetry=false) {
     const headers = {"Content-Type":"application/json", ...(options.headers||{})};
     if (session) headers.Authorization = "Bearer " + session;
     const response = await fetch(path, {...options, headers});
     const payload = await response.json().catch(() => ({ok:false,error:"invalid_response"}));
+    if (response.status === 401 && payload.error === "reauth_required" && !isRetry && tg && tg.initData) {
+      const auth = await request("/v1/auth/telegram", {method:"POST", body:JSON.stringify({init_data:tg.initData})}, true);
+      session = auth.session;
+      return request(path, options, true);
+    }
     if (!response.ok || payload.ok !== true) throw new Error(friendlyError(payload.error));
     return payload.result;
   }
@@ -246,7 +257,96 @@
   }
 
 
-  async function loadMembers(){if(!current)return;const d=await request(`/v1/hermes/${current.profile}/members`);text("member-count",`${(d.members||[]).length} / ${d.limit||1}`);const r=$("members-list");r.textContent="";for(const m of d.members||[]){const c=document.createElement("div");c.className="card";const grants=(d.grants||[]).filter(g=>g.member_user_id==m.user_id);const top=document.createElement("div");top.className="row-between";const info=document.createElement("div");const strong=document.createElement("strong");strong.textContent=m.name||String(m.user_id);const sub=document.createElement("div");sub.className="muted";sub.textContent="Участник · полная память";info.append(strong,sub);const remove=document.createElement("button");remove.className="danger-soft";remove.dataset.removeMember=m.user_id;remove.textContent="Удалить";top.append(info,remove);const ge=document.createElement("div");ge.className="muted grants";c.append(top,ge);if(grants.length){ge.textContent="";for(const g of grants){const row=document.createElement("div");row.className="row-between";const label=document.createElement("span");label.textContent=`${g.tool_name} · до ${new Date(g.expires_at*1000).toLocaleDateString()}`;const rb=document.createElement("button");rb.className="danger-soft";rb.dataset.revokeMember=m.user_id;rb.dataset.revokeTool=g.tool_name;rb.textContent="Отозвать";row.append(label,rb);ge.append(row)}}else ge.textContent="Инструменты: разрешений пока нет";r.append(c)}for(const q of d.pending||[]){const c=document.createElement("div");c.className="card";const t=document.createElement("strong");t.textContent=`${q.member_name||q.member_user_id} просит: ${q.tool_name}`;const a=document.createElement("div");a.className="actions";for(const days of [1,7,30]){const b=document.createElement("button");b.className="secondary";b.dataset.grantMember=q.member_user_id;b.dataset.grantTool=q.tool_name;b.dataset.grantDays=days;b.textContent=`Разрешить ${days} дн.`;a.append(b)}c.append(t,a);r.append(c)}$("create-invite").disabled=(d.members||[]).length>=(d.limit||1)}
+  async function loadMembers(){
+    if(!current)return;
+    const prof=encodeURIComponent(current.profile);
+    const d=await request(`/v1/hermes/${prof}/members`);
+    text("member-count",`${(d.members||[]).length} / ${d.limit||1}`);
+    const r=$("members-list");
+    r.textContent="";
+    for(const m of d.members||[]){
+      const c=document.createElement("div");
+      c.className="card";
+      const grants=(d.grants||[]).filter(g=>g.member_user_id==m.user_id);
+      const top=document.createElement("div");
+      top.className="row-between";
+      const info=document.createElement("div");
+      const strong=document.createElement("strong");
+      strong.textContent=m.name||String(m.user_id);
+      const sub=document.createElement("div");
+      sub.className="muted";
+      sub.textContent="Участник · полная память";
+      info.append(strong,sub);
+      const remove=document.createElement("button");
+      remove.className="danger-soft";
+      remove.dataset.removeMember=m.user_id;
+      remove.textContent="Удалить";
+      top.append(info,remove);
+      const ge=document.createElement("div");
+      ge.className="muted grants";
+      c.append(top,ge);
+      if(grants.length){
+        ge.textContent="";
+        for(const g of grants){
+          const row=document.createElement("div");
+          row.className="row-between";
+          const label=document.createElement("span");
+          label.textContent=`${g.tool_name} · до ${new Date(g.expires_at*1000).toLocaleDateString()}`;
+          const rb=document.createElement("button");
+          rb.className="danger-soft";
+          rb.dataset.revokeMember=m.user_id;
+          rb.dataset.revokeTool=g.tool_name;
+          rb.textContent="Отозвать";
+          row.append(label,rb);
+          ge.append(row);
+        }
+      } else ge.textContent="Инструменты: разрешений пока нет";
+      r.append(c);
+    }
+    for(const q of d.pending||[]){
+      const c=document.createElement("div");
+      c.className="card";
+      const t=document.createElement("strong");
+      t.textContent=`${q.member_name||q.member_user_id} просит: ${q.tool_name}`;
+      const a=document.createElement("div");
+      a.className="actions";
+      for(const days of [1,7,30]){
+        const b=document.createElement("button");
+        b.className="secondary";
+        b.dataset.grantMember=q.member_user_id;
+        b.dataset.grantTool=q.tool_name;
+        b.dataset.grantDays=days;
+        b.textContent=`Разрешить ${days} дн.`;
+        a.append(b);
+      }
+      c.append(t,a);
+      r.append(c);
+    }
+    try {
+      const invData=await request(`/v1/hermes/${prof}/invites`);
+      for(const inv of invData.items||[]){
+        const c=document.createElement("div");
+        c.className="card";
+        const top=document.createElement("div");
+        top.className="row-between";
+        const info=document.createElement("div");
+        const strong=document.createElement("strong");
+        strong.textContent="Активное приглашение";
+        const sub=document.createElement("div");
+        sub.className="muted";
+        sub.textContent=`Действует до ${new Date(inv.expires_at*1000).toLocaleString()}`;
+        info.append(strong,sub);
+        const rev=document.createElement("button");
+        rev.className="danger-soft";
+        rev.dataset.revokeInvite=inv.token;
+        rev.textContent="Отозвать";
+        top.append(info,rev);
+        c.append(top);
+        r.append(c);
+      }
+    } catch (_e) {}
+    $("create-invite").disabled=(d.members||[]).length>=(d.limit||1);
+  }
 
   async function loadConnections() {
     if (!current) return;
@@ -303,10 +403,27 @@
     if (button.dataset.capabilitySettings === "maton") { selectTab("secrets"); return; }
     button.disabled=true;
     try {
-      if(button.id==="create-invite"){const d=await request(`/v1/hermes/${current.profile}/members/invite`,{method:"POST",body:"{}"});$("invite-url").value=d.invite_url;$("invite-box").classList.remove("hidden");result("team-result","Приглашение создано");}
-      else if(button.dataset.removeMember){await request(`/v1/hermes/${current.profile}/members/${button.dataset.removeMember}`,{method:"DELETE",body:"{}"});await loadMembers();}
-      else if(button.dataset.grantMember){await request(`/v1/hermes/${current.profile}/members/${button.dataset.grantMember}/grants`,{method:"POST",body:JSON.stringify({tool_name:button.dataset.grantTool,ttl_days:Number(button.dataset.grantDays)})});await loadMembers();}
-      else if(button.dataset.revokeMember){await request(`/v1/hermes/${current.profile}/members/${button.dataset.revokeMember}/grants`,{method:"DELETE",body:JSON.stringify({tool_name:button.dataset.revokeTool})});await loadMembers();}
+      const prof=encodeURIComponent(current.profile);
+      if(button.id==="create-invite"){const d=await request(`/v1/hermes/${prof}/members/invite`,{method:"POST",body:"{}"});$("invite-url").value=d.invite_url;$("invite-box").classList.remove("hidden");result("team-result","Приглашение создано");await loadMembers();}
+      else if(button.dataset.revokeInvite){await request(`/v1/hermes/${prof}/invites/${encodeURIComponent(button.dataset.revokeInvite)}`,{method:"DELETE",body:"{}"});result("team-result","Приглашение отозвано");await loadMembers();}
+      else if(button.dataset.removeMember){
+        const mid=String(button.dataset.removeMember);
+        if(!ID_RE.test(mid)) throw new Error("Неверный ID участника");
+        await request(`/v1/hermes/${prof}/members/${encodeURIComponent(mid)}`,{method:"DELETE",body:"{}"});
+        await loadMembers();
+      }
+      else if(button.dataset.grantMember){
+        const mid=String(button.dataset.grantMember);
+        if(!ID_RE.test(mid)) throw new Error("Неверный ID участника");
+        await request(`/v1/hermes/${prof}/members/${encodeURIComponent(mid)}/grants`,{method:"POST",body:JSON.stringify({tool_name:button.dataset.grantTool,ttl_days:Number(button.dataset.grantDays)})});
+        await loadMembers();
+      }
+      else if(button.dataset.revokeMember){
+        const mid=String(button.dataset.revokeMember);
+        if(!ID_RE.test(mid)) throw new Error("Неверный ID участника");
+        await request(`/v1/hermes/${prof}/members/${encodeURIComponent(mid)}/grants`,{method:"DELETE",body:JSON.stringify({tool_name:button.dataset.revokeTool})});
+        await loadMembers();
+      }
       else if (button.dataset.capabilityId && button.dataset.capabilityAction) {
         const id=button.dataset.capabilityId; const action=button.dataset.capabilityAction;
         result("tools-result", action==="enable"?"Включаю и проверяю Hermes…":"Выключаю и проверяю Hermes…");

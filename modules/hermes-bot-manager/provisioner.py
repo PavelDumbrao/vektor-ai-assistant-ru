@@ -658,6 +658,7 @@ def _record(instance: HermesInstance, state: str, **fields: object) -> None:
         "owner": instance.owner_linux,
         "state": state,
         "release_id": instance.release_id,
+        "bot_id": instance.bot_id,
         "updated_at": int(time.time()),
         **fields,
     })
@@ -679,7 +680,9 @@ def provision(instance: HermesInstance, token_file: Path | None = None) -> dict[
     else:
         instance.write_atomic(instance_path)
 
-    _record(instance, "provisioning")
+    # started_at lets the manager tie this receipt to the attempt it launched (stale receipts are ignored).
+    started_at = int(time.time())
+    _record(instance, "provisioning", started_at=started_at)
     memory_prepared = False
     try:
         living_memory.require_platform_keys(platform_values)
@@ -705,7 +708,7 @@ def provision(instance: HermesInstance, token_file: Path | None = None) -> dict[
         health = _wait_healthy(instance, token, str(runtime.get("version") or ""))
         memory_health.update(living_memory.activate(instance, _run))
         health["living_memory"] = memory_health
-        _record(instance, "active", health=health)
+        _record(instance, "active", health=health, started_at=started_at)
     except Exception as exc:
         cleanup_failed = False
         if memory_prepared:
@@ -714,7 +717,7 @@ def provision(instance: HermesInstance, token_file: Path | None = None) -> dict[
             except Exception:
                 cleanup_failed = True
         code = str(exc) if isinstance(exc, (ProvisionError, living_memory.MemoryOnboardingError)) else type(exc).__name__
-        _record(instance, "failed", error_code=code[:120], living_memory_cleanup_failed=cleanup_failed)
+        _record(instance, "failed", error_code=code[:120], living_memory_cleanup_failed=cleanup_failed, started_at=started_at)
         raise
     return {
         "instance_id": instance.instance_id,

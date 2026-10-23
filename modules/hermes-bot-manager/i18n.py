@@ -96,6 +96,11 @@ EN.update({
     "managed_active": "✅ <b>AI assistant hired and ready.</b>\n\n@{username} is connected and running. It will learn your work context and corrections. Access is closed to outsiders.",
     "managed_provisioning": "✅ <b>@{username} was created.</b>\n\nHermes Forge is now deploying the personal environment: memory, runtime, database and tools. I'll notify you when it is ready.",
     "managed_failed": "⚠️ <b>@{username} was created, but Hermes is not deployed yet.</b>\n\nThe error was recorded safely. You do not need to recreate the bot.",
+    "hire_already_provisioning": "⚙️ <b>Setup is already in progress for your AI assistant.</b>\n\nPlease wait for the configuration to finish before creating another bot.",
+    "hire_already_active": "🤖 <b>You already have an active AI assistant @{username}.</b>\n\nReplacing your bot or adding another assistant is handled via support.",
+    "token_fetch_delay": "⏳ <b>Setup will take a little longer.</b>\n\nWe are retrieving the bot token for @{username} from Telegram. Configuration continues in the background.",
+    "offboard_notice": "🔒 <b>Your AI assistant @{username} has been offboarded.</b>\n\nIf you have any questions, please contact support.",
+    "provision_delayed": "⚠️ <b>Setup for @{username} is taking longer than expected, we are looking into it.</b>\n\nYou do not need to recreate the bot.",
 })
 
 RU = {**EN,
@@ -175,6 +180,11 @@ RU.update({
     "managed_active": "✅ <b>AI-ассистент нанят и готов к работе.</b>\n\n@{username} уже подключён и запущен. Он будет запоминать твой рабочий контекст и учиться на твоих правках. Доступ для посторонних закрыт.",
     "managed_provisioning": "✅ <b>@{username} создан.</b>\n\nТеперь Hermes Forge автоматически разворачивает персональную среду: память, runtime, базу и инструменты. Когда health-check пройдёт, я напишу сюда, что ассистент готов.",
     "managed_failed": "⚠️ <b>@{username} создан, но Hermes пока не развёрнут.</b>\n\nОшибка зафиксирована безопасно. Бота заново создавать не нужно.",
+    "hire_already_provisioning": "⚙️ <b>У вас уже идёт подключение AI-ассистента.</b>\n\nПожалуйста, дождитесь завершения настройки перед созданием нового бота.",
+    "hire_already_active": "🤖 <b>У вас уже есть активный AI-ассистент @{username}.</b>\n\nЗамена ассистента или подключение второго выполняется через службу поддержки.",
+    "token_fetch_delay": "⏳ <b>Подключение займёт чуть больше времени.</b>\n\nМы уже получаем токен вашего бота @{username} от Telegram. Настройка продолжается в фоновом режиме.",
+    "offboard_notice": "🔒 <b>Ваш AI-ассистент @{username} был отключён.</b>\n\nЕсли у вас есть вопросы, обратитесь в службу поддержки.",
+    "provision_delayed": "⚠️ <b>Настройка @{username} затянулась, мы уже разбираемся.</b>\n\nБота заново создавать не нужно, технический администратор уже уведомлен.",
 })
 
 CATALOGS = {"en": EN, "ru": RU}

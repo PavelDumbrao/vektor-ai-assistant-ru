@@ -446,3 +446,34 @@ def test_ensure_profile_env_replaces_real_keys_on_reapply(monkeypatch, tmp_path)
     assert "sk-real-fallback-456" not in result_env
     assert "sk-real-openrouter-789" not in result_env
     assert "sk-real-minimax-000" not in result_env
+
+
+def test_receipt_carries_bot_id_and_attempt_start(monkeypatch, tmp_path):
+    """Manager accepts a receipt only when it matches the attempt it launched: bot_id + started_at must be in every receipt."""
+    receipt = tmp_path / "receipt.json"
+    monkeypatch.setattr(provisioner, "_receipt_path", lambda *_: receipt)
+    provisioner._record(instance(), "active", health={"ok": True}, started_at=1700000000)
+    payload = json.loads(receipt.read_text(encoding="utf-8"))
+    assert payload["bot_id"] == 9000000001
+    assert payload["started_at"] == 1700000000
+    assert payload["state"] == "active"
+    assert payload["instance_id"] == "hermes-503899482"
+    assert payload["updated_at"] >= payload["started_at"]
+
+
+def test_provision_passes_started_at_to_every_receipt(monkeypatch, tmp_path):
+    states = []
+    fake_release = tmp_path / "release"
+    fake_release.mkdir()
+    monkeypatch.setattr(provisioner.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(provisioner, "_safe_token", lambda *_: "test-token-not-secret")
+    monkeypatch.setattr(provisioner, "_platform_values", lambda: {"LLM_API_KEY": "x", "FALLBACK_LLM_API_KEY": "y", "OPENROUTER_API_KEY": "z"})
+    monkeypatch.setattr(provisioner, "_verified_release", lambda *_: (fake_release, {"version": "0.21.0"}))
+    monkeypatch.setattr(provisioner, "_instance_path", lambda *_: tmp_path / "instance.json")
+    monkeypatch.setattr(provisioner, "_record", lambda _i, state, **kw: states.append((state, kw)))
+    monkeypatch.setattr(provisioner, "_ensure_account", lambda *_: (_ for _ in ()).throw(provisioner.ProvisionError("boom")))
+    with pytest.raises(provisioner.ProvisionError):
+        provisioner.provision(instance(), tmp_path / "token.env")
+    assert [s for s, _ in states] == ["provisioning", "failed"]
+    starts = {kw.get("started_at") for _, kw in states}
+    assert len(starts) == 1 and isinstance(starts.pop(), int)

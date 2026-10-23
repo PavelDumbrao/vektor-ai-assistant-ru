@@ -19,6 +19,10 @@ Environment="PATH=/home/@OWNER@/.hermes/hermes-agent/venv/bin:/home/@OWNER@/.her
 Environment="TMPDIR=/tmp/vkr/@UID@"
 Environment="HERMES_TELEGRAM_DISABLE_FALLBACK_IPS=1"
 UMask=0077
+# Resource guard: one client must not take the host down (Forge readiness plan, 23.10.2026)
+MemoryHigh=2G
+MemoryMax=3G
+TasksMax=1024
 Restart=always
 RestartSec=5
 SuccessExitStatus=75

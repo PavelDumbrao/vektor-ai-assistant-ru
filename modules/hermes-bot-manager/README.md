@@ -92,3 +92,19 @@ and reads the assigned port (`1024 <= port <= 65535`) from `/etc/proai-keybroker
   `GRSAI_BASE_URL`, `LINGSUAN_IMAGE_BASE_URL`, `LIVING_MEMORY_FALLBACK_BASE`, and
   `HERMES_OPENROUTER_STT_ENDPOINT`.
 - `mcp_servers.proaisaver` uses `Authorization: Bearer keybroker-saver` and is preserved without token conflict.
+
+## Админ-команды и восстановление
+
+Команды управления доступны только администратору (`PAVEL_ID`):
+
+- `/tenants` — сводная таблица тенантов Forge (Linux-owner, bot username, текущий статус, номер попытки найма, дата обновления, последняя ошибка).
+- `/failed` — фильтр сбойных записей со статусами `provision_failed` и `token_pending` с причинами сбоя.
+- `/retry <bot_id|tg_id>` — повторный запуск найма: для `token_pending` повторяет безопасное получение токена от Telegram; для `provision_failed` увеличивает `attempt`, обновляет `provision_started_at` и запускает unit провижинера с актуальным `FORGE_STABLE_RELEASE_ID`.
+- `/offboard <tg_id>` — вывод клиента из эксплуатации в два шага (второй шаг: `/offboard <tg_id> confirm` в течение 5 минут). Менеджер останавливает и отключает systemd-сервисы и таймеры (`<owner>-hermes`, retention-таймер пассивного секретаря, экспорт shared-metrics), удаляет lane брокера (`lanectl remove`), переносит токен, instance-файл и receipt в `state/offboarded/<ts>-<owner>/` (0700 root), записывает `offboarded_at`, уведомляет владельца и выводит администратору памятку для ручной зачистки данных (`userdel -r`, база PostgreSQL).
+- Замена токена у существующего профиля: менеджер в каталог клиента не пишет; задание ложится в `state/token-updates/<owner>.json` (`pending_operator`), дальше вручную оператором.
+- `/allow <tg_id>`, `/deny <tg_id>`, `/allowed` — управление списком авторизованных пользователей; `/deny` заносит в `denied_users` и имеет абсолютный приоритет над любыми записями профилей и ботов.
+
+### Целостность и восстановление состояния
+
+- Все операции записи `state.json` создают резервную копию `state.json.bak` перед заменой и выполняют `fsync` для файла и директории `state/`.
+- При ошибке разбора `state.json` повреждённый файл изолируется в `state.json.corrupt-<ts>`, после чего менеджер восстанавливается из `state.json.bak`. Старт с пустым состоянием при отсутствии резервной копии возможен только при явном флаге `FORGE_MANAGER_ALLOW_EMPTY_STATE=1`.

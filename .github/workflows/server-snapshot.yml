@@ -64,6 +64,13 @@ jobs:
           python -m compileall -q modules/hermes-fleet-ops
       - name: Hermes new-client onboarding
         run: python -m pytest modules/hermes-bot-manager/tests -q
+      - name: Hermes voice picker
+        env:
+          PYTHONPATH: hermes-agent
+        run: |
+          python -m pip install -q "python-telegram-bot==22.8"
+          python -m pytest modules/voice-picker/tests -q
+          python -m py_compile modules/voice-picker/plugin/__init__.py modules/voice-picker/install.py
       - name: Hermes image fallback provider
         env:
           PYTHONPATH: hermes-agent

@@ -78,3 +78,17 @@ Default schedule is 04:00 Europe/Moscow with up to 30 minutes of per-profile del
 The installer vendors `modules/living-memory` and `living_memory_onboarding.py`. Deploying this factory change does not reinstall, restart or migrate existing tenants.
 
 Verification: automated factory/negative-path tests are part of Server snapshot CI. An isolated Linux canary additionally exercises the real installer, both provider routes, systemd timer/readiness, sandboxed empty scan and cross-tenant read denials without creating a public Telegram bot.
+
+## Key Broker lane allocation for new clients
+
+New tenants receive a dedicated localhost key broker lane instead of platform secrets.
+The provisioner requests a lane via `/usr/local/sbin/lanectl add --client <owner> --elevenlabs-chars 15000 --rpm 60`
+and reads the assigned port (`1024 <= port <= 65535`) from `/etc/proai-keybroker/lanes.json`.
+
+- The profile's `config.yaml` routes `model.base_url`, `providers.*.api`, `fallback_providers[].base_url`,
+  `tts.elevenlabs.base_url`, and `mcp_servers.proaisaver.url` to `http://127.0.0.1:<broker_port>/...`.
+- In `.env`, platform secrets are replaced with non-secret placeholder tokens (`keybroker-*`),
+  leaving only `TAVILY_API_KEY` as a direct passthrough. Endpoint URLs are provided via
+  `GRSAI_BASE_URL`, `LINGSUAN_IMAGE_BASE_URL`, `LIVING_MEMORY_FALLBACK_BASE`, and
+  `HERMES_OPENROUTER_STT_ENDPOINT`.
+- `mcp_servers.proaisaver` uses `Authorization: Bearer keybroker-saver` and is preserved without token conflict.

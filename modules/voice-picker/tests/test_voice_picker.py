@@ -293,6 +293,12 @@ class VoicePickerPreGatewayDispatchTests(unittest.IsolatedAsyncioTestCase):
         self.home = Path(self.temp_dir.name)
         module._get_home = lambda: self.home
         module.SAMPLE_PAUSE_SECONDS = 0.0
+        # Real samples live in /opt/vektor/voice-samples on the VPS; CI has none, so fake all 10 here.
+        self.samples_dir = self.home / "voice-samples"
+        self.samples_dir.mkdir()
+        for _label, voice_id, _gender in module.VOICES:
+            (self.samples_dir / f"{voice_id}.ogg").write_bytes(b"dummy_opus")
+        module.SAMPLES_DIR = self.samples_dir
         with module._state_lock:
             module._pending_memory.clear()
         module._tasks.clear()

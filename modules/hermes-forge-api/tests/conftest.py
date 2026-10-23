@@ -1,34 +1,22 @@
-"""Safety net for every test module here: no test may touch a real client profile under /home.
+"""Safety net for every test here: no test may touch a real client profile under /home.
 
-Each test file loads control.py as its own module instance, so the guard patches every loaded instance.
-A test that needs a profile must provide its own fake entry under tmp_path via monkeypatch of `_profile_paths`.
+Every path control.py takes into a client home goes through `_profile_paths()` -> `pwd.getpwnam()`.
+Test files load control.py as private module instances (not in sys.modules), so the guard patches the one
+object they all share: the `pwd` module. A test that needs a profile provides its own fake entry under tmp_path
+by monkeypatching `control._profile_paths` (see `fake_profile` in test_hardening.py).
 (23.10.2026: an invite-accept test run as root rewrote /home/pavel/.hermes/workspace-members.json.)
 """
 from __future__ import annotations
 
-import sys
+import pwd
 
 import pytest
 
 
-def _control_modules():
-    return [
-        module for module in list(sys.modules.values())
-        if (getattr(module, "__file__", "") or "").endswith("hermes-forge-api/control.py")
-    ]
-
-
-def _refuse_profile(profile):
-    raise RuntimeError(f"test touched live profile lookup for {profile!r}: patch control._profile_paths to a tmp home")
-
-
 def _refuse_pwd(name):
-    raise KeyError(f"test tried pwd.getpwnam({name!r}); patch control._profile_paths instead")
+    raise KeyError(f"tests must not resolve real accounts (pwd.getpwnam({name!r})); patch control._profile_paths to a tmp home")
 
 
 @pytest.fixture(autouse=True)
-def _no_live_profiles(monkeypatch, tmp_path):
-    for module in _control_modules():
-        monkeypatch.setattr(module, "HOME_ROOT", tmp_path / "home", raising=False)
-        monkeypatch.setattr(module, "_profile_paths", _refuse_profile, raising=False)
-        monkeypatch.setattr(module.pwd, "getpwnam", _refuse_pwd, raising=False)
+def _no_live_profiles(monkeypatch):
+    monkeypatch.setattr(pwd, "getpwnam", _refuse_pwd)

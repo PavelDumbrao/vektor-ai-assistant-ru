@@ -552,7 +552,8 @@ def test_team_ops_are_audited(tmp_path, monkeypatch):
 
 
 def test_guard_blocks_live_profile_lookup(tmp_path, monkeypatch):
-    """Without an explicit tmp home a profile operation must fail loudly instead of reaching /home."""
+    """Without an explicit tmp home a profile operation must fail before it can reach /home."""
+    import pwd as _pwd
     invites_dir = tmp_path / "invites"
     invites_dir.mkdir()
     monkeypatch.setattr(control, "WORKSPACE_INVITE_DIR", invites_dir)
@@ -565,7 +566,7 @@ def test_guard_blocks_live_profile_lookup(tmp_path, monkeypatch):
         "schema": "hermes.workspace-invite/v1", "profile": "pavel", "owner_user_id": 111,
         "expires_at": int(time.time()) + 3600, "used": False,
     }), encoding="utf-8")
-    with pytest.raises(RuntimeError, match="live profile lookup"):
+    with pytest.raises(KeyError, match="tests must not resolve real accounts"):
+        _pwd.getpwnam("pavel")
+    with pytest.raises(control.ControlError, match="profile_account_missing"):
         control._ws_accept(actor=222, name="Bob", token=token)
-    with pytest.raises(KeyError):
-        control.pwd.getpwnam("pavel")

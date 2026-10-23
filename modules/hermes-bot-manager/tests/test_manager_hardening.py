@@ -417,3 +417,42 @@ def test_imported_owner_never_gets_second_hire_flow(monkeypatch):
 def test_replace_token_stub_removed():
     source = MODULE.read_text(encoding="utf-8")
     assert "/replace-token" not in source
+
+
+def _policy(tmp_path, release_id: str, ready: bool = True):
+    policy = tmp_path / "policy.json"
+    policy.write_text(json.dumps({
+        "defaults": {"forge_new": {"channel": "stable", "track": "modern"}},
+        "tracks": {"modern": {"stable": {"release_id": release_id}}},
+    }))
+    releases = tmp_path / "releases"
+    (releases / release_id).mkdir(parents=True, exist_ok=True)
+    (releases / release_id / "runtime.json").write_text(json.dumps(
+        {"state": "ready" if ready else "building", "release_id": release_id}))
+    return policy, releases
+
+
+def test_new_hire_release_comes_from_fleet_policy(monkeypatch, tmp_path):
+    policy, releases = _policy(tmp_path, "hermes-0.21.0-policy-stable")
+    monkeypatch.setattr(manager, "FLEET_POLICY", policy)
+    monkeypatch.setattr(manager, "RELEASE_ROOT", releases)
+    monkeypatch.setattr(manager, "load_manager_settings", lambda: {"FORGE_STABLE_RELEASE_ID": "hermes-0.21.0-env-fallback"})
+    assert manager.stable_release_id() == "hermes-0.21.0-policy-stable"
+
+
+def test_new_hire_release_falls_back_to_env_when_policy_unusable(monkeypatch, tmp_path):
+    monkeypatch.setattr(manager, "load_manager_settings", lambda: {"FORGE_STABLE_RELEASE_ID": "hermes-0.21.0-env-fallback"})
+    monkeypatch.setattr(manager, "FLEET_POLICY", tmp_path / "missing.json")
+    monkeypatch.setattr(manager, "RELEASE_ROOT", tmp_path / "releases")
+    assert manager.stable_release_id() == "hermes-0.21.0-env-fallback"
+    policy, releases = _policy(tmp_path, "hermes-0.21.0-not-ready", ready=False)
+    monkeypatch.setattr(manager, "FLEET_POLICY", policy)
+    monkeypatch.setattr(manager, "RELEASE_ROOT", releases)
+    assert manager.stable_release_id() == "hermes-0.21.0-env-fallback"
+    monkeypatch.setattr(manager, "load_manager_settings", lambda: {"FORGE_STABLE_RELEASE_ID": "../etc"})
+    try:
+        manager.stable_release_id()
+    except RuntimeError as exc:
+        assert str(exc) == "forge_stable_release_missing"
+    else:
+        raise AssertionError("invalid release id must be rejected")

@@ -39,6 +39,9 @@ BOT_USERNAME = 'ProAIHermesBot'
 DEFAULT_FORGE_WEBAPP_URL = 'https://forge.srv1250550.hstgr.cloud/'
 TOKEN_RE = re.compile(r'^\d{5,}:[A-Za-z0-9_-]{20,}$')
 PROVISION_DEADLINE_S = 1200
+FLEET_POLICY = Path('/etc/proai-hermes-fleet-policy.json')
+RELEASE_ROOT = Path('/opt/vektor/releases')
+RELEASE_RE = re.compile(r'^hermes-[A-Za-z0-9_.-]{1,80}$')
 INSTANCE_OWNERS: set[int] | None = None
 RUNNING = True
 
@@ -69,9 +72,33 @@ def load_manager_settings() -> dict[str, str]:
     return values
 
 
+def _release_ready(release_id: str) -> bool:
+    if not RELEASE_RE.fullmatch(release_id or ''):
+        return False
+    try:
+        runtime = json.loads((RELEASE_ROOT / release_id / 'runtime.json').read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        return False
+    return isinstance(runtime, dict) and runtime.get('state') == 'ready' and runtime.get('release_id') == release_id
+
+
+def policy_release_for_new_hire() -> str:
+    """Release the fleet policy assigns to a fresh Forge profile (defaults.forge_new -> tracks[track][channel]).
+    Empty string when the policy is missing or does not point at a ready release."""
+    try:
+        policy = json.loads(FLEET_POLICY.read_text(encoding='utf-8'))
+        new = policy.get('defaults', {}).get('forge_new') or {}
+        channel = policy['tracks'][str(new.get('track') or '')][str(new.get('channel') or '')]
+        release_id = str(channel.get('release_id') or '').strip()
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return ''
+    return release_id if _release_ready(release_id) else ''
+
+
 def stable_release_id() -> str:
-    value = load_manager_settings().get('FORGE_STABLE_RELEASE_ID', '').strip()
-    if not value:
+    # Policy first: a hire on an older release would be upgraded by the fleet updater right after onboarding.
+    value = policy_release_for_new_hire() or load_manager_settings().get('FORGE_STABLE_RELEASE_ID', '').strip()
+    if not value or not RELEASE_RE.fullmatch(value):
         raise RuntimeError('forge_stable_release_missing')
     return value
 

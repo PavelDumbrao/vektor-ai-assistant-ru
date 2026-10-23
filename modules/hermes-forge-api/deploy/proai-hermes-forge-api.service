@@ -1,0 +1,40 @@
+[Unit]
+Description=Hermes Forge unprivileged Mini App API
+After=network-online.target proai-hermes-forge-control.service
+Requires=proai-hermes-forge-control.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=www-data
+Group=www-data
+WorkingDirectory=/opt/proai-hermes-forge-api
+ExecStart=/usr/bin/python3 /opt/proai-hermes-forge-api/api.py
+Restart=always
+RestartSec=2
+RuntimeDirectory=proai-hermes-forge-api
+RuntimeDirectoryMode=0750
+Environment=LISTEN_SOCKET=/run/proai-hermes-forge-api/api.sock
+Environment=FORGE_CONTROL_SOCKET=/run/proai-hermes-forge/control.sock
+NoNewPrivileges=true
+CapabilityBoundingSet=
+ProtectProc=invisible
+ProcSubset=pid
+SystemCallFilter=@system-service
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+LockPersonality=true
+RestrictNamespaces=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+MemoryDenyWriteExecute=true
+IPAddressDeny=any
+IPAddressAllow=127.0.0.1 172.18.0.0/16
+
+[Install]
+WantedBy=multi-user.target

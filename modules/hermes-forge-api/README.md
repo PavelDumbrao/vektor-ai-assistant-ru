@@ -60,6 +60,46 @@ Persistent action metadata lives under systemd-managed `/var/lib/proai-hermes-fo
 Forge never uses bare `systemctl restart` for a healthy idle Hermes. Managed profiles expose `ExecReload=/bin/kill -USR1 $MAINPID`; Forge validates that contract plus `SuccessExitStatus=75` and `RestartForceExitStatus=75`, then asks systemd to reload the exact owner service. Hermes drains through its native SIGUSR1 restart path and exits with reserved code 75, which systemd treats as a successful planned exit and still relaunches.
 
 Existing profiles are migrated with `install_restart_contract.py`. Dry-run is the default; `--apply` writes only a root-owned systemd drop-in adding `SuccessExitStatus=75`, daemon-reloads, verifies every profile and rolls the whole migration back if verification fails. The migration does not restart Hermes. New Forge profiles inherit the directive from the canonical service template.
+
+## Security Hardening (October 2026)
+
+### 1. Filesystem & Injection Protections (`control.py`)
+- **`ProfileFs` context manager**: All operations on user profile files (`/home/<profile>/.hermes`) use directory file descriptors (`dir_fd`) with `O_DIRECTORY | O_NOFOLLOW`. Symlinks at `.env`, `config.yaml`, `backups`, or `inbox` are rejected with `profile_file_unsafe` (409) without following or touching target files.
+- **Ownership validation**: Verifies `st_uid == pw_uid` on all opened directories and files.
+- **Client file size limits**: Strict `MAX_CLIENT_FILE_BYTES = 256 * 1024` (256 KiB). Files exceeding this limit raise `profile_file_too_large` (413).
+- **Subprocess YAML parser**: Isolated subprocess parsing with memory limit `RLIMIT_AS=256MB` and a 5-second timeout, completely preventing YAML entity expansion / parser hang attacks.
+- **Systemctl argument protection**: All unit names validated against `^[a-z0-9@_.-]+$` and passed strictly after `--` delimiters (`systemctl is-active --quiet -- "$unit"`).
+
+### 2. Workspace & Session Hardening (`control.py`)
+- **Concurrency control**: Thread-safe workspace modifications guarded by `_WS_LOCK`.
+- **Invite security**:
+  - `accept_workspace_invite`: Verifies invite profile belongs to owner before acceptance; claims invite atomically (`used=True`) before performing mutations; dispatches Telegram `sendMessage` notification to owner.
+  - Member management: Protects against self-removal by owner (409); verifies member existence for remove/grant/revoke (404 `workspace_member_not_found`).
+  - Active invite listing (`list_workspace_invites`) and pre-use revocation (`revoke_workspace_invite`).
+- **Session management**:
+  - `auth_date` from Telegram `init_data` is tracked in session objects.
+  - Sensitive operations (`restart`, `set_secret`, `delete_secret`, `grant_workspace_tool`, `revoke_workspace_tool`, `remove_workspace_member`) require `auth_date <= 15 minutes` (`SENSITIVE_AUTH_MAX_AGE_SECONDS = 900`), returning 401 `reauth_required` if expired.
+  - User session limit: Max 5 concurrent sessions per `user_id`, evicting the oldest session FIFO upon creating the 6th.
+  - `logout` endpoint invalidates current session.
+- **Operations audit log**: Sensitive operations (`restart`, `set_secret`, `delete_secret`, `bind_zoom`) logged to `/var/log/proai-hermes-forge/ops.log` in JSON format (`timestamp`, `actor_user_id`, `profile`, `op`, `details`, `result`), rotating at 10 MB to `.1`.
+
+### 3. API Gateway & Mini App Hardening (`api.py`, `app.js`)
+- **Socket binding & timeouts**: Supports Unix domain socket via `LISTEN_SOCKET=/run/proai-hermes-forge/api.sock`; HTTP requests capped at `Handler.timeout = 10` seconds.
+- **DoS protection**: Semaphore-bounded threading (`BoundedThreadingMixIn`) limited to 32 concurrent requests, immediately returning 503 `server_overloaded` on saturation.
+- **Input validation & CSP**:
+  - Profile regex: `^[a-z0-9][a-z0-9_-]{1,39}$`.
+  - Member user ID regex: `^\d{5,20}$`.
+  - Secret names strictly allowlisted (`MCP_MATON_API_KEY`).
+  - URL-encoded parameters in client requests.
+  - Strict CSP: `frame-ancestors https://web.telegram.org https://*.telegram.org; base-uri 'none'; form-action 'none'; object-src 'none'`.
+- **Mini App UX**: Transparent silent re-authentication on 401 `reauth_required`, active invite management, and member ID validation.
+
+### 4. Service Hardening & Deployment Units (`deploy/`)
+- **`proai-hermes-forge-api.service`**: `CapabilityBoundingSet=`, `ProtectProc=invisible`, `ProcSubset=pid`, `SystemCallFilter=@system-service`, `IPAddressDeny=any`, `IPAddressAllow=127.0.0.1 172.18.0.0/16`, `LISTEN_SOCKET=/run/proai-hermes-forge/api.sock`.
+- **`proai-hermes-forge-control.service`**: Minimal capabilities (`CAP_CHOWN CAP_DAC_OVERRIDE CAP_DAC_READ_SEARCH CAP_FOWNER CAP_SETUID CAP_SETGID CAP_KILL`), `NoNewPrivileges=true`, `ProtectSystem=strict`, `ReadWritePaths=/home /var/lib/proai-hermes-forge /run/proai-hermes-forge`.
+- **`proai-hermes-forge-bridge.service`**: Socat TCP-to-UNIX bridge forwarding `172.18.0.1:8650` to `/run/proai-hermes-forge/api.sock`.
+- **`edge-nginx.conf`**: Rate limiting zones for `/v1/auth/telegram` (5r/s), `/v1/webhooks/zoom` (10r/s), general API (20r/s), and real IP extraction from `172.18.0.0/16`.
+
 ## Versioned live API upgrades
 
 `install.py` is bootstrap-only. If `proai-hermes-forge-api.service` is already active it fails closed with `active_api_requires_versioned_upgrade`.

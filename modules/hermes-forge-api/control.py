@@ -7,22 +7,29 @@ import hashlib
 import hmac
 import http.client
 import json
+import logging
 import os
 import pwd
 import re
+import resource
 import secrets
 import socket
 import socketserver
+import stat
 import struct
 import subprocess
+import sys
 import tempfile
 import threading
 import time
 import urllib.parse
+import urllib.request
 from pathlib import Path
 from typing import Any
 
 import yaml
+
+logger = logging.getLogger("hermes_forge_control")
 
 MANAGER_ROOT = Path("/opt/proai-hermes-manager")
 STATE_FILE = MANAGER_ROOT / "state/state.json"
@@ -33,9 +40,12 @@ SOCKET_PATH = Path("/run/proai-hermes-forge/control.sock")
 API_USER = "www-data"
 MAX_REQUEST_BYTES = 64 * 1024
 SESSION_TTL_SECONDS = 30 * 60
+SENSITIVE_AUTH_MAX_AGE_SECONDS = 15 * 60
+MAX_CLIENT_FILE_BYTES = 256 * 1024
+MAX_BACKUP_COUNT = 5
 INITDATA_MAX_AGE_SECONDS = 60 * 60
 TOKEN_RE = re.compile(r"^\d{5,}:[A-Za-z0-9_-]{20,}$")
-PROFILE_RE = re.compile(r"^[a-z0-9_-]{2,40}$")
+PROFILE_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{1,39}$")
 SAFE_VERSION_RE = re.compile(r"^[A-Za-z0-9_.+-]{1,80}$")
 SAFE_SECRET_RE = re.compile(r"^[\x21-\x7e]{20,512}$")
 ALLOWED_PERSONAL_SECRETS = frozenset({"MCP_MATON_API_KEY"})
@@ -56,12 +66,29 @@ ACTION_DESIRED_DIR = ACTION_STATE_ROOT / "desired"
 ACTION_AUDIT_DIR = ACTION_STATE_ROOT / "audit"
 ACTION_AUDIT_FILE = ACTION_AUDIT_DIR / "capability-actions.jsonl"
 ACTION_AUDIT_MAX_BYTES = 8 * 1024 * 1024
+OPS_AUDIT_FILE = Path(os.environ.get("FORGE_OPS_AUDIT_FILE", "/var/lib/proai-hermes-forge/audit/ops.log"))
 ACTION_ID_RE = re.compile(r"^[0-9a-f]{32}$")
-WORKSPACE_MEMBER_LIMIT=1
-WORKSPACE_STATE_DIR=ACTION_STATE_ROOT/"workspace-members"
-WORKSPACE_INVITE_DIR=ACTION_STATE_ROOT/"workspace-invites"
-INVITE_TOKEN_RE=re.compile(r"^[A-Za-z0-9_-]{24,96}$")
+WORKSPACE_MEMBER_LIMIT = 1
+WORKSPACE_STATE_DIR = ACTION_STATE_ROOT / "workspace-members"
+WORKSPACE_INVITE_DIR = ACTION_STATE_ROOT / "workspace-invites"
+ZOOM_BINDINGS_DIR = ACTION_STATE_ROOT / "zoom-bindings"
+INVITE_TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{16,96}$")
+ZOOM_CONNECTION_ID_RE = re.compile(r"^[A-Za-z0-9_-]{8,128}$")
+UNIT_NAME_RE = re.compile(r"^[a-z0-9@_.-]+$")
 _ACTION_LOCK = threading.RLock()
+_WS_LOCK = threading.RLock()
+SENSITIVE_OPS = frozenset({
+    "create_workspace_invite",
+    "accept_workspace_invite",
+    "revoke_workspace_invite",
+    "remove_workspace_member",
+    "grant_workspace_tool",
+    "revoke_workspace_tool",
+    "set_secret",
+    "delete_secret",
+    "bind_zoom",
+    "capability_action",
+})
 CAPABILITY_HEALTH = frozenset({"healthy", "degraded", "unknown", "disabled", "planned"})
 CAPABILITY_REASONS = frozenset({
     "ready", "disabled", "not_installed", "config_mismatch",
@@ -83,43 +110,68 @@ class SessionStore:
     def __init__(self, ttl: int = SESSION_TTL_SECONDS) -> None:
         self.ttl = ttl
         self._lock = threading.RLock()
-        self._items: dict[str, tuple[int, float]] = {}
+        self._items: dict[str, dict[str, Any]] = {}
+        self._last_prune = 0.0
 
-    def create(self, user_id: int, now: float | None = None) -> tuple[str, int]:
+    def create(self, user_id: int, auth_date: int | None = None, now: float | None = None) -> tuple[str, int]:
         current = time.time() if now is None else now
         token = secrets.token_urlsafe(32)
         expires = current + self.ttl
+        auth_ts = int(current) if auth_date is None else int(auth_date)
+
         with self._lock:
             self._prune(current)
-            self._items[token] = (int(user_id), expires)
+            user_sessions = [
+                (tok, data)
+                for tok, data in self._items.items()
+                if data["user_id"] == int(user_id)
+            ]
+            user_sessions.sort(key=lambda x: x[1]["created_at"])
+            while len(user_sessions) >= 5:
+                oldest_tok, _ = user_sessions.pop(0)
+                self._items.pop(oldest_tok, None)
+
+            self._items[token] = {
+                "user_id": int(user_id),
+                "expires_at": expires,
+                "auth_date": auth_ts,
+                "created_at": current,
+            }
         return token, int(expires)
 
-    def resolve(self, token: str, now: float | None = None) -> int:
+    def resolve(self, token: str, sensitive: bool = False, now: float | None = None) -> int:
         current = time.time() if now is None else now
         with self._lock:
             self._prune(current)
             item = self._items.get(token)
-            if item is None or item[1] <= current:
+            if item is None or item["expires_at"] <= current:
                 self._items.pop(token, None)
                 raise ControlError("session_invalid", 401)
-            return item[0]
+            if sensitive:
+                auth_date = item.get("auth_date", item["created_at"])
+                if current - auth_date > SENSITIVE_AUTH_MAX_AGE_SECONDS:
+                    raise ControlError("reauth_required", 401)
+            return item["user_id"]
+
+    def revoke(self, token: str) -> bool:
+        with self._lock:
+            return bool(self._items.pop(token, None))
 
     def _prune(self, now: float) -> None:
-        for token, (_, expires) in list(self._items.items()):
-            if expires <= now:
+        if now - self._last_prune < 30.0:
+            return
+        self._last_prune = now
+        for token, data in list(self._items.items()):
+            if data["expires_at"] <= now:
                 self._items.pop(token, None)
 
 
 SESSIONS = SessionStore()
 
 
-def _read_env(path: Path) -> dict[str, str]:
+def _read_env_text(raw_text: str) -> dict[str, str]:
     values: dict[str, str] = {}
-    try:
-        lines = path.read_text(encoding="utf-8").splitlines()
-    except OSError:
-        return values
-    for raw in lines:
+    for raw in raw_text.splitlines():
         line = raw.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
@@ -128,16 +180,416 @@ def _read_env(path: Path) -> dict[str, str]:
     return values
 
 
+def _read_env(path: Path | str) -> dict[str, str]:
+    try:
+        p = Path(path)
+        if p.is_symlink() or not p.is_file():
+            return {}
+        if p.stat().st_size > MAX_CLIENT_FILE_BYTES:
+            raise ControlError("profile_file_too_large", 413)
+        return _read_env_text(p.read_text(encoding="utf-8"))
+    except ControlError:
+        raise
+    except OSError:
+        return {}
+
+
 def _manager_token() -> str:
     if SECRET_FILE.is_symlink() or not SECRET_FILE.is_file():
         raise ControlError("manager_secret_missing", 503)
     info = SECRET_FILE.stat()
     if info.st_uid != 0 or info.st_mode & 0o077:
         raise ControlError("manager_secret_unsafe", 503)
-    for value in _read_env(SECRET_FILE).values():
+    env_vars = _read_env(SECRET_FILE)
+    explicit = env_vars.get("FORGE_MINIAPP_BOT_TOKEN", "").strip()
+    if explicit and TOKEN_RE.fullmatch(explicit):
+        return explicit
+    logger.warning("FORGE_MINIAPP_BOT_TOKEN not configured in %s; falling back to scanning env file", SECRET_FILE)
+    for value in env_vars.values():
         if TOKEN_RE.fullmatch(value):
             return value
     raise ControlError("manager_token_missing", 503)
+
+
+def _send_manager_telegram_message(chat_id: int, text: str) -> bool:
+    try:
+        token = _manager_token()
+        url = f"https://api.telegram.org/bot{token}/sendMessage"
+        payload = json.dumps({"chat_id": chat_id, "text": text}).encode("utf-8")
+        req = urllib.request.Request(
+            url,
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            return resp.status == 200
+    except Exception as exc:
+        logger.warning("failed to send telegram notification: %s", exc)
+        return False
+
+
+MAX_OPS_AUDIT_BYTES = 10 * 1024 * 1024
+
+
+def _rotate_ops_audit_if_needed() -> None:
+    if not OPS_AUDIT_FILE.exists():
+        return
+    if OPS_AUDIT_FILE.is_symlink() or not OPS_AUDIT_FILE.is_file():
+        return
+    try:
+        if OPS_AUDIT_FILE.stat().st_size < MAX_OPS_AUDIT_BYTES:
+            return
+        rotated = OPS_AUDIT_FILE.parent / (OPS_AUDIT_FILE.name + ".1")
+        if rotated.exists():
+            if not rotated.is_symlink() and rotated.is_file():
+                rotated.unlink()
+        os.replace(OPS_AUDIT_FILE, rotated)
+        os.chmod(rotated, 0o600)
+    except OSError:
+        pass
+
+
+def _audit_op(op: str, actor_user_id: int, profile: str, result: str, details: Any = None, ts: int | None = None) -> None:
+    try:
+        now = int(time.time()) if ts is None else int(ts)
+        OPS_AUDIT_FILE.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        if OPS_AUDIT_FILE.is_symlink():
+            return
+        _rotate_ops_audit_if_needed()
+        entry = {
+            "timestamp": now,
+            "actor_user_id": int(actor_user_id),
+            "profile": str(profile),
+            "op": str(op),
+            "details": details if details is not None else {},
+            "result": str(result),
+        }
+        line = json.dumps(entry, ensure_ascii=False, sort_keys=True) + "\n"
+        fd = os.open(OPS_AUDIT_FILE, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        try:
+            os.fchmod(fd, 0o600)
+            if os.geteuid() == 0:
+                os.fchown(fd, 0, 0)
+            os.write(fd, line.encode("utf-8"))
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+    except Exception as exc:
+        logger.warning("ops audit append failed: %s", exc)
+
+
+def _safe_yaml_load(raw_text: str) -> dict[str, Any]:
+    if not raw_text or not raw_text.strip():
+        return {}
+    if len(raw_text.encode("utf-8")) > MAX_CLIENT_FILE_BYTES:
+        raise ControlError("profile_file_too_large", 413)
+
+    cmd = [
+        sys.executable,
+        "-c",
+        (
+            "import resource, sys\n"
+            "resource.setrlimit(resource.RLIMIT_AS, (268435456, 268435456))\n"
+            "import yaml, json\n"
+            "try:\n"
+            "    data = yaml.safe_load(sys.stdin.read()) or {}\n"
+            "    if not isinstance(data, dict):\n"
+            "        data = {}\n"
+            "    sys.stdout.write(json.dumps(data, ensure_ascii=False))\n"
+            "except Exception as e:\n"
+            "    sys.stderr.write(str(e))\n"
+            "    sys.exit(1)\n"
+        ),
+    ]
+    try:
+        proc = subprocess.run(
+            cmd,
+            input=raw_text,
+            text=True,
+            capture_output=True,
+            timeout=5.0,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        raise ControlError("config_invalid", 409) from None
+    except Exception:
+        raise ControlError("config_invalid", 409) from None
+
+    if proc.returncode != 0:
+        raise ControlError("config_invalid", 409)
+    try:
+        result = json.loads(proc.stdout)
+    except Exception:
+        raise ControlError("config_invalid", 409) from None
+    return result if isinstance(result, dict) else {}
+
+
+class ProfileFs:
+    def __init__(self, profile: str, entry: Any = None) -> None:
+        if not PROFILE_RE.fullmatch(profile):
+            raise ControlError("profile_invalid", 400)
+        if entry is None:
+            entry, _, _ = _profile_paths(profile)
+        self.profile = profile
+        self.entry = entry
+        self.home_path = Path(entry.pw_dir)
+        self.hermes_path = self.home_path / ".hermes"
+        self._dir_fd: int | None = None
+
+    def __enter__(self) -> "ProfileFs":
+        self.open()
+        return self
+
+    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
+        self.close()
+
+    def open(self) -> "ProfileFs":
+        if self._dir_fd is not None:
+            return self
+        if self.home_path.is_symlink() or not self.home_path.is_dir():
+            raise ControlError("profile_home_unsafe", 409)
+        try:
+            home_fd = os.open(str(self.home_path), os.O_DIRECTORY | os.O_NOFOLLOW | os.O_RDONLY)
+        except OSError:
+            raise ControlError("profile_home_unsafe", 409) from None
+        try:
+            home_st = os.fstat(home_fd)
+            if not stat.S_ISDIR(home_st.st_mode) or home_st.st_uid != self.entry.pw_uid:
+                raise ControlError("profile_home_unsafe", 409)
+            if self.hermes_path.is_symlink() or not self.hermes_path.is_dir():
+                raise ControlError("profile_home_unsafe", 409)
+            self._dir_fd = os.open(".hermes", os.O_DIRECTORY | os.O_NOFOLLOW | os.O_RDONLY, dir_fd=home_fd)
+            hermes_st = os.fstat(self._dir_fd)
+            if not stat.S_ISDIR(hermes_st.st_mode) or hermes_st.st_uid != self.entry.pw_uid:
+                raise ControlError("profile_home_unsafe", 409)
+        except OSError:
+            if self._dir_fd is not None:
+                os.close(self._dir_fd)
+                self._dir_fd = None
+            raise ControlError("profile_home_unsafe", 409) from None
+        finally:
+            os.close(home_fd)
+        return self
+
+    def close(self) -> None:
+        if self._dir_fd is not None:
+            try:
+                os.close(self._dir_fd)
+            except OSError:
+                pass
+            self._dir_fd = None
+
+    @property
+    def dir_fd(self) -> int:
+        if self._dir_fd is None:
+            self.open()
+        assert self._dir_fd is not None
+        return self._dir_fd
+
+    def _resolve_parent_fd(self, relative_path: str, *, create_parents: bool = False) -> tuple[int, str, bool]:
+        parts = [p for p in relative_path.split("/") if p]
+        if not parts or any(p in {".", ".."} for p in parts):
+            raise ControlError("profile_file_unsafe", 409)
+        if len(parts) == 1:
+            return self.dir_fd, parts[0], False
+
+        curr_fd = self.dir_fd
+        close_curr = False
+        try:
+            for comp in parts[:-1]:
+                next_fd = None
+                try:
+                    st = os.stat(comp, dir_fd=curr_fd, follow_symlinks=False)
+                    if stat.S_ISLNK(st.st_mode) or not stat.S_ISDIR(st.st_mode) or st.st_uid != self.entry.pw_uid:
+                        raise ControlError("profile_file_unsafe", 409)
+                    next_fd = os.open(comp, os.O_DIRECTORY | os.O_NOFOLLOW | os.O_RDONLY, dir_fd=curr_fd)
+                except FileNotFoundError:
+                    if not create_parents:
+                        raise
+                    os.mkdir(comp, 0o700, dir_fd=curr_fd)
+                    next_fd = os.open(comp, os.O_DIRECTORY | os.O_NOFOLLOW | os.O_RDONLY, dir_fd=curr_fd)
+                    try:
+                        if os.geteuid() == 0:
+                            os.fchown(next_fd, self.entry.pw_uid, self.entry.pw_gid)
+                        os.fchmod(next_fd, 0o700)
+                        st = os.fstat(next_fd)
+                        if not stat.S_ISDIR(st.st_mode) or st.st_uid != self.entry.pw_uid:
+                            raise ControlError("profile_file_unsafe", 409)
+                    except Exception:
+                        os.close(next_fd)
+                        raise
+                except OSError:
+                    raise ControlError("profile_file_unsafe", 409) from None
+
+                if close_curr:
+                    os.close(curr_fd)
+                curr_fd = next_fd
+                close_curr = True
+            return curr_fd, parts[-1], close_curr
+        except Exception:
+            if close_curr:
+                os.close(curr_fd)
+            raise
+
+    def file_exists(self, relative_path: str) -> bool:
+        try:
+            parent_fd, leaf, should_close = self._resolve_parent_fd(relative_path, create_parents=False)
+        except FileNotFoundError:
+            return False
+        try:
+            st = os.stat(leaf, dir_fd=parent_fd, follow_symlinks=False)
+            if stat.S_ISLNK(st.st_mode):
+                raise ControlError("profile_file_unsafe", 409)
+            if not stat.S_ISREG(st.st_mode) and not stat.S_ISDIR(st.st_mode):
+                raise ControlError("profile_file_unsafe", 409)
+            if st.st_uid != self.entry.pw_uid:
+                raise ControlError("profile_file_unsafe", 409)
+            return True
+        except FileNotFoundError:
+            return False
+        except OSError:
+            raise ControlError("profile_file_unsafe", 409) from None
+        finally:
+            if should_close:
+                os.close(parent_fd)
+
+    def read_bytes(self, relative_path: str) -> bytes:
+        parent_fd, leaf, should_close = self._resolve_parent_fd(relative_path, create_parents=False)
+        try:
+            try:
+                st = os.stat(leaf, dir_fd=parent_fd, follow_symlinks=False)
+            except FileNotFoundError:
+                raise
+            except OSError:
+                raise ControlError("profile_file_unsafe", 409) from None
+
+            if stat.S_ISLNK(st.st_mode) or not stat.S_ISREG(st.st_mode) or st.st_uid != self.entry.pw_uid:
+                raise ControlError("profile_file_unsafe", 409)
+            if st.st_size > MAX_CLIENT_FILE_BYTES:
+                raise ControlError("profile_file_too_large", 413)
+
+            fd = os.open(leaf, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=parent_fd)
+            try:
+                f_st = os.fstat(fd)
+                if not stat.S_ISREG(f_st.st_mode) or f_st.st_uid != self.entry.pw_uid:
+                    raise ControlError("profile_file_unsafe", 409)
+                if f_st.st_size > MAX_CLIENT_FILE_BYTES:
+                    raise ControlError("profile_file_too_large", 413)
+                data = os.read(fd, f_st.st_size + 1)
+                if len(data) > MAX_CLIENT_FILE_BYTES:
+                    raise ControlError("profile_file_too_large", 413)
+                return data
+            finally:
+                os.close(fd)
+        finally:
+            if should_close:
+                os.close(parent_fd)
+
+    def read_text(self, relative_path: str) -> str:
+        return self.read_bytes(relative_path).decode("utf-8")
+
+    def read_json(self, relative_path: str) -> dict[str, Any]:
+        try:
+            raw = self.read_text(relative_path)
+            data = json.loads(raw)
+            return data if isinstance(data, dict) else {}
+        except (FileNotFoundError, json.JSONDecodeError, UnicodeDecodeError):
+            return {}
+
+    def write_bytes(self, relative_path: str, data: bytes, mode: int = 0o600) -> None:
+        parent_fd, leaf, should_close = self._resolve_parent_fd(relative_path, create_parents=True)
+        try:
+            try:
+                st = os.stat(leaf, dir_fd=parent_fd, follow_symlinks=False)
+                if stat.S_ISLNK(st.st_mode) or not stat.S_ISREG(st.st_mode) or st.st_uid != self.entry.pw_uid:
+                    raise ControlError("profile_file_unsafe", 409)
+            except FileNotFoundError:
+                pass
+            except OSError:
+                raise ControlError("profile_file_unsafe", 409) from None
+
+            tmp_name = f".{leaf}.forge.{time.time_ns()}.tmp"
+            tmp_fd = os.open(tmp_name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, mode, dir_fd=parent_fd)
+            try:
+                if os.geteuid() == 0:
+                    os.fchown(tmp_fd, self.entry.pw_uid, self.entry.pw_gid)
+                os.fchmod(tmp_fd, mode)
+                os.write(tmp_fd, data)
+                os.fsync(tmp_fd)
+            finally:
+                os.close(tmp_fd)
+
+            try:
+                os.replace(tmp_name, leaf, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
+                os.fsync(parent_fd)
+            finally:
+                try:
+                    os.unlink(tmp_name, dir_fd=parent_fd)
+                except OSError:
+                    pass
+        finally:
+            if should_close:
+                os.close(parent_fd)
+
+    def write_text(self, relative_path: str, text: str, mode: int = 0o600) -> None:
+        self.write_bytes(relative_path, text.encode("utf-8"), mode=mode)
+
+    def unlink_file(self, relative_path: str) -> None:
+        try:
+            parent_fd, leaf, should_close = self._resolve_parent_fd(relative_path, create_parents=False)
+        except FileNotFoundError:
+            return
+        try:
+            try:
+                st = os.stat(leaf, dir_fd=parent_fd, follow_symlinks=False)
+                if stat.S_ISLNK(st.st_mode) or st.st_uid != self.entry.pw_uid:
+                    raise ControlError("profile_file_unsafe", 409)
+            except FileNotFoundError:
+                return
+            os.unlink(leaf, dir_fd=parent_fd)
+            os.fsync(parent_fd)
+        finally:
+            if should_close:
+                os.close(parent_fd)
+
+    def ensure_dir(self, relative_path: str, mode: int = 0o700) -> None:
+        parts = [p for p in relative_path.split("/") if p]
+        if not parts or any(p in {".", ".."} for p in parts):
+            raise ControlError("profile_file_unsafe", 409)
+        curr_fd = self.dir_fd
+        close_curr = False
+        try:
+            for comp in parts:
+                next_fd = None
+                try:
+                    st = os.stat(comp, dir_fd=curr_fd, follow_symlinks=False)
+                    if stat.S_ISLNK(st.st_mode) or not stat.S_ISDIR(st.st_mode) or st.st_uid != self.entry.pw_uid:
+                        raise ControlError("profile_file_unsafe", 409)
+                    next_fd = os.open(comp, os.O_DIRECTORY | os.O_NOFOLLOW | os.O_RDONLY, dir_fd=curr_fd)
+                except FileNotFoundError:
+                    os.mkdir(comp, mode, dir_fd=curr_fd)
+                    next_fd = os.open(comp, os.O_DIRECTORY | os.O_NOFOLLOW | os.O_RDONLY, dir_fd=curr_fd)
+                    try:
+                        if os.geteuid() == 0:
+                            os.fchown(next_fd, self.entry.pw_uid, self.entry.pw_gid)
+                        os.fchmod(next_fd, mode)
+                        st = os.fstat(next_fd)
+                        if not stat.S_ISDIR(st.st_mode) or st.st_uid != self.entry.pw_uid:
+                            raise ControlError("profile_file_unsafe", 409)
+                    except Exception:
+                        os.close(next_fd)
+                        raise
+                except OSError:
+                    raise ControlError("profile_file_unsafe", 409) from None
+
+                if close_curr:
+                    os.close(curr_fd)
+                curr_fd = next_fd
+                close_curr = True
+        finally:
+            if close_curr:
+                os.close(curr_fd)
 
 
 def validate_init_data(init_data: str, *, bot_token: str | None = None, now: int | None = None) -> dict[str, Any]:
@@ -174,7 +626,7 @@ def validate_init_data(init_data: str, *, bot_token: str | None = None, now: int
         raise ControlError("init_data_user_invalid", 401) from None
     if user_id <= 0:
         raise ControlError("init_data_user_invalid", 401)
-    return {"user_id": user_id, "user": {"id": user_id, "first_name": str(user.get("first_name") or "")[:64]}}
+    return {"user_id": user_id, "auth_date": auth_date, "user": {"id": user_id, "first_name": str(user.get("first_name") or "")[:64]}}
 
 
 def _safe_json(path: Path) -> dict[str, Any]:
@@ -189,7 +641,7 @@ def _safe_json(path: Path) -> dict[str, Any]:
 
 def _service_state(profile: str) -> str:
     result = subprocess.run(
-        ["/usr/bin/systemctl", "is-active", f"{profile}-hermes.service"],
+        ["/usr/bin/systemctl", "is-active", "--", f"{profile}-hermes.service"],
         capture_output=True, text=True, timeout=10, check=False,
     )
     value = result.stdout.strip().lower()
@@ -203,18 +655,23 @@ def _profile_release(profile: str) -> str:
 
 
 def _telemetry_enabled(profile: str) -> bool:
-    path = HOME_ROOT / profile / ".hermes/config.yaml"
-    if path.is_symlink() or not path.is_file():
-        return False
     try:
-        config = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        with ProfileFs(profile) as fs:
+            if not fs.file_exists("config.yaml"):
+                return False
+            raw = fs.read_text("config.yaml")
+        config = _safe_yaml_load(raw)
+        return ((config.get("telemetry") or {}).get("shared_metrics") or {}).get("enabled") is True
     except Exception:
         return False
-    return ((config.get("telemetry") or {}).get("shared_metrics") or {}).get("enabled") is True
 
 
 def _health(profile: str) -> dict[str, Any]:
-    gateway = _safe_json(HOME_ROOT / profile / ".hermes/gateway_state.json")
+    try:
+        with ProfileFs(profile) as fs:
+            gateway = fs.read_json("gateway_state.json")
+    except Exception:
+        gateway = {}
     telegram = ((gateway.get("platforms") or {}).get("telegram") or {})
     telegram_state = str(telegram.get("state") or "unknown")
     if telegram_state not in {"connected", "disconnected", "connecting", "error", "unknown"}:
@@ -309,10 +766,14 @@ def _profile_paths(profile: str) -> tuple[pwd.struct_passwd, Path, Path]:
 def _secret_value(profile: str, name: str) -> str:
     if name not in ALLOWED_PERSONAL_SECRETS:
         raise ControlError("secret_not_allowed", 400)
-    _, env_path, _ = _profile_paths(profile)
-    if env_path.is_symlink() or not env_path.is_file():
+    try:
+        with ProfileFs(profile) as fs:
+            if not fs.file_exists(".env"):
+                return ""
+            raw = fs.read_text(".env")
+            return _read_env_text(raw).get(name, "")
+    except Exception:
         return ""
-    return _read_env(env_path).get(name, "")
 
 
 def _secret_status(profile: str, name: str) -> dict[str, Any]:
@@ -320,66 +781,108 @@ def _secret_status(profile: str, name: str) -> dict[str, Any]:
     return {"name": name, "configured": bool(value), "last4": value[-4:] if value else ""}
 
 
-def _atomic_text(path: Path, text: str, entry: pwd.struct_passwd) -> None:
-    if path.is_symlink():
-        raise ControlError("profile_file_unsafe", 409)
-    fd, temp_name = tempfile.mkstemp(prefix=f".{path.name}.forge.", dir=path.parent)
-    temp = Path(temp_name)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            handle.write(text)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.chown(temp, entry.pw_uid, entry.pw_gid)
-        os.chmod(temp, 0o600)
-        os.replace(temp, path)
-        directory_fd = os.open(path.parent, os.O_RDONLY)
-        try:
-            os.fsync(directory_fd)
-        finally:
-            os.close(directory_fd)
-    finally:
-        if temp.exists():
-            temp.unlink()
-
-
 def _backup_secret_files(profile: str, entry: pwd.struct_passwd, env_path: Path, config_path: Path) -> Path:
-    root = Path(entry.pw_dir) / ".hermes/backups" / f"forge-secret-{time.time_ns()}"
-    root.mkdir(parents=True, mode=0o700)
-    os.chown(root, entry.pw_uid, entry.pw_gid)
-    os.chmod(root, 0o700)
-    presence: dict[str, bool] = {}
-    for source in (env_path, config_path):
-        existed = source.is_file() and not source.is_symlink()
-        presence[source.name] = existed
-        if existed:
-            target = root / source.name
-            target.write_bytes(source.read_bytes())
-            os.chown(target, entry.pw_uid, entry.pw_gid)
-            os.chmod(target, 0o600)
-    marker = root / "presence.json"
-    marker.write_text(json.dumps(presence, sort_keys=True), encoding="utf-8")
-    os.chown(marker, entry.pw_uid, entry.pw_gid)
-    os.chmod(marker, 0o600)
-    return root
+    with ProfileFs(profile, entry) as fs:
+        fs.ensure_dir("backups", mode=0o700)
+        backups_fd = os.open("backups", os.O_DIRECTORY | os.O_NOFOLLOW | os.O_RDONLY, dir_fd=fs.dir_fd)
+        try:
+            entries = sorted([
+                name for name in os.listdir(backups_fd)
+                if name.startswith("forge-secret-")
+            ])
+            while len(entries) >= MAX_BACKUP_COUNT:
+                oldest = entries.pop(0)
+                try:
+                    old_fd = os.open(oldest, os.O_DIRECTORY | os.O_NOFOLLOW | os.O_RDONLY, dir_fd=backups_fd)
+                    try:
+                        for fname in os.listdir(old_fd):
+                            try:
+                                os.unlink(fname, dir_fd=old_fd)
+                            except OSError:
+                                pass
+                    finally:
+                        os.close(old_fd)
+                    os.rmdir(oldest, dir_fd=backups_fd)
+                except OSError:
+                    pass
+
+            backup_name = f"forge-secret-{time.time_ns()}"
+            os.mkdir(backup_name, 0o700, dir_fd=backups_fd)
+            backup_fd = os.open(backup_name, os.O_DIRECTORY | os.O_NOFOLLOW | os.O_RDONLY, dir_fd=backups_fd)
+            try:
+                if os.geteuid() == 0:
+                    os.fchown(backup_fd, entry.pw_uid, entry.pw_gid)
+                os.fchmod(backup_fd, 0o700)
+
+                presence: dict[str, bool] = {}
+                for name in (".env", "config.yaml"):
+                    existed = fs.file_exists(name)
+                    presence[name] = existed
+                    if existed:
+                        data = fs.read_bytes(name)
+                        tmp_name = f".{name}.tmp"
+                        tfd = os.open(tmp_name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=backup_fd)
+                        try:
+                            if os.geteuid() == 0:
+                                os.fchown(tfd, entry.pw_uid, entry.pw_gid)
+                            os.fchmod(tfd, 0o600)
+                            os.write(tfd, data)
+                            os.fsync(tfd)
+                        finally:
+                            os.close(tfd)
+                        os.replace(tmp_name, name, src_dir_fd=backup_fd, dst_dir_fd=backup_fd)
+
+                pdata = json.dumps(presence, sort_keys=True).encode("utf-8")
+                ptmp = ".presence.json.tmp"
+                pfd = os.open(ptmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=backup_fd)
+                try:
+                    if os.geteuid() == 0:
+                        os.fchown(pfd, entry.pw_uid, entry.pw_gid)
+                    os.fchmod(pfd, 0o600)
+                    os.write(pfd, pdata)
+                    os.fsync(pfd)
+                finally:
+                    os.close(pfd)
+                os.replace(ptmp, "presence.json", src_dir_fd=backup_fd, dst_dir_fd=backup_fd)
+            finally:
+                os.close(backup_fd)
+        finally:
+            os.close(backups_fd)
+
+    return Path(entry.pw_dir) / ".hermes/backups" / backup_name
 
 
 def _restore_secret_backup(profile: str, backup: Path) -> None:
-    entry, env_path, config_path = _profile_paths(profile)
-    try:
-        presence = json.loads((backup / "presence.json").read_text(encoding="utf-8"))
-    except Exception:
-        raise ControlError("secret_rollback_failed", 500) from None
-    for target in (env_path, config_path):
-        source = backup / target.name
-        if presence.get(target.name) is True:
-            if not source.is_file():
-                raise ControlError("secret_rollback_failed", 500)
-            _atomic_text(target, source.read_text(encoding="utf-8"), entry)
-        elif target.exists():
-            if target.is_symlink() or not target.is_file():
-                raise ControlError("secret_rollback_failed", 500)
-            target.unlink()
+    entry, _, _ = _profile_paths(profile)
+    backup_name = backup.name
+    with ProfileFs(profile, entry) as fs:
+        backups_fd = os.open("backups", os.O_DIRECTORY | os.O_NOFOLLOW | os.O_RDONLY, dir_fd=fs.dir_fd)
+        try:
+            backup_fd = os.open(backup_name, os.O_DIRECTORY | os.O_NOFOLLOW | os.O_RDONLY, dir_fd=backups_fd)
+            try:
+                pfd = os.open("presence.json", os.O_RDONLY | os.O_NOFOLLOW, dir_fd=backup_fd)
+                try:
+                    pdata = os.read(pfd, 64 * 1024)
+                    presence = json.loads(pdata.decode("utf-8"))
+                finally:
+                    os.close(pfd)
+
+                for name in (".env", "config.yaml"):
+                    if presence.get(name) is True:
+                        sfd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=backup_fd)
+                        try:
+                            sdata = os.read(sfd, MAX_CLIENT_FILE_BYTES + 1)
+                        finally:
+                            os.close(sfd)
+                        fs.write_bytes(name, sdata)
+                    elif fs.file_exists(name):
+                        fs.unlink_file(name)
+            finally:
+                os.close(backup_fd)
+        except Exception:
+            raise ControlError("secret_rollback_failed", 500) from None
+        finally:
+            os.close(backups_fd)
 
 
 def _set_env_secret(profile: str, name: str, value: str) -> Path:
@@ -387,19 +890,20 @@ def _set_env_secret(profile: str, name: str, value: str) -> Path:
         raise ControlError("secret_value_invalid", 400)
     entry, env_path, config_path = _profile_paths(profile)
     backup = _backup_secret_files(profile, entry, env_path, config_path)
-    lines = env_path.read_text(encoding="utf-8").splitlines() if env_path.is_file() and not env_path.is_symlink() else []
-    output: list[str] = []
-    replaced = False
-    for line in lines:
-        if line.startswith(name + "="):
-            if not replaced:
-                output.append(name + "=" + value)
-                replaced = True
-            continue
-        output.append(line)
-    if not replaced:
-        output.append(name + "=" + value)
-    _atomic_text(env_path, "\n".join(output).rstrip() + "\n", entry)
+    with ProfileFs(profile, entry) as fs:
+        lines = fs.read_text(".env").splitlines() if fs.file_exists(".env") else []
+        output: list[str] = []
+        replaced = False
+        for line in lines:
+            if line.startswith(name + "="):
+                if not replaced:
+                    output.append(name + "=" + value)
+                    replaced = True
+                continue
+            output.append(line)
+        if not replaced:
+            output.append(name + "=" + value)
+        fs.write_text(".env", "\n".join(output).rstrip() + "\n")
     return backup
 
 
@@ -408,30 +912,30 @@ def _delete_env_secret(profile: str, name: str) -> Path:
         raise ControlError("secret_not_allowed", 400)
     entry, env_path, config_path = _profile_paths(profile)
     backup = _backup_secret_files(profile, entry, env_path, config_path)
-    if env_path.is_file() and not env_path.is_symlink():
-        lines = [line for line in env_path.read_text(encoding="utf-8").splitlines() if not line.startswith(name + "=")]
-        _atomic_text(env_path, "\n".join(lines).rstrip() + "\n", entry)
+    with ProfileFs(profile, entry) as fs:
+        if fs.file_exists(".env"):
+            lines = [line for line in fs.read_text(".env").splitlines() if not line.startswith(name + "=")]
+            fs.write_text(".env", "\n".join(lines).rstrip() + "\n")
     return backup
 
 
 def _set_maton_enabled(profile: str, enabled: bool) -> None:
-    entry, _, config_path = _profile_paths(profile)
-    if config_path.is_symlink() or not config_path.is_file():
-        raise ControlError("config_missing", 409)
-    try:
-        config = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
-    except Exception:
-        raise ControlError("config_invalid", 409) from None
-    if not isinstance(config, dict):
-        raise ControlError("config_invalid", 409)
-    servers = config.setdefault("mcp_servers", {})
-    if not isinstance(servers, dict):
-        raise ControlError("config_invalid", 409)
-    maton = servers.setdefault("maton", {})
-    if not isinstance(maton, dict):
-        raise ControlError("config_invalid", 409)
-    maton["enabled"] = bool(enabled)
-    _atomic_text(config_path, yaml.safe_dump(config, allow_unicode=True, sort_keys=False), entry)
+    entry, _, _ = _profile_paths(profile)
+    with ProfileFs(profile, entry) as fs:
+        if not fs.file_exists("config.yaml"):
+            raise ControlError("config_missing", 409)
+        raw = fs.read_text("config.yaml")
+        config = _safe_yaml_load(raw)
+        if not isinstance(config, dict):
+            raise ControlError("config_invalid", 409)
+        servers = config.setdefault("mcp_servers", {})
+        if not isinstance(servers, dict):
+            raise ControlError("config_invalid", 409)
+        maton = servers.setdefault("maton", {})
+        if not isinstance(maton, dict):
+            raise ControlError("config_invalid", 409)
+        maton["enabled"] = bool(enabled)
+        fs.write_text("config.yaml", yaml.safe_dump(config, allow_unicode=True, sort_keys=False))
 
 
 def _maton_validate(value: str) -> str:
@@ -469,17 +973,209 @@ def _maton_status(profile: str, *, validate: bool = False) -> dict[str, Any]:
     return result
 
 
+def _maton_json(profile: str, host: str, path: str, *, connection_id: str = "") -> dict[str, Any]:
+    key = _secret_value(profile, "MCP_MATON_API_KEY")
+    if not key:
+        raise ControlError("maton_key_missing", 409)
+    if host not in {"api.maton.ai", "gateway.maton.ai"} or not path.startswith("/") or ".." in path:
+        raise ControlError("maton_request_invalid", 500)
+    headers = {
+        "Authorization": "Bearer " + key,
+        "Accept": "application/json",
+        "User-Agent": "Hermes-Forge-Zoom/1.0",
+    }
+    if connection_id:
+        if not ZOOM_CONNECTION_ID_RE.fullmatch(connection_id):
+            raise ControlError("zoom_connection_invalid", 400)
+        headers["Maton-Connection"] = connection_id
+    connection = http.client.HTTPSConnection(host, timeout=20)
+    try:
+        connection.request("GET", path, headers=headers)
+        response = connection.getresponse()
+        raw = response.read(1024 * 1024)
+        status = int(response.status)
+    except (OSError, TimeoutError, http.client.HTTPException):
+        raise ControlError("maton_temporarily_unavailable", 503) from None
+    finally:
+        connection.close()
+    if not 200 <= status < 300:
+        raise ControlError("maton_zoom_unavailable", 503 if status >= 500 else 409)
+    try:
+        payload = json.loads(raw.decode("utf-8")) if raw else {}
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        raise ControlError("maton_response_invalid", 503) from None
+    if not isinstance(payload, dict):
+        raise ControlError("maton_response_invalid", 503)
+    return payload
+
+
+def _maton_active_connections(profile: str, app: str) -> list[dict[str, Any]]:
+    if app not in {"zoom", "zoom-admin"}:
+        raise ControlError("zoom_app_invalid", 500)
+    query = urllib.parse.urlencode({"app": app, "status": "ACTIVE", "limit": 100})
+    payload = _maton_json(profile, "api.maton.ai", "/connections?" + query)
+    rows = payload.get("connections") or payload.get("items") or payload.get("data") or []
+    if isinstance(rows, dict):
+        rows = list(rows.values())
+    result: list[dict[str, Any]] = []
+    for item in rows if isinstance(rows, list) else []:
+        if not isinstance(item, dict):
+            continue
+        connection_id = str(item.get("connection_id") or item.get("id") or "")
+        if (
+            str(item.get("app") or item.get("app_slug") or item.get("slug") or "") == app
+            and str(item.get("status") or item.get("state") or "").upper() == "ACTIVE"
+            and ZOOM_CONNECTION_ID_RE.fullmatch(connection_id)
+        ):
+            result.append({"connection_id": connection_id, "app": app, "status": "ACTIVE"})
+    return result
+
+
+def _zoom_identity(profile: str, connection_id: str) -> dict[str, str]:
+    payload = _maton_json(
+        profile,
+        "gateway.maton.ai",
+        "/zoom/v2/users/me",
+        connection_id=connection_id,
+    )
+    account_id = str(payload.get("account_id") or "").strip()
+    host_id = str(payload.get("id") or "").strip()
+    if not account_id or not host_id or len(account_id) > 128 or len(host_id) > 128:
+        raise ControlError("zoom_identity_invalid", 409)
+    return {
+        "account_id": account_id,
+        "host_id": host_id,
+        "role_name": str(payload.get("role_name") or "")[:80],
+        "timezone": str(payload.get("timezone") or "")[:80],
+        "user_type": str(payload.get("type") or "")[:16],
+    }
+
+
+def _zoom_binding(profile: str, requested_connection_id: str = "") -> dict[str, Any]:
+    entry, _, _ = _profile_paths(profile)
+    zoom = _maton_active_connections(profile, "zoom")
+    if requested_connection_id:
+        if not ZOOM_CONNECTION_ID_RE.fullmatch(requested_connection_id):
+            raise ControlError("zoom_connection_invalid", 400)
+        zoom = [item for item in zoom if item["connection_id"] == requested_connection_id]
+    if len(zoom) != 1:
+        raise ControlError("zoom_connection_ambiguous" if len(zoom) > 1 else "zoom_connection_missing", 409)
+    zoom_id = zoom[0]["connection_id"]
+    identity = _zoom_identity(profile, zoom_id)
+    admins = _maton_active_connections(profile, "zoom-admin")
+    admin_id = admins[0]["connection_id"] if len(admins) == 1 else ""
+    binding = {
+        "schema": "hermes.zoom-binding/v1",
+        "profile": profile,
+        "account_id": identity["account_id"],
+        "host_id": identity["host_id"],
+        "zoom_connection_id": zoom_id,
+        "zoom_admin_connection_id": admin_id,
+        "enabled": True,
+        "updated_at": int(time.time()),
+    }
+    _ensure_action_dir(ZOOM_BINDINGS_DIR)
+    _atomic_root_json(ZOOM_BINDINGS_DIR / f"{profile}.json", binding)
+    with ProfileFs(profile, entry) as fs:
+        fs.ensure_dir("zoom-native", mode=0o700)
+        fs.write_text("zoom-native/binding.json", json.dumps(binding, ensure_ascii=False, sort_keys=True, indent=2) + "\n")
+    return {
+        "schema": binding["schema"],
+        "profile": profile,
+        "account_id": binding["account_id"],
+        "host_id": binding["host_id"],
+        "zoom_connection_id": zoom_id,
+        "zoom_admin_configured": bool(admin_id),
+        "enabled": True,
+    }
+
+
+def _zoom_bindings() -> list[dict[str, Any]]:
+    if not ZOOM_BINDINGS_DIR.exists():
+        return []
+    if ZOOM_BINDINGS_DIR.is_symlink() or not ZOOM_BINDINGS_DIR.is_dir():
+        raise ControlError("zoom_binding_state_unsafe", 500)
+    result = []
+    for path in sorted(ZOOM_BINDINGS_DIR.glob("*.json")):
+        if path.is_symlink() or not path.is_file():
+            continue
+        payload = _safe_json(path)
+        if (
+            payload.get("schema") == "hermes.zoom-binding/v1"
+            and payload.get("enabled") is True
+            and PROFILE_RE.fullmatch(str(payload.get("profile") or ""))
+        ):
+            result.append(payload)
+    return result
+
+
+def _queue_zoom_event(event: dict[str, Any]) -> dict[str, Any]:
+    required = ("event", "account_id", "host_id", "meeting_id", "meeting_uuid")
+    if not isinstance(event, dict) or any(not str(event.get(key) or "").strip() for key in required):
+        raise ControlError("zoom_event_invalid", 400)
+    if str(event["event"]) not in {"meeting.ended", "recording.completed", "recording.transcript_completed"}:
+        raise ControlError("zoom_event_invalid", 400)
+    matches = [
+        row for row in _zoom_bindings()
+        if str(row.get("account_id")) == str(event["account_id"])
+        and str(row.get("host_id")) == str(event["host_id"])
+    ]
+    if len(matches) != 1:
+        raise ControlError("zoom_binding_not_found" if not matches else "zoom_binding_ambiguous", 404 if not matches else 409)
+    binding = matches[0]
+    profile = str(binding["profile"])
+    entry, _, _ = _profile_paths(profile)
+    dedupe = hashlib.sha256((str(event["event"]) + "\0" + str(event["meeting_uuid"])).encode("utf-8")).hexdigest()
+    target_rel = f"zoom-native/inbox/{dedupe}.json"
+    created = False
+    with ProfileFs(profile, entry) as fs:
+        fs.ensure_dir("zoom-native/inbox", mode=0o700)
+        if not fs.file_exists(target_rel):
+            safe_event = {
+                "schema": "hermes.zoom-event/v1",
+                "event": str(event["event"]),
+                "event_ts": int(event.get("event_ts") or 0),
+                "account_id": str(event["account_id"])[:128],
+                "host_id": str(event["host_id"])[:128],
+                "meeting_id": str(event["meeting_id"])[:64],
+                "meeting_uuid": str(event["meeting_uuid"])[:256],
+                "received_at": int(time.time()),
+            }
+            fs.write_text(target_rel, json.dumps(safe_event, ensure_ascii=False, sort_keys=True, indent=2) + "\n")
+            created = True
+    unit = f"vektor-zoom-native@{profile}.service"
+    if not UNIT_NAME_RE.fullmatch(unit):
+        raise ControlError("service_invalid", 500)
+    trigger = subprocess.run(
+        ["/usr/bin/systemctl", "start", "--no-block", "--", unit],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        timeout=3,
+        check=False,
+    )
+    return {
+        "profile": profile,
+        "queued": created,
+        "deduplicated": not created,
+        "worker_triggered": trigger.returncode == 0,
+    }
+
+
 def _unit_active(unit: str) -> bool:
+    if not UNIT_NAME_RE.fullmatch(unit):
+        raise ControlError("service_invalid", 500)
     result = subprocess.run(
-        ["/usr/bin/systemctl", "is-active", "--quiet", unit],
+        ["/usr/bin/systemctl", "is-active", "--quiet", "--", unit],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10, check=False,
     )
     return result.returncode == 0
 
 
 def _unit_enabled(unit: str) -> bool:
+    if not UNIT_NAME_RE.fullmatch(unit):
+        raise ControlError("service_invalid", 500)
     result = subprocess.run(
-        ["/usr/bin/systemctl", "is-enabled", "--quiet", unit],
+        ["/usr/bin/systemctl", "is-enabled", "--quiet", "--", unit],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10, check=False,
     )
     return result.returncode == 0
@@ -511,11 +1207,13 @@ def _capability_row(capability_id: str, installed: bool, enabled: bool, health: 
 
 
 def _capability_states(profile: str) -> dict[str, Any]:
-    entry, env_path, config_path = _profile_paths(profile)
-    if config_path.is_symlink() or not config_path.is_file():
-        raise ControlError("config_missing", 409)
+    entry, env_path, _ = _profile_paths(profile)
+    with ProfileFs(profile, entry) as fs:
+        if not fs.file_exists("config.yaml"):
+            raise ControlError("config_missing", 409)
+        raw_config = fs.read_text("config.yaml")
     try:
-        config = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+        config = _safe_yaml_load(raw_config)
     except Exception:
         raise ControlError("config_invalid", 409) from None
     if not isinstance(config, dict):
@@ -606,7 +1304,11 @@ def _capability_states(profile: str) -> dict[str, Any]:
 
 
 def _active_sessions(profile: str) -> int:
-    payload = _safe_json(HOME_ROOT / profile / ".hermes/runtime/active_sessions.json")
+    try:
+        with ProfileFs(profile) as fs:
+            payload = fs.read_json("runtime/active_sessions.json")
+    except Exception:
+        payload = {}
     entries = payload.get("entries")
     return len(entries) if isinstance(entries, list) else 0
 
@@ -614,11 +1316,12 @@ def _active_sessions(profile: str) -> int:
 def _systemd_properties(service: str, names: tuple[str, ...]) -> dict[str, str]:
     if not re.fullmatch(r"[a-z0-9_-]{2,40}-hermes\.service", service):
         raise ControlError("service_invalid", 500)
-    args = ["/usr/bin/systemctl", "show", service]
+    args = ["/usr/bin/systemctl", "show"]
     for name in names:
         if not re.fullmatch(r"[A-Za-z][A-Za-z0-9]+", name):
             raise ControlError("service_property_invalid", 500)
         args.extend(["-p", name])
+    args.extend(["--", service])
     result = subprocess.run(args, capture_output=True, text=True, timeout=15, check=False)
     if result.returncode:
         raise ControlError("service_status_failed", 503)
@@ -644,6 +1347,8 @@ def _restart(profile: str) -> dict[str, Any]:
         raise ControlError("profile_busy", 409)
 
     service = f"{profile}-hermes.service"
+    if not UNIT_NAME_RE.fullmatch(service):
+        raise ControlError("service_invalid", 500)
     contract = _systemd_properties(
         service,
         ("MainPID", "ExecReload", "SuccessExitStatus", "RestartForceExitStatus"),
@@ -671,7 +1376,7 @@ def _restart(profile: str) -> dict[str, Any]:
     # systemd relaunches it. Never fall back silently to systemctl restart:
     # its bare SIGTERM is intentionally classified by Hermes as unexpected.
     result = subprocess.run(
-        ["/usr/bin/systemctl", "reload", service],
+        ["/usr/bin/systemctl", "reload", "--", service],
         capture_output=True, text=True, timeout=20, check=False,
     )
     if result.returncode:
@@ -870,35 +1575,32 @@ def _persist_desired(profile: str, capability_id: str, enabled: bool, action_id:
 def _backup_capability_config(profile: str, action_id: str) -> Path:
     if not ACTION_ID_RE.fullmatch(action_id):
         raise ControlError("action_id_invalid", 500)
-    entry, _, config_path = _profile_paths(profile)
-    if config_path.is_symlink() or not config_path.is_file():
-        raise ControlError("config_missing", 409)
-    root = Path(entry.pw_dir) / ".hermes/backups" / f"forge-capability-{action_id}"
-    if root.exists() or root.is_symlink():
-        raise ControlError("capability_backup_conflict", 500)
-    root.mkdir(parents=True, mode=0o700)
-    os.chown(root, entry.pw_uid, entry.pw_gid)
-    os.chmod(root, 0o700)
-    target = root / "config.yaml"
-    target.write_bytes(config_path.read_bytes())
-    os.chown(target, entry.pw_uid, entry.pw_gid)
-    os.chmod(target, 0o600)
-    return root
+    entry, _, _ = _profile_paths(profile)
+    backup_rel = f"backups/forge-capability-{action_id}"
+    with ProfileFs(profile, entry) as fs:
+        if not fs.file_exists("config.yaml"):
+            raise ControlError("config_missing", 409)
+        fs.ensure_dir("backups", mode=0o700)
+        if fs.file_exists(backup_rel) or fs.file_exists(f"{backup_rel}/config.yaml"):
+            raise ControlError("capability_backup_conflict", 500)
+        config_bytes = fs.read_bytes("config.yaml")
+        fs.ensure_dir(backup_rel, mode=0o700)
+        fs.write_bytes(f"{backup_rel}/config.yaml", config_bytes)
+    return Path(entry.pw_dir) / ".hermes" / backup_rel
 
 
 def _restore_capability_config(profile: str, backup: Path) -> None:
-    entry, _, config_path = _profile_paths(profile)
-    expected_root = Path(entry.pw_dir) / ".hermes/backups"
-    try:
-        resolved = backup.resolve(strict=True)
-        if resolved.parent != expected_root.resolve(strict=True) or not resolved.name.startswith("forge-capability-"):
-            raise ValueError
-    except Exception:
-        raise ControlError("capability_rollback_failed", 500) from None
-    source = resolved / "config.yaml"
-    if source.is_symlink() or not source.is_file():
+    entry, _, _ = _profile_paths(profile)
+    backup_name = backup.name
+    if not backup_name.startswith("forge-capability-"):
         raise ControlError("capability_rollback_failed", 500)
-    _atomic_text(config_path, source.read_text(encoding="utf-8"), entry)
+    with ProfileFs(profile, entry) as fs:
+        try:
+            rel = f"backups/{backup_name}/config.yaml"
+            data = fs.read_bytes(rel)
+            fs.write_bytes("config.yaml", data)
+        except Exception:
+            raise ControlError("capability_rollback_failed", 500) from None
 
 
 def _patch_disabled_toolset_text(raw: str, toolset: str, enabled: bool) -> tuple[str, bool]:
@@ -1012,45 +1714,46 @@ def _set_capability_toolset(profile: str, capability_id: str, enabled: bool) -> 
     toolset = CAPABILITY_TOGGLE_TOOLSETS.get(capability_id)
     if not toolset:
         raise ControlError("capability_action_not_supported", 409)
-    entry, _, config_path = _profile_paths(profile)
-    if config_path.is_symlink() or not config_path.is_file():
-        raise ControlError("config_missing", 409)
-    original_text = config_path.read_text(encoding="utf-8")
-    try:
-        config = yaml.safe_load(original_text) or {}
-    except Exception:
-        raise ControlError("config_invalid", 409) from None
-    if not isinstance(config, dict):
-        raise ControlError("config_invalid", 409)
-    agent = config.get("agent")
-    if not isinstance(agent, dict):
-        raise ControlError("config_invalid", 409)
-    raw_disabled = agent.get("disabled_toolsets", [])
-    if not isinstance(raw_disabled, list) or any(not isinstance(item, str) for item in raw_disabled):
-        raise ControlError("config_invalid", 409)
+    entry, _, _ = _profile_paths(profile)
+    with ProfileFs(profile, entry) as fs:
+        if not fs.file_exists("config.yaml"):
+            raise ControlError("config_missing", 409)
+        original_text = fs.read_text("config.yaml")
+        try:
+            config = _safe_yaml_load(original_text)
+        except Exception:
+            raise ControlError("config_invalid", 409) from None
+        if not isinstance(config, dict):
+            raise ControlError("config_invalid", 409)
+        agent = config.get("agent")
+        if not isinstance(agent, dict):
+            raise ControlError("config_invalid", 409)
+        raw_disabled = agent.get("disabled_toolsets", [])
+        if not isinstance(raw_disabled, list) or any(not isinstance(item, str) for item in raw_disabled):
+            raise ControlError("config_invalid", 409)
 
-    expected = copy.deepcopy(config)
-    expected_agent = expected["agent"]
-    expected_disabled = list(raw_disabled)
-    if enabled:
-        expected_disabled = [item for item in expected_disabled if item != toolset]
-    elif toolset not in expected_disabled:
-        expected_disabled.append(toolset)
-    expected_agent["disabled_toolsets"] = expected_disabled
+        expected = copy.deepcopy(config)
+        expected_agent = expected["agent"]
+        expected_disabled = list(raw_disabled)
+        if enabled:
+            expected_disabled = [item for item in expected_disabled if item != toolset]
+        elif toolset not in expected_disabled:
+            expected_disabled.append(toolset)
+        expected_agent["disabled_toolsets"] = expected_disabled
 
-    updated_text, changed = _patch_disabled_toolset_text(original_text, toolset, enabled)
-    if not changed:
-        if expected != config:
+        updated_text, changed = _patch_disabled_toolset_text(original_text, toolset, enabled)
+        if not changed:
+            if expected != config:
+                raise ControlError("config_patch_invalid", 500)
+            return False
+        try:
+            updated = _safe_yaml_load(updated_text)
+        except Exception:
+            raise ControlError("config_patch_invalid", 500) from None
+        if updated != expected:
             raise ControlError("config_patch_invalid", 500)
-        return False
-    try:
-        updated = yaml.safe_load(updated_text) or {}
-    except Exception:
-        raise ControlError("config_patch_invalid", 500) from None
-    if updated != expected:
-        raise ControlError("config_patch_invalid", 500)
-    _atomic_text(config_path, updated_text, entry)
-    return True
+        fs.write_text("config.yaml", updated_text)
+        return True
 
 
 def _capability_by_id(profile: str, capability_id: str) -> dict[str, Any]:
@@ -1155,55 +1858,242 @@ def _capability_action(actor_user_id: int, profile: str, capability_id: str, act
             raise ControlError("capability_action_failed", 500) from None
 
 
-def _ws_path(profile): return WORKSPACE_STATE_DIR/f"{profile}.json"
-def _ws_state(profile,owner):
- p=_ws_path(profile); d=_safe_json(p) if p.is_file() else {}
- if not d: d={"schema":"hermes.workspace-members/v1","profile":profile,"owner_user_id":int(owner),"members":[],"grants":[],"pending":[]}
- if d.get("profile")!=profile or int(d.get("owner_user_id") or 0)!=int(owner): raise ControlError("workspace_state_invalid",409)
- # Runtime plugin records first-use permission requests in the tenant copy.
- try:
-  entry,_,_=_profile_paths(profile); tenant=_safe_json(Path(entry.pw_dir)/".hermes/workspace-members.json")
-  if tenant.get("schema")=="hermes.workspace-members/v1" and isinstance(tenant.get("pending"),list): d["pending"]=tenant["pending"]
- except Exception: pass
- return d
-def _ws_write(profile,d):
- WORKSPACE_STATE_DIR.mkdir(parents=True,exist_ok=True); _atomic_root_json(_ws_path(profile),d); entry,_,_=_profile_paths(profile); _atomic_text(Path(entry.pw_dir)/".hermes/workspace-members.json",json.dumps(d,ensure_ascii=False)+"\n",entry)
-def _ws_public(d):
- out=copy.deepcopy(d); out["limit"]=1; now=int(time.time()); out["grants"]=[g for g in out.get("grants",[]) if int(g.get("expires_at") or 0)>now]; return out
-def _ws_sync_env(profile,member,add):
- entry,env,_=_profile_paths(profile); vals=_read_env(env); ids=[x.strip() for x in vals.get("TELEGRAM_ALLOWED_USERS","").split(",") if x.strip()]; mid=str(int(member)); ids=[x for x in ids if x!=mid]+([mid] if add else []); lines=env.read_text().splitlines(); out=[]; found=False
- for line in lines:
-  if line.startswith("TELEGRAM_ALLOWED_USERS="): out.append("TELEGRAM_ALLOWED_USERS="+",".join(ids)); found=True
-  else: out.append(line)
- if not found: out.append("TELEGRAM_ALLOWED_USERS="+",".join(ids))
- _atomic_text(env,"\n".join(out)+"\n",entry)
- try: _restart(profile); return False
- except ControlError as e:
-  if e.code=="profile_busy": return True
-  raise
-def _ws_invite(owner,profile):
- d=_ws_state(profile,owner)
- if len(d.get("members",[]))>=1: raise ControlError("workspace_member_limit",409)
- WORKSPACE_INVITE_DIR.mkdir(parents=True,exist_ok=True); token=secrets.token_urlsafe(32); exp=int(time.time())+86400; _atomic_root_json(WORKSPACE_INVITE_DIR/f"{token}.json",{"schema":"hermes.workspace-invite/v1","profile":profile,"owner_user_id":owner,"expires_at":exp,"used":False}); return {"invite_url":f"https://t.me/ProAIHermesBot?startapp=invite_{token}","expires_at":exp}
-def _ws_accept(actor,name,token):
- if not INVITE_TOKEN_RE.fullmatch(token): raise ControlError("invite_invalid",400)
- p=WORKSPACE_INVITE_DIR/f"{token}.json"; inv=_safe_json(p)
- if not inv or inv.get("used"): raise ControlError("invite_invalid",404)
- if int(inv.get("expires_at") or 0)<int(time.time()): raise ControlError("invite_expired",410)
- owner=int(inv["owner_user_id"]); profile=inv["profile"]; d=_ws_state(profile,owner)
- if actor==owner: raise ControlError("invite_owner_invalid",409)
- existing=next((m for m in d["members"] if int(m.get("user_id") or 0)==actor),None)
- if d["members"] and not existing: raise ControlError("workspace_member_limit",409)
- if not existing: d["members"].append({"user_id":actor,"name":name[:120],"role":"member","memory_access":"full","joined_at":int(time.time())})
- _ws_write(profile,d); rr=_ws_sync_env(profile,actor,True); inv.update({"used":True,"used_by":actor}); _atomic_root_json(p,inv); return {"accepted":True,"profile":profile,"owner_user_id":owner,"restart_required":rr}
-def _ws_remove(owner,profile,member):
- d=_ws_state(profile,owner); d["members"]=[m for m in d["members"] if int(m.get("user_id") or 0)!=member]; d["grants"]=[g for g in d["grants"] if int(g.get("member_user_id") or 0)!=member]; d["pending"]=[q for q in d["pending"] if int(q.get("member_user_id") or 0)!=member]; _ws_write(profile,d); return {"removed":True,"restart_required":_ws_sync_env(profile,member,False)}
-def _ws_grant(owner,profile,member,tool,days):
- if days not in {1,7,30}: raise ControlError("grant_ttl_invalid",400)
- if not re.fullmatch(r"[A-Za-z0-9_.:-]{1,160}",tool): raise ControlError("tool_name_invalid",400)
- d=_ws_state(profile,owner); exp=int(time.time())+days*86400; d["grants"]=[g for g in d["grants"] if not(int(g.get("member_user_id") or 0)==member and g.get("tool_name")==tool)]; d["grants"].append({"member_user_id":member,"tool_name":tool,"expires_at":exp}); d["pending"]=[q for q in d["pending"] if not(int(q.get("member_user_id") or 0)==member and q.get("tool_name")==tool)]; _ws_write(profile,d); return {"granted":True,"expires_at":exp}
-def _ws_revoke(owner,profile,member,tool):
- d=_ws_state(profile,owner); d["grants"]=[g for g in d["grants"] if not(int(g.get("member_user_id") or 0)==member and g.get("tool_name")==tool)]; _ws_write(profile,d); return {"revoked":True}
+def _ws_path(profile: str) -> Path:
+    if not PROFILE_RE.fullmatch(profile):
+        raise ControlError("profile_invalid", 400)
+    return WORKSPACE_STATE_DIR / f"{profile}.json"
+
+
+def _ws_state(profile: str, owner: int) -> dict[str, Any]:
+    p = _ws_path(profile)
+    d = _safe_json(p) if p.is_file() else {}
+    if not d:
+        d = {
+            "schema": "hermes.workspace-members/v1",
+            "profile": profile,
+            "owner_user_id": int(owner),
+            "members": [],
+            "grants": [],
+            "pending": [],
+        }
+    if d.get("profile") != profile or int(d.get("owner_user_id") or 0) != int(owner):
+        raise ControlError("workspace_state_invalid", 409)
+    # Runtime plugin records first-use permission requests in the tenant copy.
+    try:
+        entry, _, _ = _profile_paths(profile)
+        with ProfileFs(profile, entry) as fs:
+            if fs.file_exists("workspace-members.json"):
+                tenant = fs.read_json("workspace-members.json")
+                if tenant.get("schema") == "hermes.workspace-members/v1" and isinstance(tenant.get("pending"), list):
+                    d["pending"] = tenant["pending"]
+    except Exception:
+        pass
+    return d
+
+
+def _ws_write(profile: str, d: dict[str, Any]) -> None:
+    _ensure_action_dir(WORKSPACE_STATE_DIR)
+    _atomic_root_json(_ws_path(profile), d)
+    entry, _, _ = _profile_paths(profile)
+    with ProfileFs(profile, entry) as fs:
+        fs.write_text("workspace-members.json", json.dumps(d, ensure_ascii=False, indent=2) + "\n")
+
+
+def _ws_public(d: dict[str, Any]) -> dict[str, Any]:
+    out = copy.deepcopy(d)
+    out["limit"] = 1
+    now = int(time.time())
+    out["grants"] = [g for g in out.get("grants", []) if int(g.get("expires_at") or 0) > now]
+    return out
+
+
+def _ws_sync_env(profile: str, member: int, add: bool) -> bool:
+    entry, _, _ = _profile_paths(profile)
+    with ProfileFs(profile, entry) as fs:
+        raw = fs.read_text(".env") if fs.file_exists(".env") else ""
+        vals = _read_env_text(raw)
+        ids = [x.strip() for x in vals.get("TELEGRAM_ALLOWED_USERS", "").split(",") if x.strip()]
+        mid = str(int(member))
+        ids = [x for x in ids if x != mid] + ([mid] if add else [])
+        lines = raw.splitlines()
+        out: list[str] = []
+        found = False
+        for line in lines:
+            if line.startswith("TELEGRAM_ALLOWED_USERS="):
+                out.append("TELEGRAM_ALLOWED_USERS=" + ",".join(ids))
+                found = True
+            else:
+                out.append(line)
+        if not found:
+            out.append("TELEGRAM_ALLOWED_USERS=" + ",".join(ids))
+        fs.write_text(".env", "\n".join(out).rstrip() + "\n")
+    try:
+        _restart(profile)
+        return False
+    except ControlError as e:
+        if e.code == "profile_busy":
+            return True
+        raise
+
+
+def _ws_invite(owner: int, profile: str) -> dict[str, Any]:
+    with _WS_LOCK:
+        _owned_item(owner, profile)
+        d = _ws_state(profile, owner)
+        if len(d.get("members", [])) >= 1:
+            raise ControlError("workspace_member_limit", 409)
+        _ensure_action_dir(WORKSPACE_INVITE_DIR)
+        token = secrets.token_urlsafe(32)
+        exp = int(time.time()) + 86400
+        _atomic_root_json(
+            WORKSPACE_INVITE_DIR / f"{token}.json",
+            {
+                "schema": "hermes.workspace-invite/v1",
+                "profile": profile,
+                "owner_user_id": int(owner),
+                "expires_at": exp,
+                "used": False,
+            },
+        )
+        return {
+            "invite_url": f"https://t.me/ProAIHermesBot?startapp=invite_{token}",
+            "expires_at": exp,
+        }
+
+
+def _ws_list_invites(owner: int, profile: str) -> dict[str, Any]:
+    _owned_item(owner, profile)
+    if not WORKSPACE_INVITE_DIR.exists():
+        return {"items": []}
+    now = int(time.time())
+    items: list[dict[str, Any]] = []
+    with _WS_LOCK:
+        for path in sorted(WORKSPACE_INVITE_DIR.glob("*.json")):
+            if path.is_symlink() or not path.is_file():
+                continue
+            inv = _safe_json(path)
+            if (
+                inv.get("schema") == "hermes.workspace-invite/v1"
+                and inv.get("profile") == profile
+                and int(inv.get("owner_user_id") or 0) == int(owner)
+                and not inv.get("used")
+                and int(inv.get("expires_at") or 0) > now
+            ):
+                token = path.stem
+                items.append({
+                    "token": token,
+                    "invite_url": f"https://t.me/ProAIHermesBot?startapp=invite_{token}",
+                    "expires_at": int(inv["expires_at"]),
+                })
+    items.sort(key=lambda x: x["expires_at"])
+    return {"items": items}
+
+
+def _ws_revoke_invite(owner: int, profile: str, token: str) -> dict[str, Any]:
+    _owned_item(owner, profile)
+    if not INVITE_TOKEN_RE.fullmatch(token):
+        raise ControlError("invite_invalid", 400)
+    p = WORKSPACE_INVITE_DIR / f"{token}.json"
+    with _WS_LOCK:
+        inv = _safe_json(p)
+        if not inv or inv.get("profile") != profile or int(inv.get("owner_user_id") or 0) != int(owner):
+            raise ControlError("invite_not_found", 404)
+        if inv.get("used"):
+            raise ControlError("invite_already_used", 409)
+        try:
+            p.unlink()
+        except FileNotFoundError:
+            raise ControlError("invite_not_found", 404) from None
+        return {"revoked": True}
+
+
+def _ws_accept(actor: int, name: str, token: str) -> dict[str, Any]:
+    if not INVITE_TOKEN_RE.fullmatch(token):
+        raise ControlError("invite_invalid", 400)
+    p = WORKSPACE_INVITE_DIR / f"{token}.json"
+    with _WS_LOCK:
+        inv = _safe_json(p)
+        if not inv or inv.get("used"):
+            raise ControlError("invite_invalid", 404)
+        if int(inv.get("expires_at") or 0) < int(time.time()):
+            raise ControlError("invite_expired", 410)
+        owner = int(inv["owner_user_id"])
+        profile = str(inv["profile"])
+        _owned_item(owner, profile)
+        if actor == owner:
+            raise ControlError("invite_owner_invalid", 409)
+        d = _ws_state(profile, owner)
+        existing = next((m for m in d["members"] if int(m.get("user_id") or 0) == actor), None)
+        if d["members"] and not existing:
+            raise ControlError("workspace_member_limit", 409)
+
+        inv.update({"used": True, "used_by": actor, "used_at": int(time.time())})
+        _atomic_root_json(p, inv)
+
+        if not existing:
+            d["members"].append({
+                "user_id": actor,
+                "name": name[:120],
+                "role": "member",
+                "memory_access": "full",
+                "joined_at": int(time.time()),
+            })
+        _ws_write(profile, d)
+        rr = _ws_sync_env(profile, actor, True)
+
+        msg = f"К вашему ассистенту {profile} присоединился участник {name} (ID: {actor})"
+        _send_manager_telegram_message(owner, msg)
+
+        return {"accepted": True, "profile": profile, "owner_user_id": owner, "restart_required": rr}
+
+
+def _ws_remove(owner: int, profile: str, member: int) -> dict[str, Any]:
+    with _WS_LOCK:
+        _owned_item(owner, profile)
+        if int(member) == int(owner):
+            raise ControlError("workspace_owner_cannot_be_removed", 409)
+        d = _ws_state(profile, owner)
+        target = next((m for m in d.get("members", []) if int(m.get("user_id") or 0) == int(member)), None)
+        if not target:
+            raise ControlError("workspace_member_not_found", 404)
+        d["members"] = [m for m in d["members"] if int(m.get("user_id") or 0) != member]
+        d["grants"] = [g for g in d.get("grants", []) if int(g.get("member_user_id") or 0) != member]
+        d["pending"] = [q for q in d.get("pending", []) if int(q.get("member_user_id") or 0) != member]
+        _ws_write(profile, d)
+        rr = _ws_sync_env(profile, member, False)
+        return {"removed": True, "restart_required": rr}
+
+
+def _ws_grant(owner: int, profile: str, member: int, tool: str, days: int) -> dict[str, Any]:
+    with _WS_LOCK:
+        _owned_item(owner, profile)
+        if days not in {1, 7, 30}:
+            raise ControlError("grant_ttl_invalid", 400)
+        if not re.fullmatch(r"[A-Za-z0-9_.:-]{1,160}", tool):
+            raise ControlError("tool_name_invalid", 400)
+        d = _ws_state(profile, owner)
+        target = next((m for m in d.get("members", []) if int(m.get("user_id") or 0) == int(member)), None)
+        if not target:
+            raise ControlError("workspace_member_not_found", 404)
+        exp = int(time.time()) + days * 86400
+        d["grants"] = [g for g in d.get("grants", []) if not (int(g.get("member_user_id") or 0) == member and g.get("tool_name") == tool)]
+        d["grants"].append({"member_user_id": member, "tool_name": tool, "expires_at": exp})
+        d["pending"] = [q for q in d.get("pending", []) if not (int(q.get("member_user_id") or 0) == member and q.get("tool_name") == tool)]
+        _ws_write(profile, d)
+        return {"granted": True, "expires_at": exp}
+
+
+def _ws_revoke(owner: int, profile: str, member: int, tool: str) -> dict[str, Any]:
+    with _WS_LOCK:
+        _owned_item(owner, profile)
+        d = _ws_state(profile, owner)
+        target = next((m for m in d.get("members", []) if int(m.get("user_id") or 0) == int(member)), None)
+        if not target:
+            raise ControlError("workspace_member_not_found", 404)
+        d["grants"] = [g for g in d.get("grants", []) if not (int(g.get("member_user_id") or 0) == member and g.get("tool_name") == tool)]
+        _ws_write(profile, d)
+        return {"revoked": True}
+
 
 def _connections(profile: str) -> list[dict[str, Any]]:
     health = _health(profile)
@@ -1215,15 +2105,15 @@ def _connections(profile: str) -> list[dict[str, Any]]:
 
 def _authenticate(payload: dict[str, Any]) -> dict[str, Any]:
     auth = validate_init_data(str(payload.get("init_data") or ""))
-    token, expires_at = SESSIONS.create(auth["user_id"])
+    token, expires_at = SESSIONS.create(auth["user_id"], auth_date=auth["auth_date"])
     return {"session": token, "expires_at": expires_at, "user": auth["user"]}
 
 
-def _require_session(payload: dict[str, Any]) -> int:
+def _require_session(payload: dict[str, Any], sensitive: bool = False) -> int:
     token = str(payload.get("session") or "")
     if not token or len(token) > 128:
         raise ControlError("session_invalid", 401)
-    return SESSIONS.resolve(token)
+    return SESSIONS.resolve(token, sensitive=sensitive)
 
 
 def dispatch(payload: dict[str, Any]) -> dict[str, Any]:
@@ -1232,12 +2122,34 @@ def dispatch(payload: dict[str, Any]) -> dict[str, Any]:
     op = str(payload.get("op") or "")
     if op == "authenticate":
         return _authenticate(payload)
-    user_id = _require_session(payload)
+    if op == "zoom_webhook_event":
+        event = payload.get("event")
+        return _queue_zoom_event(event if isinstance(event, dict) else {})
+    if op == "logout":
+        token = str(payload.get("session") or "")
+        if not token or len(token) > 128:
+            raise ControlError("session_invalid", 401)
+        _require_session(payload, sensitive=False)
+        SESSIONS.revoke(token)
+        return {"logged_out": True}
+
+    sensitive = op in SENSITIVE_OPS
+    user_id = _require_session(payload, sensitive=sensitive)
+
     if op == "list_hermes":
         return {"items": [_public_hermes(item) for item in _owned_items(user_id)]}
-    if op == "accept_workspace_invite": return _ws_accept(user_id,str(payload.get("actor_name") or "Участник"),str(payload.get("token") or ""))
+    if op == "accept_workspace_invite":
+        try:
+            res = _ws_accept(user_id, str(payload.get("actor_name") or "Участник"), str(payload.get("token") or ""))
+            _audit_op(op, user_id, str(res.get("profile") or ""), "success")
+            return res
+        except Exception as exc:
+            _audit_op(op, user_id, "", "failed", details={"error": str(exc)[:200]})
+            raise
+
     profile = str(payload.get("profile") or "")
     item = _owned_item(user_id, profile)
+
     if op == "get_hermes":
         return _public_hermes(item)
     if op in {"health", "health_check"}:
@@ -1246,14 +2158,44 @@ def dispatch(payload: dict[str, Any]) -> dict[str, Any]:
             result["maton"] = _maton_status(profile, validate=True)
         return result
     if op == "restart":
-        return _restart(profile)
-    if op == "list_workspace_members": return _ws_public(_ws_state(profile,user_id))
-    if op == "create_workspace_invite": return _ws_invite(user_id,profile)
-    if op == "remove_workspace_member": return _ws_remove(user_id,profile,int(payload.get("member_user_id") or 0))
-    if op == "grant_workspace_tool": return _ws_grant(user_id,profile,int(payload.get("member_user_id") or 0),str(payload.get("tool_name") or ""),int(payload.get("ttl_days") or 0))
-    if op == "revoke_workspace_tool": return _ws_revoke(user_id,profile,int(payload.get("member_user_id") or 0),str(payload.get("tool_name") or ""))
+        try:
+            res = _restart(profile)
+            _audit_op("restart", user_id, profile, "success")
+            return res
+        except Exception as exc:
+            _audit_op("restart", user_id, profile, "failed", details={"error": str(exc)})
+            raise
+    if op == "list_workspace_members":
+        return _ws_public(_ws_state(profile, user_id))
+    if op == "list_workspace_invites":
+        return _ws_list_invites(user_id, profile)
+    team_ops = {
+        "create_workspace_invite": lambda: _ws_invite(user_id, profile),
+        "revoke_workspace_invite": lambda: _ws_revoke_invite(user_id, profile, str(payload.get("token") or "")),
+        "remove_workspace_member": lambda: _ws_remove(user_id, profile, int(payload.get("member_user_id") or 0)),
+        "grant_workspace_tool": lambda: _ws_grant(user_id, profile, int(payload.get("member_user_id") or 0), str(payload.get("tool_name") or ""), int(payload.get("ttl_days") or 0)),
+        "revoke_workspace_tool": lambda: _ws_revoke(user_id, profile, int(payload.get("member_user_id") or 0), str(payload.get("tool_name") or "")),
+    }
+    if op in team_ops:
+        details = {k: payload.get(k) for k in ("member_user_id", "tool_name", "ttl_days") if payload.get(k) is not None}
+        try:
+            res = team_ops[op]()
+            _audit_op(op, user_id, profile, "success", details=details)
+            return res
+        except Exception as exc:
+            _audit_op(op, user_id, profile, "failed", details={**details, "error": str(exc)[:200]})
+            raise
     if op == "list_connections":
         return {"items": _connections(profile)}
+    if op == "bind_zoom":
+        conn_id = str(payload.get("connection_id") or "").strip()
+        try:
+            res = _zoom_binding(profile, conn_id)
+            _audit_op("bind_zoom", user_id, profile, "success", details={"connection_id": conn_id})
+            return res
+        except Exception as exc:
+            _audit_op("bind_zoom", user_id, profile, "failed", details={"connection_id": conn_id, "error": str(exc)})
+            raise
     if op == "list_capabilities":
         return _capability_states(profile)
     if op == "capability_action":
@@ -1267,28 +2209,40 @@ def dispatch(payload: dict[str, Any]) -> dict[str, Any]:
         value = str(payload.get("value") or "")
         if name != "MCP_MATON_API_KEY":
             raise ControlError("secret_not_allowed", 400)
-        validation = _maton_validate(value)
-        if validation == "invalid":
-            raise ControlError("maton_key_invalid", 400)
-        if validation != "valid":
-            raise ControlError("maton_temporarily_unavailable", 503)
-        backup = _set_env_secret(profile, name, value)
         try:
-            _set_maton_enabled(profile, True)
-        except Exception:
-            _restore_secret_backup(profile, backup)
+            validation = _maton_validate(value)
+            if validation == "invalid":
+                raise ControlError("maton_key_invalid", 400)
+            if validation != "valid":
+                raise ControlError("maton_temporarily_unavailable", 503)
+            backup = _set_env_secret(profile, name, value)
+            try:
+                _set_maton_enabled(profile, True)
+            except Exception:
+                _restore_secret_backup(profile, backup)
+                raise
+            _audit_op("set_secret", user_id, profile, "success", details={"secret": name})
+            return {"secret": _secret_status(profile, name), "connection": _maton_status(profile), "restart_required": True}
+        except Exception as exc:
+            _audit_op("set_secret", user_id, profile, "failed", details={"secret": name, "error": str(exc)})
             raise
-        return {"secret": _secret_status(profile, name), "connection": _maton_status(profile), "restart_required": True}
     if op == "delete_secret":
         name = str(payload.get("name") or "")
-        backup = _delete_env_secret(profile, name)
+        if name not in ALLOWED_PERSONAL_SECRETS:
+            raise ControlError("secret_not_allowed", 400)
         try:
-            if name == "MCP_MATON_API_KEY":
-                _set_maton_enabled(profile, False)
-        except Exception:
-            _restore_secret_backup(profile, backup)
+            backup = _delete_env_secret(profile, name)
+            try:
+                if name == "MCP_MATON_API_KEY":
+                    _set_maton_enabled(profile, False)
+            except Exception:
+                _restore_secret_backup(profile, backup)
+                raise
+            _audit_op("delete_secret", user_id, profile, "success", details={"secret": name})
+            return {"secret": _secret_status(profile, name), "restart_required": True}
+        except Exception as exc:
+            _audit_op("delete_secret", user_id, profile, "failed", details={"secret": name, "error": str(exc)})
             raise
-        return {"secret": _secret_status(profile, name), "restart_required": True}
     if op == "test_connection":
         connection_id = str(payload.get("connection_id") or "")
         if connection_id != "maton":

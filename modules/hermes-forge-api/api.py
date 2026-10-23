@@ -3,11 +3,16 @@
 from __future__ import annotations
 
 import importlib.util
+import hashlib
+import hmac
 import json
 import mimetypes
 import os
 import re
 import socket
+import socketserver
+import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -16,12 +21,22 @@ CONTROL_SOCKET = Path(os.environ.get("FORGE_CONTROL_SOCKET", "/run/proai-hermes-
 STATIC_ROOT = Path(__file__).resolve().parent / "static"
 LISTEN_HOST = os.environ.get("FORGE_API_HOST", "127.0.0.1")
 LISTEN_PORT = int(os.environ.get("FORGE_API_PORT", "8650"))
+LISTEN_SOCKET = os.environ.get("LISTEN_SOCKET", "").strip()
 MAX_BODY = 64 * 1024
+ZOOM_WEBHOOK_SECRET_ENV = "ZOOM_WEBHOOK_SECRET_TOKEN"
+ZOOM_WEBHOOK_MAX_SKEW_SECONDS = 5 * 60
+ZOOM_WEBHOOK_EVENTS = frozenset({
+    "meeting.ended",
+    "recording.completed",
+    "recording.transcript_completed",
+})
 CATALOG_PATH = Path(os.environ.get("FORGE_CATALOG_PATH", "/opt/proai-hermes-forge-catalog/current/catalog.json"))
 MAX_CATALOG_BYTES = 512 * 1024
-PROFILE_RE = re.compile(r"^[a-z0-9_-]{2,40}$")
+PROFILE_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{1,39}$")
 SECRET_RE = re.compile(r"^[A-Z][A-Z0-9_]{2,80}$")
+ALLOWED_PERSONAL_SECRETS = frozenset({"MCP_MATON_API_KEY"})
 CATALOG_DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
+_HANDLER_SEMAPHORE = threading.Semaphore(32)
 
 
 class ApiError(RuntimeError):
@@ -29,6 +44,71 @@ class ApiError(RuntimeError):
         super().__init__(code)
         self.code = code
         self.status = status
+
+
+def _zoom_webhook_secret() -> str:
+    value = str(os.environ.get(ZOOM_WEBHOOK_SECRET_ENV) or "").strip()
+    if len(value) < 20 or len(value) > 512:
+        raise ApiError("zoom_webhook_unconfigured", 503)
+    return value
+
+
+def _zoom_webhook_signature_valid(headers: Any, raw: bytes, *, now: int | None = None) -> bool:
+    timestamp = str(headers.get("x-zm-request-timestamp") or "").strip()
+    signature = str(headers.get("x-zm-signature") or "").strip()
+    try:
+        stamp = int(timestamp)
+    except (TypeError, ValueError):
+        return False
+    current = int(time.time()) if now is None else int(now)
+    if abs(current - stamp) > ZOOM_WEBHOOK_MAX_SKEW_SECONDS:
+        return False
+    secret = _zoom_webhook_secret()
+    message = b"v0:" + timestamp.encode("ascii") + b":" + raw
+    expected = "v0=" + hmac.new(secret.encode("utf-8"), message, hashlib.sha256).hexdigest()
+    return hmac.compare_digest(signature, expected)
+
+
+def _zoom_webhook_payload(raw: bytes) -> dict[str, Any]:
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        raise ApiError("zoom_webhook_json_invalid", 400) from None
+    if not isinstance(payload, dict):
+        raise ApiError("zoom_webhook_json_invalid", 400)
+    return payload
+
+
+def _zoom_validation_response(payload: dict[str, Any]) -> dict[str, str]:
+    plain = str(((payload.get("payload") or {}).get("plainToken") or "")).strip()
+    if not plain or len(plain) > 512:
+        raise ApiError("zoom_validation_invalid", 400)
+    digest = hmac.new(_zoom_webhook_secret().encode("utf-8"), plain.encode("utf-8"), hashlib.sha256).hexdigest()
+    return {"plainToken": plain, "encryptedToken": digest}
+
+
+def _zoom_event_envelope(payload: dict[str, Any]) -> dict[str, Any] | None:
+    event = str(payload.get("event") or "").strip()
+    if event not in ZOOM_WEBHOOK_EVENTS:
+        return None
+    outer = payload.get("payload")
+    obj = outer.get("object") if isinstance(outer, dict) else None
+    if not isinstance(outer, dict) or not isinstance(obj, dict):
+        raise ApiError("zoom_event_invalid", 400)
+    account_id = str(outer.get("account_id") or obj.get("account_id") or "").strip()
+    host_id = str(obj.get("host_id") or "").strip()
+    meeting_uuid = str(obj.get("uuid") or "").strip()
+    meeting_id = str(obj.get("id") or "").strip()
+    if not account_id or not host_id or not meeting_uuid or not meeting_id:
+        raise ApiError("zoom_event_invalid", 400)
+    return {
+        "event": event,
+        "event_ts": int(payload.get("event_ts") or 0),
+        "account_id": account_id[:128],
+        "host_id": host_id[:128],
+        "meeting_id": meeting_id[:64],
+        "meeting_uuid": meeting_uuid[:256],
+    }
 
 
 def _load_kitchen_module() -> Any:
@@ -49,14 +129,14 @@ def _load_kitchen_module() -> Any:
 KITCHEN = _load_kitchen_module()
 
 
-def call_control(payload: dict[str, Any]) -> dict[str, Any]:
+def call_control(payload: dict[str, Any], *, timeout: float = 90.0) -> dict[str, Any]:
     raw = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8") + b"\n"
     if len(raw) > MAX_BODY:
         raise ApiError("request_too_large", 413)
     client: socket.socket | None = None
     try:
         client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        client.settimeout(90)
+        client.settimeout(timeout)
         client.connect(str(CONTROL_SOCKET))
         client.sendall(raw)
         response = b""
@@ -206,12 +286,14 @@ def route(method: str, path: str, body: dict[str, Any], headers: Any) -> tuple[i
     if method == "POST" and path == "/v1/kitchen/preview":
         return 200, _kitchen_preview(body)
     session = _session(headers)
+    if method == "POST" and path == "/v1/auth/logout":
+        return 200, call_control({"op": "logout", "session": session})
     if method == "POST" and path.startswith("/v1/invites/") and path.endswith("/accept"):
         token=path[len("/v1/invites/"):-len("/accept")].strip("/")
         return 200, call_control({"op":"accept_workspace_invite","session":session,"token":token,"actor_name":str(body.get("actor_name") or "Участник")})
     if method == "GET" and path == "/v1/hermes":
         return 200, call_control({"op": "list_hermes", "session": session})
-    match = re.fullmatch(r"/v1/hermes/([a-z0-9_-]{2,40})(?:/(.*))?", path)
+    match = re.fullmatch(r"/v1/hermes/([a-z0-9][a-z0-9_-]{1,39})(?:/(.*))?", path)
     if not match:
         raise ApiError("not_found", 404)
     profile, suffix = match.group(1), match.group(2) or ""
@@ -226,6 +308,14 @@ def route(method: str, path: str, body: dict[str, Any], headers: Any) -> tuple[i
         return 200, call_control({"op": "health_check", **base})
     if method == "POST" and suffix == "restart":
         return 200, call_control({"op": "restart", **base})
+    if method == "GET" and suffix == "invites":
+        return 200, call_control({"op": "list_workspace_invites", **base})
+    m_inv = re.fullmatch(r"invites/([A-Za-z0-9_-]{16,64})", suffix)
+    if method == "DELETE" and m_inv:
+        return 200, call_control({"op": "revoke_workspace_invite", **base, "token": m_inv.group(1)})
+    m_inv_rev = re.fullmatch(r"invites/([A-Za-z0-9_-]{16,64})/revoke", suffix)
+    if method == "POST" and m_inv_rev:
+        return 200, call_control({"op": "revoke_workspace_invite", **base, "token": m_inv_rev.group(1)})
     if method == "GET" and suffix == "members": return 200, call_control({"op":"list_workspace_members",**base})
     if method == "POST" and suffix == "members/invite": return 200, call_control({"op":"create_workspace_invite",**base})
     m=re.fullmatch(r"members/(\d{5,20})",suffix)
@@ -235,6 +325,9 @@ def route(method: str, path: str, body: dict[str, Any], headers: Any) -> tuple[i
     if method == "DELETE" and g: return 200, call_control({"op":"revoke_workspace_tool",**base,"member_user_id":int(g.group(1)),"tool_name":str(body.get("tool_name") or "")})
     if method == "GET" and suffix == "connections":
         return 200, call_control({"op": "list_connections", **base})
+    if method == "POST" and suffix == "connections/zoom/bind":
+        requested = str(body.get("connection_id") or "").strip()
+        return 200, call_control({"op": "bind_zoom", **base, "connection_id": requested})
     if method == "GET" and suffix == "capabilities":
         return 200, call_control({"op": "list_capabilities", **base})
     capability_action = re.fullmatch(r"capabilities/([a-z0-9-]{2,64})/(enable|disable)", suffix)
@@ -246,8 +339,10 @@ def route(method: str, path: str, body: dict[str, Any], headers: Any) -> tuple[i
         })
     if method == "GET" and suffix == "secrets":
         return 200, call_control({"op": "list_secrets", **base})
-    secret = re.fullmatch(r"secrets/([A-Z][A-Z0-9_]{2,80})", suffix)
-    if secret and SECRET_RE.fullmatch(secret.group(1)):
+    if suffix.startswith("secrets/"):
+        secret = re.fullmatch(r"secrets/([A-Z][A-Z0-9_]{2,80})", suffix)
+        if not secret or not SECRET_RE.fullmatch(secret.group(1)) or secret.group(1) not in ALLOWED_PERSONAL_SECRETS:
+            raise ApiError("secret_not_allowed", 400)
         name = secret.group(1)
         if method == "PUT":
             value = body.get("value")
@@ -265,6 +360,17 @@ def route(method: str, path: str, body: dict[str, Any], headers: Any) -> tuple[i
 class Handler(BaseHTTPRequestHandler):
     server_version = "HermesForge/0.1"
     sys_version = ""
+    timeout = 10
+
+    def address_string(self) -> str:
+        if isinstance(self.client_address, str):
+            return self.client_address or "unix"
+        if not self.client_address:
+            return "unix"
+        try:
+            return super().address_string()
+        except Exception:
+            return "unknown"
 
     def log_message(self, format: str, *args: Any) -> None:
         # Never let stdlib access logging accidentally include Authorization or bodies.
@@ -306,6 +412,38 @@ class Handler(BaseHTTPRequestHandler):
             raise ApiError("json_object_required", 400)
         return payload
 
+    def _raw_body(self) -> bytes:
+        raw_length = self.headers.get("Content-Length")
+        if raw_length is None:
+            return b""
+        try:
+            length = int(raw_length)
+        except ValueError:
+            raise ApiError("content_length_invalid", 400) from None
+        if length < 0 or length > MAX_BODY:
+            raise ApiError("request_too_large", 413)
+        return self.rfile.read(length)
+
+    def _zoom_webhook(self) -> None:
+        try:
+            raw = self._raw_body()
+            if not _zoom_webhook_signature_valid(self.headers, raw):
+                raise ApiError("zoom_webhook_signature_invalid", 401)
+            payload = _zoom_webhook_payload(raw)
+            if str(payload.get("event") or "") == "endpoint.url_validation":
+                self._json(200, _zoom_validation_response(payload))
+                return
+            envelope = _zoom_event_envelope(payload)
+            if envelope is None:
+                self._json(200, {"ok": True, "ignored": True})
+                return
+            result = call_control({"op": "zoom_webhook_event", "event": envelope}, timeout=2.0)
+            self._json(200, {"ok": True, "result": result})
+        except ApiError as exc:
+            self._json(exc.status, {"ok": False, "error": exc.code})
+        except Exception:
+            self._json(500, {"ok": False, "error": "internal_error"})
+
     def _api(self) -> None:
         try:
             body = self._body() if self.command in {"POST", "PUT", "DELETE"} else {}
@@ -330,7 +468,11 @@ class Handler(BaseHTTPRequestHandler):
         raw = file.read_bytes()
         self.send_response(200)
         self._security_headers()
-        self.send_header("Content-Security-Policy", "default-src 'self'; script-src 'self' https://telegram.org; style-src 'self'; connect-src 'self'; img-src 'self' data:; frame-ancestors *")
+        csp = (
+            "default-src 'self'; script-src 'self' https://telegram.org; style-src 'self'; connect-src 'self'; img-src 'self' data:; "
+            "frame-ancestors https://web.telegram.org https://*.telegram.org; base-uri 'none'; form-action 'none'; object-src 'none'"
+        )
+        self.send_header("Content-Security-Policy", csp)
         self.send_header("Content-Type", (mimetypes.guess_type(name)[0] or "application/octet-stream") + ("; charset=utf-8" if name.endswith((".html", ".js", ".css")) else ""))
         self.send_header("Content-Length", str(len(raw)))
         self.end_headers()
@@ -343,6 +485,9 @@ class Handler(BaseHTTPRequestHandler):
             self._static()
 
     def do_POST(self) -> None:
+        if urllib_path(self.path) == "/v1/webhooks/zoom":
+            self._zoom_webhook()
+            return
         self._api()
 
     def do_PUT(self) -> None:
@@ -356,12 +501,69 @@ def urllib_path(value: str) -> str:
     return value.split("?", 1)[0]
 
 
+class BoundedThreadingMixIn:
+    def process_request(self, request: Any, client_address: Any) -> None:
+        if not _HANDLER_SEMAPHORE.acquire(blocking=False):
+            try:
+                err_body = b'{"ok":false,"error":"server_overloaded"}'
+                resp = (
+                    b"HTTP/1.1 503 Service Unavailable\r\n"
+                    b"Content-Type: application/json; charset=utf-8\r\n"
+                    b"Connection: close\r\n"
+                    b"Content-Length: " + str(len(err_body)).encode("ascii") + b"\r\n\r\n" + err_body
+                )
+                if hasattr(request, "sendall"):
+                    request.sendall(resp)
+            except Exception:
+                pass
+            finally:
+                self.shutdown_request(request)
+            return
+        super().process_request(request, client_address)
+
+    def process_request_thread(self, request: Any, client_address: Any) -> None:
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            _HANDLER_SEMAPHORE.release()
+
+
+class BoundedThreadingHTTPServer(BoundedThreadingMixIn, ThreadingHTTPServer):
+    daemon_threads = True
+
+
+class BoundedThreadingUnixHTTPServer(BoundedThreadingMixIn, socketserver.UnixStreamServer):
+    daemon_threads = True
+
+
 def serve() -> None:
     if os.geteuid() == 0:
         raise SystemExit("refusing to run public API as root")
-    server = ThreadingHTTPServer((LISTEN_HOST, LISTEN_PORT), Handler)
-    server.daemon_threads = True
-    server.serve_forever(poll_interval=0.5)
+    if LISTEN_SOCKET:
+        sock_path = Path(LISTEN_SOCKET)
+        sock_path.parent.mkdir(parents=True, exist_ok=True, mode=0o750)
+        if sock_path.is_symlink() or sock_path.is_file() or sock_path.is_socket():
+            sock_path.unlink()
+        server = BoundedThreadingUnixHTTPServer(str(sock_path), Handler)
+        try:
+            os.chmod(str(sock_path), 0o660)
+            try:
+                import grp
+                www_gid = grp.getgrnam("www-data").gr_gid
+                os.chown(str(sock_path), -1, www_gid)
+            except Exception:
+                pass
+            server.serve_forever(poll_interval=0.5)
+        finally:
+            server.server_close()
+            try:
+                if sock_path.exists():
+                    sock_path.unlink()
+            except OSError:
+                pass
+    else:
+        server = BoundedThreadingHTTPServer((LISTEN_HOST, LISTEN_PORT), Handler)
+        server.serve_forever(poll_interval=0.5)
 
 
 if __name__ == "__main__":

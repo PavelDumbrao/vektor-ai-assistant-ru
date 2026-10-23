@@ -48,7 +48,7 @@ def test_restart_uses_native_sigusr1_reload_and_waits_for_new_pid(monkeypatch):
     monkeypatch.setattr(control.subprocess, "run", run)
     result = control._restart("pavel")
     assert result["healthy"] is True
-    assert calls[0][0] == ["/usr/bin/systemctl", "reload", "pavel-hermes.service"]
+    assert calls[0][0] == ["/usr/bin/systemctl", "reload", "--", "pavel-hermes.service"]
     assert all("restart" not in call[0] for call in calls)
     assert ("MainPID",) in properties
 

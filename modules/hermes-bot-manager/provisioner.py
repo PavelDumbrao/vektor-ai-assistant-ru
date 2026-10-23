@@ -42,6 +42,21 @@ TOKEN_RE = re.compile(r"^\d{5,}:[A-Za-z0-9_-]{20,}$")
 REQUIRED_PLATFORM_KEYS = ("LLM_API_KEY", "FALLBACK_LLM_API_KEY", "GEMINI_LLM_API_KEY")
 OPTIONAL_PLATFORM_KEYS = ("OPENROUTER_API_KEY", "TAVILY_API_KEY", "GRSAI_API_KEY", "PROAISAVER_MCP_TOKEN",
                           "LINGSUAN_OPUS_KEY", "UNOROUTER_API_KEY", "ELEVENLABS_API_KEY")
+LANECTL = Path("/usr/local/sbin/lanectl")
+LANES_PATH = Path("/etc/proai-keybroker/lanes.json")
+LANE_LIMITS = ("--elevenlabs-chars", "15000", "--rpm", "60")
+BROKER_PLACEHOLDERS = {
+    "LLM_API_KEY": "keybroker-lingsuan",
+    "FALLBACK_LLM_API_KEY": "keybroker-lingsuan-fb",
+    "LINGSUAN_OPUS_KEY": "keybroker-lingsuan-opus",
+    "UNOROUTER_API_KEY": "keybroker-unorouter",
+    "OPENROUTER_API_KEY": "keybroker-openrouter",
+    "ELEVENLABS_API_KEY": "keybroker-elevenlabs",
+    "GRSAI_API_KEY": "keybroker-grsai",
+    "PROAISAVER_MCP_TOKEN": "keybroker-saver",
+    "GEMINI_LLM_API_KEY": "keybroker-gemini",
+}
+BROKER_PASSTHROUGH_KEYS = ("TAVILY_API_KEY",)
 
 
 class ProvisionError(RuntimeError):
@@ -140,7 +155,33 @@ def _ensure_private_dir(path: Path, entry: pwd.struct_passwd) -> None:
     os.chmod(path, 0o700)
 
 
-def _render_profile(instance: HermesInstance, entry: pwd.struct_passwd) -> Path:
+def _read_lane_port(owner: str) -> int:
+    if LANES_PATH.is_symlink() or not LANES_PATH.is_file():
+        raise ProvisionError("broker_lane_unavailable")
+    try:
+        data = json.loads(LANES_PATH.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise ProvisionError("broker_lane_unavailable") from exc
+    lanes = data.get("lanes", []) if isinstance(data, dict) else []
+    lane = next((l for l in lanes if isinstance(l, dict) and l.get("client") == owner), None)
+    if not lane:
+        raise ProvisionError("broker_lane_unavailable")
+    port = lane.get("port")
+    if not isinstance(port, int) or isinstance(port, bool) or not (1024 <= port <= 65535):
+        raise ProvisionError("broker_lane_unavailable")
+    return port
+
+
+def _allocate_broker_lane(instance: HermesInstance, entry: pwd.struct_passwd) -> int:
+    cmd = [str(LANECTL), "add", "--client", instance.owner_linux, *LANE_LIMITS]
+    try:
+        _run(cmd, timeout=60)
+    except ProvisionError:
+        pass
+    return _read_lane_port(instance.owner_linux)
+
+
+def _render_profile(instance: HermesInstance, entry: pwd.struct_passwd, broker_port: int) -> Path:
     template_root = MANAGER_ROOT / "templates" / "personal"
     hermes = Path(entry.pw_dir) / ".hermes"
     for relative in (
@@ -159,6 +200,7 @@ def _render_profile(instance: HermesInstance, entry: pwd.struct_passwd) -> Path:
         "@TECH_ADMIN_TELEGRAM_ID@": str(TECH_ADMIN_ID),
         "@BOT_NAME@": instance.bot_name,
         "@BOT_USERNAME@": instance.bot_username,
+        "@BROKER_PORT@": str(broker_port),
     }
     for name in ("config.yaml", "SOUL.md", "USER.md"):
         source = template_root / name
@@ -179,14 +221,21 @@ def _ensure_profile_env(
     hermes: Path,
     token: str,
     platform_values: dict[str, str],
+    broker_port: int,
 ) -> None:
     path = hermes / ".env"
     existing = _read_env(path) if path.is_file() and not path.is_symlink() else {}
     if existing.get("TELEGRAM_BOT_TOKEN") not in (None, "", token):
         raise ProvisionError("telegram_token_conflict")
     desired = dict(existing)
-    desired.update(platform_values)
+    desired.update({k: v for k, v in platform_values.items() if k in BROKER_PASSTHROUGH_KEYS})
+    desired.update(BROKER_PLACEHOLDERS)
+    desired.pop("MINIMAX_API_KEY", None)
     desired.update({
+        "GRSAI_BASE_URL": f"http://127.0.0.1:{broker_port}/grsai",
+        "LINGSUAN_IMAGE_BASE_URL": f"http://127.0.0.1:{broker_port}/lingsuan-image",
+        "LIVING_MEMORY_FALLBACK_BASE": f"http://127.0.0.1:{broker_port}/lingsuan-opus/v1",
+        "HERMES_OPENROUTER_STT_ENDPOINT": f"http://127.0.0.1:{broker_port}/stt/v1/audio/transcriptions",
         "TELEGRAM_BOT_TOKEN": token,
         "TELEGRAM_ALLOWED_USERS": f"{instance.owner_telegram_id},{TECH_ADMIN_ID}",
         "MCP_MATON_API_KEY": existing.get("MCP_MATON_API_KEY", ""),
@@ -220,6 +269,8 @@ def _ensure_proaisaver_header(entry: pwd.struct_passwd, hermes: Path, platform_v
             inside = False
         if inside and line.strip().startswith("Authorization:"):
             current = line.split("Bearer", 1)[1].strip().strip("\"'") if "Bearer" in line else ""
+            if current.startswith("keybroker-"):
+                return
             if current == token:
                 return
             if current:
@@ -607,8 +658,9 @@ def provision(instance: HermesInstance, token_file: Path | None = None) -> dict[
     try:
         living_memory.require_platform_keys(platform_values)
         entry = _ensure_account(instance.owner_linux)
-        hermes = _render_profile(instance, entry)
-        _ensure_profile_env(instance, entry, hermes, token, platform_values)
+        broker_port = _allocate_broker_lane(instance, entry)
+        hermes = _render_profile(instance, entry, broker_port)
+        _ensure_profile_env(instance, entry, hermes, token, platform_values, broker_port)
         _ensure_proaisaver_header(entry, hermes, platform_values)
         _install_profile_hooks(instance, entry, hermes)
         _bind_runtime(instance, entry, hermes, release)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -52,6 +53,7 @@ def test_provision_runs_bounded_steps_in_order(monkeypatch, tmp_path):
     monkeypatch.setattr(provisioner, "_receipt_path", lambda *_: tmp_path / "receipt.json")
     monkeypatch.setattr(provisioner, "_record", lambda _i, state, **_k: calls.append("record:" + state))
     monkeypatch.setattr(provisioner, "_ensure_account", lambda *_: entry)
+    monkeypatch.setattr(provisioner, "_allocate_broker_lane", lambda *_: calls.append("lane") or 21001)
     monkeypatch.setattr(provisioner, "_render_profile", lambda *_: calls.append("profile") or hermes)
     monkeypatch.setattr(provisioner, "_ensure_profile_env", lambda *_: calls.append("env"))
     monkeypatch.setattr(provisioner, "_ensure_proaisaver_header", lambda *_: calls.append("saver-header"))
@@ -75,7 +77,7 @@ def test_provision_runs_bounded_steps_in_order(monkeypatch, tmp_path):
     assert result["state"] == "active"
     assert result["health"]["living_memory"]["timer_enabled"] is True
     assert calls == [
-        "record:provisioning", "profile", "env", "saver-header", "hooks", "runtime", "lazy", "service",
+        "record:provisioning", "lane", "profile", "env", "saver-header", "hooks", "runtime", "lazy", "service",
         "database", "secretary", "workspace-members", "maton", "voice-picker", "grsai",
         "memory-prepare", "memory-check", "start", "health", "memory-enable",
         "record:active",
@@ -124,6 +126,7 @@ def test_memory_or_startup_failure_never_publishes_ready(monkeypatch, tmp_path, 
     monkeypatch.setattr(provisioner, '_instance_path', lambda *_: tmp_path/'instance.json')
     monkeypatch.setattr(provisioner, '_record', lambda _i, state, **kw: states.append((state, kw)))
     monkeypatch.setattr(provisioner, '_ensure_account', lambda *_: SimpleNamespace())
+    monkeypatch.setattr(provisioner, '_allocate_broker_lane', lambda *a: 21001)
     for name in ('_render_profile', '_ensure_profile_env', '_ensure_proaisaver_header', '_install_profile_hooks', '_bind_runtime',
         '_prepare_lazy_packages', '_install_service', '_provision_database', '_install_passive_secretary', '_install_workspace_members',
         '_install_maton', '_install_voice_picker', '_install_grsai', '_prepare_living_memory'):
@@ -193,9 +196,139 @@ def test_render_profile_precreates_private_shared_metrics_paths(monkeypatch, tmp
     home = tmp_path / "h503899482"
     entry = SimpleNamespace(
         pw_uid=os.getuid(), pw_gid=os.getgid(), pw_dir=str(home), pw_name="h503899482")
-    hermes = provisioner._render_profile(instance(), entry)
+    hermes = provisioner._render_profile(instance(), entry, 21001)
     for relative in ("telemetry", "telemetry/shared_metrics", "telemetry/shared_metrics/outbox"):
         path = hermes / relative
         assert path.is_dir() and not path.is_symlink()
         assert path.stat().st_uid == os.getuid()
         assert path.stat().st_mode & 0o077 == 0
+
+
+def test_ensure_profile_env(monkeypatch, tmp_path):
+    hermes = tmp_path / ".hermes"
+    hermes.mkdir(parents=True)
+    entry = SimpleNamespace(pw_uid=1001, pw_gid=1001, pw_dir=str(tmp_path), pw_name="h503899482")
+    token = "9000000001:AAABBBCCCDDDEEEFFFGGGHHHJJJ"
+    platform_values = {
+        "LLM_API_KEY": "sk-real-secret-llm-key-long-value-12345",
+        "FALLBACK_LLM_API_KEY": "sk-real-secret-fallback-key-67890",
+        "GEMINI_LLM_API_KEY": "sk-real-secret-gemini-key-11111",
+        "OPENROUTER_API_KEY": "sk-real-secret-openrouter-key-22222",
+        "ELEVENLABS_API_KEY": "sk-real-secret-elevenlabs-key-33333",
+        "GRSAI_API_KEY": "sk-real-secret-grsai-key-44444",
+        "PROAISAVER_MCP_TOKEN": "sk-real-secret-proaisaver-token-55555",
+        "LINGSUAN_OPUS_KEY": "sk-real-secret-lingsuan-opus-66666",
+        "UNOROUTER_API_KEY": "sk-real-secret-unorouter-77777",
+        "MINIMAX_API_KEY": "sk-real-secret-minimax-88888",
+        "TAVILY_API_KEY": "tvly-real-secret-tavily-key-99999",
+    }
+    monkeypatch.setattr(provisioner, "_atomic_write", lambda p, c, **k: p.write_text(c, encoding="utf-8"))
+    broker_port = 21001
+    provisioner._ensure_profile_env(instance(), entry, hermes, token, platform_values, broker_port)
+
+    env_path = hermes / ".env"
+    env_content = env_path.read_text(encoding="utf-8")
+    env_dict = provisioner._read_env(env_path)
+
+    for key, secret in platform_values.items():
+        if key == "TAVILY_API_KEY":
+            assert env_dict.get(key) == secret
+            assert secret in env_content
+        else:
+            assert secret not in env_content
+            assert env_dict.get(key) != secret
+
+    for key, placeholder in provisioner.BROKER_PLACEHOLDERS.items():
+        assert env_dict.get(key) == placeholder
+
+    assert env_dict.get("GRSAI_BASE_URL") == f"http://127.0.0.1:{broker_port}/grsai"
+    assert env_dict.get("LINGSUAN_IMAGE_BASE_URL") == f"http://127.0.0.1:{broker_port}/lingsuan-image"
+    assert env_dict.get("LIVING_MEMORY_FALLBACK_BASE") == f"http://127.0.0.1:{broker_port}/lingsuan-opus/v1"
+    assert env_dict.get("HERMES_OPENROUTER_STT_ENDPOINT") == f"http://127.0.0.1:{broker_port}/stt/v1/audio/transcriptions"
+
+    assert "MINIMAX_API_KEY" not in env_dict
+    assert env_dict.get("TELEGRAM_BOT_TOKEN") == token
+
+
+def test_ensure_proaisaver_header(monkeypatch, tmp_path):
+    hermes = tmp_path / ".hermes"
+    hermes.mkdir(parents=True)
+    entry = SimpleNamespace(pw_uid=1001, pw_gid=1001, pw_dir=str(tmp_path), pw_name="h503899482")
+    monkeypatch.setattr(provisioner, "_atomic_write", lambda p, c, **k: p.write_text(c, encoding="utf-8"))
+
+    # Config with Authorization: Bearer keybroker-saver remains untouched and does not raise proaisaver_token_conflict
+    config_file = hermes / "config.yaml"
+    template_with_broker = (
+        "mcp_servers:\n"
+        "  proaisaver:\n"
+        "    enabled: true\n"
+        "    url: http://127.0.0.1:21001/saver/mcp/\n"
+        "    headers:\n"
+        "      Authorization: Bearer keybroker-saver\n"
+    )
+    config_file.write_text(template_with_broker, encoding="utf-8")
+    provisioner._ensure_proaisaver_header(entry, hermes, {"PROAISAVER_MCP_TOKEN": "real-saver-secret-token"})
+    assert config_file.read_text(encoding="utf-8") == template_with_broker
+
+    # Config with empty Bearer is populated as before
+    template_empty_bearer = (
+        "mcp_servers:\n"
+        "  proaisaver:\n"
+        "    enabled: true\n"
+        "    headers:\n"
+        "      Authorization: Bearer\n"
+    )
+    config_file.write_text(template_empty_bearer, encoding="utf-8")
+    provisioner._ensure_proaisaver_header(entry, hermes, {"PROAISAVER_MCP_TOKEN": "real-saver-secret-token"})
+    assert "Authorization: Bearer real-saver-secret-token" in config_file.read_text(encoding="utf-8")
+
+
+def test_allocate_broker_lane(monkeypatch, tmp_path):
+    lanes_file = tmp_path / "lanes.json"
+    monkeypatch.setattr(provisioner, "LANES_PATH", lanes_file)
+    entry = SimpleNamespace(pw_uid=1001, pw_gid=1001, pw_dir=str(tmp_path), pw_name="h503899482")
+    inst = instance()
+    run_calls = []
+
+    # (a) Successful add -> port from file
+    lanes_file.write_text(json.dumps({"lanes": [{"client": inst.owner_linux, "port": 21005}]}), encoding="utf-8")
+    monkeypatch.setattr(provisioner, "_run", lambda args, **k: run_calls.append(args))
+    port = provisioner._allocate_broker_lane(inst, entry)
+    assert port == 21005
+    assert len(run_calls) == 1
+    assert run_calls[0] == [str(provisioner.LANECTL), "add", "--client", inst.owner_linux, *provisioner.LANE_LIMITS]
+
+    # (b) _run raises ProvisionError, lane exists in file -> return its port
+    lanes_file.write_text(json.dumps({"lanes": [{"client": inst.owner_linux, "port": 21010}]}), encoding="utf-8")
+    def failing_run(*args, **kwargs):
+        raise provisioner.ProvisionError("subprocess_failed:lanectl")
+    monkeypatch.setattr(provisioner, "_run", failing_run)
+    assert provisioner._allocate_broker_lane(inst, entry) == 21010
+
+    # (c) Lane missing in file -> ProvisionError("broker_lane_unavailable")
+    lanes_file.write_text(json.dumps({"lanes": [{"client": "other-user", "port": 21015}]}), encoding="utf-8")
+    with pytest.raises(provisioner.ProvisionError, match="broker_lane_unavailable"):
+        provisioner._allocate_broker_lane(inst, entry)
+
+
+def test_render_profile_replaces_broker_port(monkeypatch, tmp_path):
+    template_dir = tmp_path / "templates" / "personal"
+    template_dir.mkdir(parents=True)
+    (template_dir / "config.yaml").write_text("url: http://127.0.0.1:@BROKER_PORT@/test\n", encoding="utf-8")
+    (template_dir / "SOUL.md").write_text("Hello @OWNER@ on port @BROKER_PORT@\n", encoding="utf-8")
+    (template_dir / "USER.md").write_text("User @OWNER@\n", encoding="utf-8")
+
+    monkeypatch.setattr(provisioner, "MANAGER_ROOT", tmp_path)
+    monkeypatch.setattr(provisioner, "_atomic_write", lambda p, c, **k: p.write_text(c, encoding="utf-8"))
+
+    home = tmp_path / "home" / "h503899482"
+    entry = SimpleNamespace(pw_uid=1001, pw_gid=1001, pw_dir=str(home), pw_name="h503899482")
+
+    hermes = provisioner._render_profile(instance(), entry, 21042)
+    rendered_cfg = (hermes / "config.yaml").read_text(encoding="utf-8")
+    assert "http://127.0.0.1:21042/test" in rendered_cfg
+    assert "@BROKER_PORT@" not in rendered_cfg
+
+    rendered_soul = (hermes / "SOUL.md").read_text(encoding="utf-8")
+    assert "21042" in rendered_soul
+    assert "@BROKER_PORT@" not in rendered_soul

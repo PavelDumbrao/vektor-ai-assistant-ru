@@ -1,0 +1,21 @@
+{
+  "lanes": [
+    {
+      "client": "bebov",
+      "uid": 1009,
+      "port": 21001,
+      "limits": {
+        "elevenlabs_chars_month": 60000,
+        "rpm": 90
+      }
+    },
+    {
+      "client": "client2",
+      "uid": 1010,
+      "port": 21002,
+      "limits": {
+        "rpm": 60
+      }
+    }
+  ]
+}

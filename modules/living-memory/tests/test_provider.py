@@ -127,3 +127,17 @@ def test_curate_batch_fallback_uses_configured_fallback(monkeypatch,tmp_path):
     assert out["operations"] == []
     assert seen["provider"] == "openrouter"
     assert meta["route"] == "fallback_contract_retry"
+
+
+def test_resolve_routes_fallback_base_follows_env_override(monkeypatch,tmp_path):
+    # Key-broker profiles point the preferred Sonnet fallback at their lane; the env is read at call time
+    # because Hermes loads .env after this module is imported.
+    monkeypatch.setattr(provider,"_hermes_imports",lambda home:(lambda **kw:None,lambda e:e.get("_resolved_key"),lambda **kw:None))
+    monkeypatch.setenv("LINGSUAN_OPUS_KEY","keybroker-lingsuan-opus")
+    monkeypatch.setenv("LIVING_MEMORY_FALLBACK_BASE","http://127.0.0.1:21001/lingsuan-opus/v1/")
+    cfg={"model":{"default":"gpt-6.1-sol","base_url":"http://127.0.0.1:21001/lingsuan/v1","api_key":"keybroker-lingsuan"},"fallback_providers":[]}
+    primary,fallback=provider.resolve_routes(tmp_path,cfg)
+    assert primary["base_url"] == "http://127.0.0.1:21001/lingsuan/v1"
+    assert fallback["model"] == "claude-sonnet-5-5"
+    assert fallback["base_url"] == "http://127.0.0.1:21001/lingsuan-opus/v1"
+    assert fallback["api_key"] != primary["api_key"]

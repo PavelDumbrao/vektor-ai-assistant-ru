@@ -1,12 +1,12 @@
 model:
   provider: custom
-  base_url: https://lingsuan.top/v1
+  base_url: http://127.0.0.1:@BROKER_PORT@/lingsuan/v1
   default: gpt-6.1-sol
   api_key: ${LLM_API_KEY}
   context_length: 180000
 providers:
   lingsuan-vision:
-    api: https://lingsuan.top/v1
+    api: http://127.0.0.1:@BROKER_PORT@/lingsuan/v1
     key_env: LLM_API_KEY
     transport: chat_completions
     models:
@@ -15,14 +15,14 @@ providers:
       gpt-6.1-sol:
         supports_vision: true
   lingsuan-terra-vision:
-    api: https://lingsuan.top/v1
+    api: http://127.0.0.1:@BROKER_PORT@/lingsuan-fb/v1
     key_env: FALLBACK_LLM_API_KEY
     transport: chat_completions
     models:
       gpt-5.6-terra:
         supports_vision: true
   lingsuan-gemini-vision:
-    api: https://lingsuan.top/v1
+    api: http://127.0.0.1:@BROKER_PORT@/gemini/v1
     key_env: GEMINI_LLM_API_KEY
     transport: chat_completions
     models:
@@ -31,15 +31,15 @@ providers:
 fallback_providers:
 - provider: custom
   model: claude-opus-5-5
-  base_url: https://api.lingsuan.si/v1
+  base_url: http://127.0.0.1:@BROKER_PORT@/lingsuan-opus/v1
   key_env: LINGSUAN_OPUS_KEY
 - provider: custom
   model: glm-5.3
-  base_url: https://api.unorouter.com/v1
+  base_url: http://127.0.0.1:@BROKER_PORT@/unorouter/v1
   key_env: UNOROUTER_API_KEY
 - provider: custom
   model: gpt-5.6-terra
-  base_url: https://lingsuan.top/v1
+  base_url: http://127.0.0.1:@BROKER_PORT@/lingsuan-fb/v1
   key_env: FALLBACK_LLM_API_KEY
 max_concurrent_sessions: 2
 max_live_sessions: 4
@@ -204,9 +204,9 @@ _config_version: 33
 mcp_servers:
   proaisaver:
     enabled: true
-    url: https://saver-mcp.proaicommunity.online/mcp/
+    url: http://127.0.0.1:@BROKER_PORT@/saver/mcp/
     headers:
-      Authorization: Bearer
+      Authorization: Bearer keybroker-saver
     connect_timeout: 30
     timeout: 300
     skip_preflight: true
@@ -227,5 +227,6 @@ hooks:
 tts:
   provider: elevenlabs
   elevenlabs:
+    base_url: http://127.0.0.1:@BROKER_PORT@/elevenlabs
     voice_id: rQOBu7YxCDxGiFdTm28w
     model_id: eleven_v4_turbo

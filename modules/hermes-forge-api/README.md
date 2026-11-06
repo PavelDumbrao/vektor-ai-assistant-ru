@@ -117,3 +117,20 @@ It does not package or restart root control, Hermes runtimes, tenant configurati
 On `--apply`, the release is created immutably under `/opt/proai-hermes-forge-api/releases/<sha256>/`, `current` is switched atomically and a systemd drop-in redirects only `proai-hermes-forge-api.service` to the versioned API.
 
 Activation requires successful loopback probes for `/healthz`, `/v1/catalog` and read-only `/v1/kitchen/preview`. Failure restores the previous `current` pointer/drop-in, restarts the previous API and verifies basic health before reporting rollback success.
+
+## Оплата (Prodamus)
+
+Модуль интеграции с платежной формой Продамус (payform) для продажи подписок на ассистентов Hermes Forge.
+
+### Архитектура и потоки данных
+
+- **Генерация ссылок**: `billing.payment_link(settings, user_id=..., username=..., order_id=...)` формирует подписанную ссылку на оплату `https://<shop>.payform.ru/` с параметрами заказа, `customer_extra=<user_id>`, `urlNotification`, `urlSuccess`, `urlReturn` и HMAC-SHA256 подписью. При указании `subscription_id` передаётся рекуррентная подписка вместо разовых товаров.
+- **Приём вебхуков**: `POST /v1/webhooks/prodamus` в `api.py` (без сессии пользователя). Принимает `application/x-www-form-urlencoded` тело (до 64 KiB) и заголовок `Sign`. Секрет считывается из переменной окружения `PRODAMUS_SECRET_KEY`.
+- **Проверка подписи**: `billing.verify_signature` проверяет подпись по алгоритму Продамуса (`Hmac::create`), поддерживая оба варианта сериализации JSON (с экранированием слэшей `\/` по стандарту PHP и без экранирования, как в библиотеке `prodamuspy`). Регистр hex-строки `Sign` не имеет значения. При неверной или отсутствующей подписи возвращается 401 `prodamus_signature_invalid`. Если секрет не настроен — 503 `billing_unconfigured`.
+- **Ответ вебхука**: при успешной обработке платежа возвращается HTTP 200 со строгим телом `success` (`Content-Type: text/plain; charset=utf-8`), как требует Продамус для подтверждения доставки. Неуспешные статусы (`payment_status != "success"`) возвращают 200 `{"ok":true,"ignored":true,"status":...}` без вызова демона управления.
+- **Страницы перенаправления**: `GET /pay/success` («Оплата принята, вернитесь в Telegram») и `GET /pay/return` («Оплата не завершена») — встроенные безопасные HTML-страницы.
+- **Проверка статуса подписки**: `GET /v1/billing/me` (требует Telegram session) возвращает статус подписки текущего пользователя: `{plan, paid_until, active, days_left}` или `{active: None}` при отсутствии истории.
+- **Хранение состояния**: состояние пользователя хранится в `/var/lib/proai-hermes-forge/billing/<user_id>.json` (права 0600, владелец root, схема `hermes.billing/v1`). Все операции чтения/записи вынесены в библиотеку `billing.py` (`read_state`, `apply_payment`, `billing_state`).
+- **Дедупликация и продление**: дедупликация ведётся по `order_id` в истории платежей пользователя. Повторные уведомления возвращают `{"duplicate":true}` без изменения даты. Новый платёж продлевает подписку: `paid_until = max(now, paid_until) + plan_days * 86400` (сложение срока при активной подписке).
+- **Аудит и оповещения**: факт оплаты регистрируется через `_audit_op("billing_payment", user_id, "", "success", details={order_id, sum})`. Администратор (`FORGE_ADMIN_ID` из `/etc/proai-hermes-manager.env`, по умолчанию 450206471) получает уведомление в Telegram: `💳 Оплата: <sum> ₽, пользователь <user_id>, до <дата>`.
+- **Конфигурация systemd**: drop-in `deploy/proai-hermes-forge-api.service.d-billing.conf` подключает `EnvironmentFile=/etc/proai-hermes-forge/billing.env`. Пример переменных приведён в `deploy/billing.env.example`.

@@ -11,6 +11,7 @@ import os
 import re
 import socket
 import socketserver
+import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -127,6 +128,26 @@ def _load_kitchen_module() -> Any:
 
 
 KITCHEN = _load_kitchen_module()
+
+
+def _load_billing_module() -> Any:
+    local = Path(__file__).resolve().with_name("billing.py")
+    if local.is_file():
+        spec = importlib.util.spec_from_file_location("hermes_forge_billing", local)
+        if spec is not None and spec.loader is not None:
+            module = importlib.util.module_from_spec(spec)
+            sys.modules[spec.name] = module
+            spec.loader.exec_module(module)
+            return module
+    try:
+        import billing
+        return billing
+    except ImportError:
+        return None
+
+
+BILLING = _load_billing_module()
+billing = BILLING
 
 
 def call_control(payload: dict[str, Any], *, timeout: float = 90.0) -> dict[str, Any]:
@@ -286,6 +307,8 @@ def route(method: str, path: str, body: dict[str, Any], headers: Any) -> tuple[i
     if method == "POST" and path == "/v1/kitchen/preview":
         return 200, _kitchen_preview(body)
     session = _session(headers)
+    if method == "GET" and path == "/v1/billing/me":
+        return 200, call_control({"op": "billing_status", "session": session})
     if method == "POST" and path == "/v1/auth/logout":
         return 200, call_control({"op": "logout", "session": session})
     if method == "POST" and path.startswith("/v1/invites/") and path.endswith("/accept"):
@@ -391,6 +414,61 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(raw)
 
+    def _text(self, status: int, text: str) -> None:
+        raw = text.encode("utf-8")
+        self.send_response(status)
+        self._security_headers()
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.send_header("Content-Length", str(len(raw)))
+        self.end_headers()
+        self.wfile.write(raw)
+
+    def _html(self, status: int, html: str) -> None:
+        raw = html.encode("utf-8")
+        self.send_response(status)
+        self._security_headers()
+        self.send_header("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'")
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(raw)))
+        self.end_headers()
+        self.wfile.write(raw)
+
+    def _pay_page(self, path: str) -> None:
+        if path == "/pay/success":
+            title = "Оплата принята"
+            color = "#22c55e"
+            msg = "Оплата принята, вернитесь в Telegram"
+        else:
+            title = "Оплата не завершена"
+            color = "#f59e0b"
+            msg = "Оплата не завершена"
+        page = (
+            "<!DOCTYPE html>\n"
+            "<html lang=\"ru\">\n"
+            "<head>\n"
+            "<meta charset=\"utf-8\">\n"
+            "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n"
+            f"<title>{title}</title>\n"
+            "<style>\n"
+            "body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; "
+            "background: #0f172a; color: #f8fafc; display: flex; align-items: center; justify-content: center; "
+            "min-height: 100vh; margin: 0; padding: 20px; box-sizing: border-box; }\n"
+            ".card { background: #1e293b; border-radius: 16px; padding: 32px; max-width: 420px; text-align: center; "
+            "box-shadow: 0 10px 25px rgba(0,0,0,0.3); }\n"
+            f"h1 {{ font-size: 24px; margin-bottom: 12px; color: {color}; }}\n"
+            "p {{ font-size: 16px; color: #94a3b8; line-height: 1.5; margin: 0; }}\n"
+            "</style>\n"
+            "</head>\n"
+            "<body>\n"
+            "<div class=\"card\">\n"
+            f"<h1>{title}</h1>\n"
+            f"<p>{msg}</p>\n"
+            "</div>\n"
+            "</body>\n"
+            "</html>"
+        )
+        self._html(200, page)
+
     def _body(self) -> dict[str, Any]:
         raw_length = self.headers.get("Content-Length")
         if raw_length is None:
@@ -444,6 +522,38 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:
             self._json(500, {"ok": False, "error": "internal_error"})
 
+    def _prodamus_webhook(self) -> None:
+        try:
+            secret = str(os.environ.get("PRODAMUS_SECRET_KEY") or "").strip()
+            if not secret:
+                raise ApiError("billing_unconfigured", 503)
+            sign = self.headers.get("Sign") or self.headers.get("sign") or ""
+            if not sign:
+                raise ApiError("prodamus_signature_invalid", 401)
+            raw = self._raw_body()
+            if BILLING is None:
+                raise ApiError("billing_unavailable", 503)
+            data = BILLING.parse_notification(raw)
+            if not BILLING.verify_signature(data, secret, sign):
+                raise ApiError("prodamus_signature_invalid", 401)
+            summary = BILLING.notification_summary(data)
+            try:
+                plan_days = int(os.environ.get("FORGE_PLAN_DAYS", "30"))
+            except ValueError:
+                plan_days = 30
+            summary["plan_days"] = plan_days
+            # The payform is shared with other products: acknowledge foreign or non-success notifications
+            # with the same plain "success" so Prodamus does not retry them against us.
+            if not BILLING.is_forge_payment(summary) or summary.get("payment_status") != "success":
+                self._text(200, "success")
+                return
+            call_control({"op": "billing_payment", "notification": summary, "raw": data}, timeout=5.0)
+            self._text(200, "success")
+        except ApiError as exc:
+            self._json(exc.status, {"ok": False, "error": exc.code})
+        except Exception:
+            self._json(500, {"ok": False, "error": "internal_error"})
+
     def _api(self) -> None:
         try:
             body = self._body() if self.command in {"POST", "PUT", "DELETE"} else {}
@@ -479,14 +589,21 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(raw)
 
     def do_GET(self) -> None:
-        if urllib_path(self.path).startswith("/v1/") or urllib_path(self.path) == "/healthz":
+        path = urllib_path(self.path)
+        if path.startswith("/v1/") or path == "/healthz":
             self._api()
+        elif path in {"/pay/success", "/pay/return"}:
+            self._pay_page(path)
         else:
             self._static()
 
     def do_POST(self) -> None:
-        if urllib_path(self.path) == "/v1/webhooks/zoom":
+        path = urllib_path(self.path)
+        if path == "/v1/webhooks/zoom":
             self._zoom_webhook()
+            return
+        if path == "/v1/webhooks/prodamus":
+            self._prodamus_webhook()
             return
         self._api()
 

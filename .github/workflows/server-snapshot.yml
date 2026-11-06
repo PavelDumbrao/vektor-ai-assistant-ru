@@ -64,6 +64,8 @@ jobs:
           python -m compileall -q modules/hermes-fleet-ops
       - name: Hermes new-client onboarding
         run: python -m pytest modules/hermes-bot-manager/tests -q
+      - name: Hermes workspace members
+        run: python -m pytest modules/workspace-members/tests -q
       - name: Hermes key broker
         env:
           PYTHONPATH: modules/hermes-keybroker

@@ -4,6 +4,19 @@ from pathlib import Path
 
 STATE = Path(os.environ.get("HERMES_HOME", str(Path.home()/".hermes"))) / "workspace-members.json"
 _lock=threading.RLock(); _actors={}
+CLOUD_BOT_API="https://api.telegram.org/bot"
+
+def _telegram_api_base():
+    """Bot API base of this profile. Bots on the local Bot API server set
+    platforms.telegram.extra.base_url; calling the cloud API with their token logs
+    the bot into the cloud and breaks update delivery to the local server."""
+    try:
+        import yaml
+        cfg=yaml.safe_load((STATE.parent/"config.yaml").read_text(encoding="utf-8")) or {}
+        tg=(cfg.get("platforms") or {}).get("telegram") or {}
+        base=str((tg.get("extra") or {}).get("base_url") or tg.get("base_url") or "").strip().rstrip("/")
+        return base or CLOUD_BOT_API
+    except Exception: return CLOUD_BOT_API
 MEMORY_TOOL_PREFIXES=("memory","passive_secretary_")
 
 def _load():
@@ -31,7 +44,7 @@ def _notify_owner(d,member,tool):
     if not token or not owner: return
     text=f"🔐 {member.get('name') or 'Участник'} просит доступ к инструменту {tool}.\n\nОткрой Hermes Forge → Команда и разреши на 1, 7 или 30 дней."
     body=urllib.parse.urlencode({"chat_id":owner,"text":text}).encode()
-    try: urllib.request.urlopen(urllib.request.Request(f"https://api.telegram.org/bot{token}/sendMessage",data=body),timeout=8).read()
+    try: urllib.request.urlopen(urllib.request.Request(f"{_telegram_api_base()}{token}/sendMessage",data=body),timeout=8).read()
     except Exception: pass
 
 def observe(**kw):

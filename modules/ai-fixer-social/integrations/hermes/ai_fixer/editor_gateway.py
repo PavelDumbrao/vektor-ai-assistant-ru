@@ -8,7 +8,7 @@ import logging
 import subprocess
 from pathlib import Path
 
-from .preview import deliver_once
+from .preview import deliver_once, telegram_api
 from .rich_post import prepare_article
 from .telegram_content import execute_spec, prepare_spec
 
@@ -68,11 +68,11 @@ def send_editor_preview(owner_id, content, markup):
     config = owner_config(owner_id)
 
     async def send():
-        async with Bot(token=config.token) as bot:
+        async with Bot(token=config.token, **telegram_api(config)[1]) as bot:
             if bot.username.lower() != "vektor_assist_bot":
                 raise ValueError("preview_bot_mismatch")
         async with httpx.AsyncClient(timeout=httpx.Timeout(70, connect=10)) as client:
-            base = f"https://api.telegram.org/bot{config.token}"
+            base = f"{telegram_api(config)[0]}{config.token}"
             if "spec" in content:
                 prepared = prepare_spec(content["spec"])
                 public_rows = prepared.params.get("reply_markup", {}).get("inline_keyboard", [])
@@ -134,7 +134,7 @@ def refresh_controls(owner_id, draft_id):
     config = owner_config(owner_id)
 
     async def update():
-        async with Bot(token=config.token) as bot:
+        async with Bot(token=config.token, **telegram_api(config)[1]) as bot:
             if bot.username.lower() != "vektor_assist_bot":
                 raise ValueError("preview_bot_mismatch")
             await bot.edit_message_reply_markup(chat_id=int(owner_id), message_id=result["preview_message_id"], reply_markup=markup)

@@ -99,6 +99,39 @@ class PreviewTests(unittest.TestCase):
         self.assertEqual(calls[0]["parse_mode"], "HTML")
         self.assertFalse(calls[0]["show_caption_above_media"])
 
+    def test_transport_uses_local_bot_api_when_profile_sets_base_url(self):
+        from ai_fixer_plugin.preview import telegram_api
+        self.assertEqual(telegram_api(SimpleNamespace(extra={})), ("https://api.telegram.org/bot", {}))
+        self.assertEqual(telegram_api(SimpleNamespace()), ("https://api.telegram.org/bot", {}))
+        inits = []
+
+        class Bot:
+            username = "vektor_assist_bot"
+
+            def __init__(self, **kwargs):
+                inits.append(kwargs)
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                pass
+
+            async def send_photo(self, **kwargs):
+                return SimpleNamespace(photo=[True], chat=SimpleNamespace(id=1, type="private"),
+                                       caption="Тест", message_id=12)
+
+        config = SimpleNamespace(platforms={"telegram": SimpleNamespace(
+            enabled=True, token="test-only", home_channel=SimpleNamespace(chat_id="1"),
+            extra={"base_url": "http://127.0.0.1:8082/bot/", "base_file_url": "http://127.0.0.1:8082/file/bot"})})
+        modules = {"gateway.config": SimpleNamespace(Platform=SimpleNamespace(TELEGRAM="telegram"),
+                                                     load_gateway_config=lambda: config),
+                   "telegram": SimpleNamespace(Bot=Bot)}
+        with patch.dict(sys.modules, modules):
+            send_owner_photo("1", "<b>Тест</b>", self.args["raw"])
+        self.assertEqual(inits, [{"token": "test-only", "base_url": "http://127.0.0.1:8082/bot",
+                                  "base_file_url": "http://127.0.0.1:8082/file/bot"}])
+
     def test_caption_path_rejects_missing_photo(self):
         controller = plugin.Controller("1")
         controller.observe(session_id="s", turn_id="t", sender_id="1", platform="telegram",

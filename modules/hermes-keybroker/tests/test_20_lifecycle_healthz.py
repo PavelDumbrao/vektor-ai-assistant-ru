@@ -10,6 +10,7 @@ Covers:
 
 from __future__ import annotations
 
+import time
 import asyncio
 import json
 import os
@@ -104,7 +105,7 @@ class TestLifecycleAndHealthz(unittest.IsolatedAsyncioTestCase):
 
             # Verify usage accounting recorded request under 'bob'
             await self.app.usage_tracker.flush()
-            bob_aggs = self.app.usage_tracker.aggregate(client="bob", month="2026-10")
+            bob_aggs = self.app.usage_tracker.aggregate(client="bob", month=time.strftime("%Y-%m", time.gmtime()))
             self.assertTrue(any(item["route"] == "/api" and item["requests"] >= 1 for item in bob_aggs))
 
     async def test_startup_with_occupied_port(self):

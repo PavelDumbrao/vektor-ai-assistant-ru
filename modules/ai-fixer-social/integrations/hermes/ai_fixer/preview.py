@@ -25,6 +25,27 @@ class CaptionText(HTMLParser):
         self.parts.append(data)
 
 
+CLOUD_BOT_API = "https://api.telegram.org/bot"
+
+
+def telegram_api(config):
+    """Return (api_base, Bot kwargs) for this profile's Telegram transport.
+
+    Profiles on the local Bot API server set ``platforms.telegram.extra.base_url``.
+    A cloud request with their token logs the bot into the cloud and breaks update
+    delivery to the local server, so every call must use the configured base.
+    """
+    extra = getattr(config, "extra", None) or {}
+    base = str(extra.get("base_url") or "").strip().rstrip("/")
+    if not base:
+        return CLOUD_BOT_API, {}
+    kwargs = {"base_url": base}
+    file_base = str(extra.get("base_file_url") or "").strip().rstrip("/")
+    if file_base:
+        kwargs["base_file_url"] = file_base
+    return base, kwargs
+
+
 def plain_caption(text):
     parser = CaptionText()
     parser.feed(text)
@@ -46,7 +67,7 @@ def send_owner_photo(owner_id, text, raw):
         raise ValueError("telegram_owner_mismatch")
 
     async def send():
-        async with Bot(token=config.token) as bot:
+        async with Bot(token=config.token, **telegram_api(config)[1]) as bot:
             if bot.username.lower() != "vektor_assist_bot":
                 raise ValueError("preview_bot_mismatch")
             message = await bot.send_photo(
@@ -76,12 +97,12 @@ def send_owner_rich_post(owner_id, article):
         raise ValueError("telegram_owner_mismatch")
 
     async def send():
-        async with Bot(token=config.token) as bot:
+        async with Bot(token=config.token, **telegram_api(config)[1]) as bot:
             if bot.username.lower() != "vektor_assist_bot":
                 raise ValueError("preview_bot_mismatch")
         async with httpx.AsyncClient(timeout=httpx.Timeout(60, connect=10)) as client:
             response = await client.post(
-                f"https://api.telegram.org/bot{config.token}/sendRichMessage",
+                f"{telegram_api(config)[0]}{config.token}/sendRichMessage",
                 data={"chat_id": owner_id, "rich_message": json.dumps(article.wire(), ensure_ascii=False)},
                 files=article.files(),
             )
@@ -134,11 +155,11 @@ def send_owner_telegram(owner_id, spec):
         raise ValueError("private_preview_supports_new_messages_only")
 
     async def send():
-        async with Bot(token=config.token) as bot:
+        async with Bot(token=config.token, **telegram_api(config)[1]) as bot:
             if bot.username.lower() != "vektor_assist_bot":
                 raise ValueError("preview_bot_mismatch")
         async with httpx.AsyncClient(timeout=httpx.Timeout(90, connect=10)) as client:
-            delivery = await execute_spec(client, f"https://api.telegram.org/bot{config.token}", int(owner_id), spec)
+            delivery = await execute_spec(client, f"{telegram_api(config)[0]}{config.token}", int(owner_id), spec)
         first = delivery["messages"][0]
         result = {"message_id": first["message_id"], "message_ids": delivery["message_ids"],
                   "has_content": True, "kind": spec.kind, "payload_hash": spec.payload_hash}

@@ -1,10 +1,10 @@
 {
   "files": {
     "modules/ai-fixer-social/integrations/hermes/ai_fixer/__init__.py": "52502c02355997f845192d5264c8d008a95fe5b7d0fa6d9c216c33ad4f07ad6b",
-    "modules/ai-fixer-social/integrations/hermes/ai_fixer/editor_gateway.py": "3b641a7d1b355504e9f523025017d5d8aaae7d3d5532f2306ef5a1653a092f07",
+    "modules/ai-fixer-social/integrations/hermes/ai_fixer/editor_gateway.py": "ee2933bc508e3d2a297635c9d54dad94cb0112f142d026ca0d088ad427400ca7",
     "modules/ai-fixer-social/integrations/hermes/ai_fixer/plugin.yaml": "2609013b305bd4f01fde430f892b24fbaed21b79eec3804c99bbe026ccd3fb09",
     "modules/ai-fixer-social/integrations/hermes/ai_fixer/post_validation.py": "ab9d8bfa9797040af416b28a144182af4cbdf93fc12813eef2f81fb49383e326",
-    "modules/ai-fixer-social/integrations/hermes/ai_fixer/preview.py": "d9bad36d5ce0259e09f82ad89a2616edf4b4d6f3b0ad3823c0cfedb86417184c",
+    "modules/ai-fixer-social/integrations/hermes/ai_fixer/preview.py": "f345d4056f8767c9fa6f1b676cdcc84c0eef1ccc0a0e993b2f855411786bc809",
     "modules/ai-fixer-social/integrations/hermes/ai_fixer/rich_post.py": "93d55280373e149946317aa62867d502eeec823945b3354242bc341b3554edf7",
     "modules/ai-fixer-social/integrations/hermes/ai_fixer/telegram_content.py": "9029205e2d4e2ccf05dffe4c850c32eb2c119cfa4bec96d0d0d5b713e8884328",
     "modules/ai-fixer-social/integrations/telegram_engine/ai_fixer_analytics.py": "d51c5489342f69b74770a16cca9404ef453d2da1580dba149334bd867f1c1d69",
@@ -33,7 +33,7 @@
     "modules/ai-fixer-social/tests/test_outbound.py": "cdeaca8bee6a13f7c3c63976e32008d77ac87edaeaf0544600654f2b447f5388",
     "modules/ai-fixer-social/tests/test_policy.py": "d6956d77b0f28947671c3da8882d7c009c802a8312eb8947f5557e80074b32c6",
     "modules/ai-fixer-social/tests/test_post_validation.py": "2057305a124efe73f13ad806849a149fe93d2ff40f2111240c43a5634afa140e",
-    "modules/ai-fixer-social/tests/test_preview.py": "ef4c24dc340942c06aa7ca6b4a4d210d83951d8a85f95a2d9583856fce261a87",
+    "modules/ai-fixer-social/tests/test_preview.py": "147b5d81269521ca25296132e6a788e83286fb9665bcd5c7dff0f3fc5aae5f6e",
     "modules/ai-fixer-social/tests/test_rich_post.py": "03ac0222ccaed0c15117115056489640b22c507e1275708c46f42c0ac136349d",
     "modules/ai-fixer-social/tests/test_service.py": "219933aad5eb60cef6550f0ff48c6f18b2a5fd52276ee8dfe832dfe958e60b21",
     "modules/ai-fixer-social/tests/test_telegram_toolkit.py": "a4cd639d0489387fffeabc283cbfdf9c6a12aa5e4c0fda84a568ad3acd368c5b",

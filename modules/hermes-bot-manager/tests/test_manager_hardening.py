@@ -154,12 +154,47 @@ def test_receipt_validation_and_failures(monkeypatch, tmp_path):
     state["managed"]["8000000001"]["profile_status"] = "provisioning"
     state["managed"]["8000000001"]["provision_started_at"] = int(time.time()) - 100
     class UnitState:
-        stdout = "failed\nexit-code\n"
+        stdout = "ActiveState=failed\nResult=exit-code\n"
         returncode = 0
     monkeypatch.setattr(manager.subprocess, "run", lambda *a, **k: UnitState())
     manager.reconcile_provisioning(state)
     assert state["managed"]["8000000001"]["profile_status"] == "provision_failed"
     assert state["managed"]["8000000001"]["error_code"] == "provisioner_exited"
+
+
+def test_provisioner_unit_state_is_order_independent_and_respects_start_grace(monkeypatch, tmp_path):
+    capture(monkeypatch)
+    monkeypatch.setattr(manager, "PROVISIONING_DIR", tmp_path / "provisioning")
+    (tmp_path / "provisioning").mkdir(parents=True, exist_ok=True)
+
+    def unit(stdout):
+        monkeypatch.setattr(manager.subprocess, "run", lambda *a, **k: type("R", (), {"stdout": stdout, "returncode": 0})())
+
+    def item(started_ago):
+        return {"managed": {"8000000003": {
+            "bot_id": 8000000003, "owner_user_id": 50006, "profile": "h50006",
+            "profile_status": "provisioning", "instance_id": "hermes-50006", "username": "gracebot",
+            "provision_started_at": int(time.time()) - started_ago,
+        }}}
+
+    # systemd 255 prints Result before ActiveState: a failed unit must still be detected right away.
+    unit("Result=exit-code\nActiveState=failed\n")
+    state = item(10)
+    manager.reconcile_provisioning(state)
+    assert state["managed"]["8000000003"]["profile_status"] == "provision_failed"
+    assert state["managed"]["8000000003"]["error_code"] == "provisioner_exited"
+
+    # Just started with --no-block: `inactive` is not an exit yet.
+    unit("Result=success\nActiveState=inactive\n")
+    state = item(5)
+    manager.reconcile_provisioning(state)
+    assert state["managed"]["8000000003"]["profile_status"] == "provisioning"
+
+    # Still inactive after the grace period and no receipt: the provisioner has exited.
+    state = item(manager.PROVISION_START_GRACE_S + 30)
+    manager.reconcile_provisioning(state)
+    assert state["managed"]["8000000003"]["profile_status"] == "provision_failed"
+    assert state["managed"]["8000000003"]["error_code"] == "provisioner_exited"
 
 
 def test_managed_bot_token_pending_retry_and_dedup(monkeypatch, tmp_path):

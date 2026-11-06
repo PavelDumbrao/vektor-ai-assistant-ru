@@ -23,7 +23,8 @@ from hermes_instance import HermesInstance, normalize_bot_username, owner_for_te
 import i18n
 
 SECRET_FILE = Path('/etc/proai-hermes-manager.env')
-ROOT = Path('/opt/proai-hermes-manager')
+# PROAI_HERMES_MANAGER_ROOT exists for tests (tests/conftest.py points it at a temp dir); production uses the default.
+ROOT = Path(os.environ.get('PROAI_HERMES_MANAGER_ROOT') or '/opt/proai-hermes-manager')
 STATE_DIR = ROOT / 'state'
 STATE_FILE = STATE_DIR / 'state.json'
 MANAGED_DIR = STATE_DIR / 'managed'
@@ -39,6 +40,8 @@ BOT_USERNAME = 'ProAIHermesBot'
 DEFAULT_FORGE_WEBAPP_URL = 'https://forge.srv1250550.hstgr.cloud/'
 TOKEN_RE = re.compile(r'^\d{5,}:[A-Za-z0-9_-]{20,}$')
 PROVISION_DEADLINE_S = 1200
+# A unit started with `systemctl start --no-block` may still report `inactive` for a moment.
+PROVISION_START_GRACE_S = 60
 FLEET_POLICY = Path('/etc/proai-hermes-fleet-policy.json')
 RELEASE_ROOT = Path('/opt/vektor/releases')
 RELEASE_RE = re.compile(r'^hermes-[A-Za-z0-9_.-]{1,80}$')
@@ -673,12 +676,15 @@ def reconcile_provisioning(state: dict) -> None:
                 unit = f'proai-hermes-provisioner@{instance_id}.service'
                 try:
                     res = subprocess.run(
-                        ['/usr/bin/systemctl', 'show', '-p', 'ActiveState,Result', '--value', unit],
+                        ['/usr/bin/systemctl', 'show', '-p', 'ActiveState', '-p', 'Result', unit],
                         capture_output=True, text=True, timeout=10, check=False,
                     )
-                    lines = [l.strip() for l in res.stdout.splitlines() if l.strip()]
-                    active_state = lines[0] if lines else ''
-                    if active_state in ('failed', 'inactive'):
+                    # Parse KEY=VALUE: with --value systemd prints properties in its own order,
+                    # which differs between versions (systemd 255 prints Result before ActiveState).
+                    props = dict(l.strip().split('=', 1) for l in res.stdout.splitlines() if '=' in l)
+                    active_state = props.get('ActiveState', '')
+                    settled = p_started <= 0 or (now - p_started) >= PROVISION_START_GRACE_S
+                    if active_state == 'failed' or (active_state == 'inactive' and settled):
                         unit_failed_or_inactive = True
                 except Exception:
                     pass

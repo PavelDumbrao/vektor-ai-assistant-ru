@@ -1,5 +1,6 @@
 """Test 18: In-flight limits, concurrency semaphore, rpm exclusion, and ElevenLabs character reservation."""
 
+import time
 import asyncio
 import os
 import tempfile
@@ -153,5 +154,5 @@ class TestLimitsInflightConcurrency(unittest.IsolatedAsyncioTestCase):
 
         # Flush and check DB has character-cost recorded
         await self.app.usage_tracker.flush()
-        totals = self.app.usage_tracker.month_totals("bebov", "elevenlabs", "2026-10")
+        totals = self.app.usage_tracker.month_totals("bebov", "elevenlabs", time.strftime("%Y-%m", time.gmtime()))
         self.assertEqual(totals.chars, 55)

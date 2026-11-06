@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -366,7 +367,7 @@ def test_render_profile_replaces_broker_port(monkeypatch, tmp_path):
     monkeypatch.setattr(provisioner, "_atomic_write", lambda p, c, **k: p.write_text(c, encoding="utf-8"))
 
     home = tmp_path / "home" / "h503899482"
-    entry = SimpleNamespace(pw_uid=1001, pw_gid=1001, pw_dir=str(home), pw_name="h503899482")
+    entry = SimpleNamespace(pw_uid=os.getuid() or 1001, pw_gid=os.getgid() or 1001, pw_dir=str(home), pw_name="h503899482")
 
     hermes = provisioner._render_profile(instance(), entry, 21042)
     rendered_cfg = (hermes / "config.yaml").read_text(encoding="utf-8")
@@ -389,7 +390,7 @@ def test_render_profile_unrendered_placeholder_raises(monkeypatch, tmp_path):
     monkeypatch.setattr(provisioner, "_atomic_write", lambda p, c, **k: p.write_text(c, encoding="utf-8"))
 
     home = tmp_path / "home" / "h503899482"
-    entry = SimpleNamespace(pw_uid=1001, pw_gid=1001, pw_dir=str(home), pw_name="h503899482")
+    entry = SimpleNamespace(pw_uid=os.getuid() or 1001, pw_gid=os.getgid() or 1001, pw_dir=str(home), pw_name="h503899482")
 
     with pytest.raises(provisioner.ProvisionError, match="profile_template_unrendered_placeholder"):
         provisioner._render_profile(instance(), entry, 21042)
@@ -406,7 +407,7 @@ def test_render_profile_port_mismatch_raises(monkeypatch, tmp_path):
     monkeypatch.setattr(provisioner, "_atomic_write", lambda p, c, **k: p.write_text(c, encoding="utf-8"))
 
     home = tmp_path / "home" / "h503899482"
-    entry = SimpleNamespace(pw_uid=1001, pw_gid=1001, pw_dir=str(home), pw_name="h503899482")
+    entry = SimpleNamespace(pw_uid=os.getuid() or 1001, pw_gid=os.getgid() or 1001, pw_dir=str(home), pw_name="h503899482")
 
     with pytest.raises(provisioner.ProvisionError, match="profile_template_port_mismatch"):
         provisioner._render_profile(instance(), entry, 21042)

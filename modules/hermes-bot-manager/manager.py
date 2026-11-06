@@ -23,7 +23,8 @@ from hermes_instance import HermesInstance, normalize_bot_username, owner_for_te
 import i18n
 
 SECRET_FILE = Path('/etc/proai-hermes-manager.env')
-ROOT = Path('/opt/proai-hermes-manager')
+# PROAI_HERMES_MANAGER_ROOT exists for tests (tests/conftest.py points it at a temp dir); production uses the default.
+ROOT = Path(os.environ.get('PROAI_HERMES_MANAGER_ROOT') or '/opt/proai-hermes-manager')
 STATE_DIR = ROOT / 'state'
 STATE_FILE = STATE_DIR / 'state.json'
 MANAGED_DIR = STATE_DIR / 'managed'

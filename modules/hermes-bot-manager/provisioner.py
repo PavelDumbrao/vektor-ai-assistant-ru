@@ -30,7 +30,8 @@ from hermes_instance import HermesInstance, owner_for_telegram_id
 
 PROFILE_HOME_ROOT = Path("/home")
 ROOT = Path("/opt/vektor")
-MANAGER_ROOT = Path("/opt/proai-hermes-manager")
+# PROAI_HERMES_MANAGER_ROOT exists for tests (tests/conftest.py points it at a temp dir); production uses the default.
+MANAGER_ROOT = Path(os.environ.get("PROAI_HERMES_MANAGER_ROOT") or "/opt/proai-hermes-manager")
 PLATFORM_ENV = Path("/etc/proai-hermes-platform.env")
 SYSTEMD_ROOT = Path("/etc/systemd/system")
 TMPFILES_ROOT = Path("/etc/tmpfiles.d")
